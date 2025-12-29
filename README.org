@@ -1,0 +1,119 @@
+#+TITLE: MonthlyListeners
+#+AUTHOR: 
+#+OPTIONS: toc:t num:t
+
+* Overview
+MonthlyListeners is a small Go CLI that reads a list of Spotify artist IDs from =input.txt=, fetches each artist’s “monthly listeners” by driving a headless browser via Browserless BQL, and writes/merges the results into =artist_stats.json= as a map of =artistID -> count=.
+
+It runs requests with a conservative concurrency limiter (effectively serial by default) and retries transient failures.
+
+* How It Works
+- **Input**: One Spotify artist ID per line in =input.txt=. Empty lines are ignored.
+- **Fetch**: For each ID, a Browserless BQL mutation visits the artist page, waits for a specific selector, evaluates the page to find the text that contains “monthly listeners”, and returns it.
+- **Parse**: The program parses the leading integer (comma-separated) from the text, e.g., “1,234,567 monthly listeners”.
+- **Store**: Results are merged into =artist_stats.json=. Existing entries are updated; new ones are added.
+- **Reliability**: Each fetch retries up to 3 times with backoff and uses a channel-based semaphore to limit concurrent requests.
+
+Key selector currently used in the BQL query:
+- =span.Ydwa1P5GkCggtLlSvphs=
+
+If Spotify changes its DOM or class names, you will need to update the selector in the BQL query inside =main.go=.
+
+* Repo Layout
+- =main.go=: program entry point and fetch/parse/save logic
+- =go.mod=: module config (targets a Go version with json/v2 experiment support)
+- =input.txt=: sample list of artist IDs (one per line)
+- =artist_stats.json=: output store (example file included)
+- =count.txt=: scratch/progress file from earlier experiments (not used by the program)
+- =MonthlyListeners=: a compiled binary may appear here after building (platform-dependent name)
+
+* Prerequisites
+- **Go toolchain** with support for the =jsonv2= experiment.
+  - The code is gated by the build tag =//go:build goexperiment.jsonv2= and imports =encoding/json/v2=.
+  - Build and run using the environment variable: =GOEXPERIMENT=jsonv2=.
+  - A recent Go toolchain (tip or a future stable with =jsonv2=) is recommended.
+- **Browserless** account and API token.
+  - The code posts to the Browserless Chromium BQL endpoint.
+  - You must provide a valid token. See “Configuration”.
+- **Network access** to Browserless and Spotify.
+
+* Configuration
+Set your Browserless API token in =mise.toml= under the =[vars]= section:
+
+#+begin_src toml
+[vars]
+PROJECT_NAME = "MonthlyListeners"
+BROWSERLESS_TOKEN = "your_browserless_token_here"
+#+end_src
+
+Replace =your_browserless_token_here= with your actual Browserless token.
+
+Optional tweaks:
+- **Region/endpoint**: Change =production-sfo= to a different Browserless region if desired.
+- **Concurrency**: Increase the capacity of =concurrencyLimiter= in =main.go= to allow more parallel requests (mind rate limits and blocking).
+- **Selector**: If Spotify changes the UI, update the =waitForSelector= and the =evaluate= section in the BQL query to target the correct element.
+
+* Build
+Build with the =jsonv2= experiment enabled:
+
+#+begin_src sh
+# Build a binary
+GOEXPERIMENT=jsonv2 go build -o MonthlyListeners .
+
+# Or run directly from source
+GOEXPERIMENT=jsonv2 go run .
+#+end_src
+
+If your Go toolchain does not recognize =jsonv2=, update to a newer version that supports the experiment. As a fallback, you can adapt the code to standard =encoding/json= and remove the build tag and json/v2 usage (not covered here).
+
+* Usage
+1) Put artist IDs in =input.txt=, one per line. Example:
+
+#+begin_example
+6TPJK8tv3AKKSsw0lENTQk
+0y7B2G0jNMGWyQJsOoRMUt
+2NMYOlZHIEsSq7pp5jBjic
+#+end_example
+
+2) Run the program:
+
+#+begin_src sh
+GOEXPERIMENT=jsonv2 ./MonthlyListeners
+# …or…
+GOEXPERIMENT=jsonv2 go run .
+#+end_src
+
+3) Inspect output in =artist_stats.json=. It is a JSON object mapping artist IDs to integer counts. Example shape:
+
+#+begin_src json
+{
+  "0y7B2G0jNMGWyQJsOoRMUt": 5381527,
+  "2NMYOlZHIEsSq7pp5jBjic": 5043559
+}
+#+end_src
+
+Notes:
+- Existing entries are updated in place; unknown IDs are added.
+- Errors for individual IDs are logged to stderr, and processing continues for others.
+
+* Troubleshooting
+- **401/403 from Browserless**: Verify your token and account. Ensure =BROWSERLESS_TOKEN= is set correctly in =mise.toml=.
+- **Timeouts**: The BQL query uses explicit timeouts. Slow responses may trigger retries; consider increasing timeouts in the query template if needed.
+- **Selector not found**: Spotify likely changed the DOM. Update the CSS selector in the =waitForSelector= and =evaluate= steps of the BQL query.
+- **jsonv2/experiment errors**: Ensure your Go version supports =GOEXPERIMENT=jsonv2=. If not, upgrade or adapt the code to use the standard =encoding/json= and remove the jsonv2 build gate.
+
+* Caveats & Ethics
+- **Token security**: Do not commit real tokens. Treat them as secrets and rotate if exposed.
+- **Website terms**: Ensure your usage complies with Spotify’s and Browserless’s terms of service. Be considerate with concurrency and request volume.
+- **Fragile selectors**: UI changes can break scraper logic; plan to maintain the selector and extraction code over time.
+
+* Roadmap Ideas
+- Make selector and timeouts configurable via flags.
+- Make selector and timeouts configurable via flags.
+- Add concurrency and rate-limit controls via flags.
+- Add CSV/NDJSON output modes alongside JSON.
+- Optional Spotify Web API path if appropriate for your use case.
+
+* Acknowledgements
+- [[https://www.browserless.io/][Browserless]] for headless Chromium and BQL.
+- Go team’s =encoding/json/v2= experiment and =jsontext= for formatting.
