@@ -27,6 +27,8 @@ type Config struct {
 	HTTPTimeout     time.Duration
 	MaxIdleConns    int
 	IdleConnTimeout time.Duration
+	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
+	LogSuccessfulFetches bool
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -39,12 +41,13 @@ func DefaultConfig() *Config {
 		ScrapingAntEndpoint: "https://api.scrapingant.com/v2/general",
 
 		// Shared defaults
-		MaxConcurrency:  1, // Keep at 1 due to free plan limitations
-		MaxRetries:      2,
-		RequestTimeout:  15 * time.Second,
-		HTTPTimeout:     30 * time.Second,
-		MaxIdleConns:    2, // Reduced since we're not using much concurrency
-		IdleConnTimeout: 90 * time.Second,
+		MaxConcurrency:       1, // Keep at 1 due to free plan limitations
+		MaxRetries:           2,
+		RequestTimeout:       15 * time.Second,
+		HTTPTimeout:          30 * time.Second,
+		MaxIdleConns:         2, // Reduced since we're not using much concurrency
+		IdleConnTimeout:      90 * time.Second,
+		LogSuccessfulFetches: false,
 	}
 }
 
@@ -83,6 +86,13 @@ func (c *Config) LoadFromEnv() error {
 	if retriesStr := os.Getenv("MAX_RETRIES"); retriesStr != "" {
 		if retries, err := strconv.Atoi(retriesStr); err == nil && retries >= 0 {
 			c.MaxRetries = retries
+		}
+	}
+
+	// Optional per-request success logging to avoid noisy production logs by default.
+	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
+		if logVal, err := strconv.ParseBool(logStr); err == nil {
+			c.LogSuccessfulFetches = logVal
 		}
 	}
 

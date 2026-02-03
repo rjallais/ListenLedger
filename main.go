@@ -20,6 +20,7 @@ import (
 const (
 	defaultInputFile  = "input.txt"
 	defaultOutputFile = "artist_stats.json"
+	defaultMissedFile = "missed.txt"
 )
 
 func main() {
@@ -93,7 +94,7 @@ func run(ctx context.Context) error {
 	fmt.Println("Starting to fetch listener data...")
 	startTime := time.Now()
 
-	newResults := fetcherService.FetchAll(ctx, artistIDsToFetch)
+	newResults, missedIDs := fetcherService.FetchAll(ctx, artistIDsToFetch)
 
 	duration := time.Since(startTime)
 	fmt.Printf("Fetching completed in %v\n", duration.Truncate(time.Second))
@@ -103,6 +104,14 @@ func run(ctx context.Context) error {
 		existing[artistID] = count
 	}
 
+	if len(missedIDs) > 0 {
+		if added, err := store.AppendMissedIDs(defaultMissedFile, missedIDs); err != nil {
+			log.Printf("warning: failed to record missed artist IDs: %v", err)
+		} else if added > 0 {
+			fmt.Printf("Recorded %d missed artist IDs in %s\n", added, defaultMissedFile)
+		}
+	}
+
 	// Save results
 	if err := store.SaveResults(defaultOutputFile, existing); err != nil {
 		return fmt.Errorf("failed to save results: %w", err)
@@ -110,6 +119,45 @@ func run(ctx context.Context) error {
 
 	fmt.Printf("Results successfully updated in %s\n", defaultOutputFile)
 	fmt.Printf("Total artists in database: %d\n", len(existing))
+
+	// Retry any missed IDs from previous runs and clean up successes.
+	missedToRetry, err := store.LoadOptionalArtistIDs(defaultMissedFile)
+	if err != nil {
+		log.Printf("warning: failed to load missed IDs for retry: %v", err)
+	} else if len(missedToRetry) > 0 {
+		fmt.Printf("Retrying %d missed artist IDs from %s...\n", len(missedToRetry), defaultMissedFile)
+		retryResults, retryMissed := fetcherService.FetchAll(ctx, missedToRetry)
+
+		if len(retryResults) > 0 {
+			for artistID, count := range retryResults {
+				existing[artistID] = count
+			}
+
+			if err := store.SaveResults(defaultOutputFile, existing); err != nil {
+				return fmt.Errorf("failed to save results after retry: %w", err)
+			}
+
+			fmt.Printf("Results successfully updated after retry in %s\n", defaultOutputFile)
+		}
+
+		retryMissedSet := make(map[string]struct{}, len(retryMissed))
+		for _, id := range retryMissed {
+			retryMissedSet[id] = struct{}{}
+		}
+
+		remaining := make([]string, 0, len(missedToRetry))
+		for _, id := range missedToRetry {
+			if _, ok := retryMissedSet[id]; ok {
+				remaining = append(remaining, id)
+			}
+		}
+
+		if err := store.SaveMissedIDs(defaultMissedFile, remaining); err != nil {
+			log.Printf("warning: failed to update missed IDs file: %v", err)
+		} else {
+			fmt.Printf("Missed IDs updated: %d remaining in %s\n", len(remaining), defaultMissedFile)
+		}
+	}
 
 	return nil
 }

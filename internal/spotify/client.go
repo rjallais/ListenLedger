@@ -7,18 +7,30 @@ import (
 	"MonthlyListeners/config"
 	"bytes"
 	"context"
-	"encoding/json/v2"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 )
 
+// Provider defines the service used to fetch listener data.
+type Provider int
+
+const (
+	// ProviderAny tries ScrapingAnt first, then Browserless.
+	ProviderAny Provider = iota
+	// ProviderBrowserless uses only Browserless.
+	ProviderBrowserless
+	// ProviderScrapingAnt uses only ScrapingAnt.
+	ProviderScrapingAnt
+)
+
 // ListenerFetcher defines the interface for fetching listener counts
 type ListenerFetcher interface {
-	FetchListenerCount(ctx context.Context, artistID string) (int, error)
+	FetchListenerCount(ctx context.Context, artistID string, provider Provider) (int, error)
 	Close() error
 }
 
@@ -26,9 +38,12 @@ type ListenerFetcher interface {
 type Client struct {
 	config *config.Config
 
-	// Shared HTTP client and concurrency limiter.
+	// Shared HTTP client
 	httpClient *http.Client
-	semaphore  chan struct{}
+
+	// Semaphores per provider to respect individual rate limits
+	semBrowserless chan struct{}
+	semScrapingAnt chan struct{}
 
 	// Providers
 	useBrowserless bool
@@ -72,41 +87,66 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	return &Client{
 		config:         cfg,
 		httpClient:     httpClient,
-		semaphore:      make(chan struct{}, cfg.MaxConcurrency),
+		semBrowserless: make(chan struct{}, cfg.MaxConcurrency), // Use MaxConcurrency for each provider for now
+		semScrapingAnt: make(chan struct{}, cfg.MaxConcurrency),
 		useBrowserless: useBrowserless,
 		useScrapingAnt: useScrapingAnt,
 	}, nil
 }
 
 // FetchListenerCount fetches the monthly listener count for an artist.
-// It tries Browserless first (if enabled) and falls back to ScrapingAnt when available.
-func (c *Client) FetchListenerCount(ctx context.Context, artistID string) (int, error) {
-	// Acquire semaphore slot
+// It uses the specified provider or falls back to the default strategy if ProviderAny is used.
+func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provider Provider) (int, error) {
+	switch provider {
+	case ProviderScrapingAnt:
+		if !c.useScrapingAnt {
+			return 0, fmt.Errorf("scrapingant not configured")
+		}
+		return c.fetchWithSemaphore(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
+
+	case ProviderBrowserless:
+		if !c.useBrowserless {
+			return 0, fmt.Errorf("browserless not configured")
+		}
+		return c.fetchWithSemaphore(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
+
+	case ProviderAny:
+		// Default strategy: Try ScrapingAnt first, then Browserless
+		if c.useScrapingAnt {
+			count, err := c.fetchWithSemaphore(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
+			if err == nil {
+				return count, nil
+			}
+			// If ScrapingAnt fails and Browserless is not available, return error
+			if !c.useBrowserless {
+				return 0, err
+			}
+		}
+
+		if c.useBrowserless {
+			return c.fetchWithSemaphore(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
+		}
+		return 0, fmt.Errorf("no scraping provider configured")
+
+	default:
+		return 0, fmt.Errorf("unknown provider strategy")
+	}
+}
+
+// fetchWithSemaphore executes a fetch function while respecting the given semaphore.
+func (c *Client) fetchWithSemaphore(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
 	select {
-	case c.semaphore <- struct{}{}:
-		defer func() { <-c.semaphore }()
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
 
-	// Prefer Browserless when configured.
-	if c.useBrowserless {
-		count, err := c.fetchViaBrowserless(ctx, artistID)
-		if err == nil {
-			return count, nil
-		}
-		// If ScrapingAnt is available, fall through to try it as a secondary provider.
-		if !c.useScrapingAnt {
-			return 0, err
-		}
+	count, err := fetchFunc(ctx, artistID)
+	if err == nil && c.config.LogSuccessfulFetches {
+		log.Printf("provider=%s artist=%s listeners=%d", providerName, artistID, count)
 	}
-
-	// Try ScrapingAnt when enabled (either as fallback or sole provider).
-	if c.useScrapingAnt {
-		return c.fetchViaScrapingAnt(ctx, artistID)
-	}
-
-	return 0, fmt.Errorf("no scraping provider configured (need Browserless and/or ScrapingAnt credentials)")
+	return count, err
 }
 
 func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int, error) {
@@ -249,6 +289,10 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	q.Set("url", url)
 	q.Set("x-api-key", c.config.ScrapingAntToken)
 	q.Set("browser", "true")
+	// Optimization: wait only for the monthly listeners element instead of full page load
+	q.Set("wait_for_selector", "span.VmDxGgs77HhmKczsLLBQ")
+	// Reduce response size by not returning full page source metadata
+	q.Set("return_page_source", "false")
 	req.URL.RawQuery = q.Encode()
 
 	req.Header.Set("User-Agent", "MonthlyListeners/1.0")
@@ -265,6 +309,17 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	}()
 
 	if resp.StatusCode != http.StatusOK {
+		// Attempt to read a small snippet of the response body for debugging.
+		// Limit the read to avoid consuming large bodies; ignore read errors here.
+		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		snippet := strings.TrimSpace(string(snippetBytes))
+		if snippet != "" {
+			// Truncate snippet to a reasonable length in case it's still large.
+			if len(snippet) > 400 {
+				snippet = snippet[:400] + "..."
+			}
+			return 0, fmt.Errorf("scrapingant unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
+		}
 		return 0, fmt.Errorf("scrapingant unexpected status code: %d", resp.StatusCode)
 	}
 

@@ -1,106 +1,77 @@
 #+TITLE: MonthlyListeners
-#+AUTHOR: 
+#+AUTHOR:
 #+OPTIONS: toc:t num:t
 
 * Overview
-MonthlyListeners is a small Go CLI that reads a list of Spotify artist IDs from =input.txt=, fetches each artist’s “monthly listeners” by driving a headless browser via Browserless BQL, and writes/merges the results into =artist_stats.json= as a map of =artistID -> count=.
+MonthlyListeners is a small Go CLI that reads a list of Spotify artist IDs from =input.txt=, fetches each artist’s “monthly listeners” count, and writes the results into =artist_stats.json=.
 
-It runs requests with a conservative concurrency limiter (effectively serial by default) and retries transient failures.
+It optimizes for throughput and cost by intelligently splitting the workload between two providers:
+- **Browserless** (using Headless Chrome/BQL)
+- **ScrapingAnt** (using HTML scraping)
+
+By default, if both providers are configured, it splits the work: even-indexed artist IDs go to Browserless, and odd-indexed IDs go to ScrapingAnt, effectively doubling the concurrency limit of free-tier plans.
 
 * How It Works
 - **Input**: One Spotify artist ID per line in =input.txt=. Empty lines are ignored.
-- **Fetch**: For each ID, a Browserless BQL mutation visits the artist page, waits for a specific selector, evaluates the page to find the text that contains “monthly listeners”, and returns it.
-- **Parse**: The program parses the leading integer (comma-separated) from the text, e.g., “1,234,567 monthly listeners”.
+- **Fetch Strategy**:
+  - **Dual Provider Mode**: If both =BROWSERLESS_TOKEN= and =SCRAPINGANT_TOKEN= are set, the application launches two concurrent workers. One worker processes even indices using Browserless, and the other processes odd indices using ScrapingAnt.
+  - **Single Provider Mode**: If only one token is provided, it uses that provider for all requests.
+  - **Fallback**: Within each provider's logic, retries are handled with exponential backoff.
+- **Parse**: The program extracts the listener count (e.g., "1,234,567") from the provider's response.
 - **Store**: Results are merged into =artist_stats.json=. Existing entries are updated; new ones are added.
-- **Reliability**: Each fetch retries up to 3 times with backoff and uses a channel-based semaphore to limit concurrent requests.
-
-Key selector currently used in the BQL query:
-- =span.Ydwa1P5GkCggtLlSvphs=
-
-If Spotify changes its DOM or class names, you will need to update the selector in the BQL query inside =main.go=.
+- **Reliability**: Each fetch retries up to 2 times (configurable) with backoff.
 
 * Repo Layout
-- =main.go=: program entry point and fetch/parse/save logic
-- =go.mod=: module config (targets a Go version with json/v2 experiment support)
-- =input.txt=: sample list of artist IDs (one per line)
-- =artist_stats.json=: output store (example file included)
-- =count.txt=: scratch/progress file from earlier experiments (not used by the program)
-- =MonthlyListeners=: a compiled binary may appear here after building (platform-dependent name)
+- =main.go=: program entry point
+- =config/=: configuration management
+- =internal/fetcher/=: orchestration logic (concurrency, retries)
+- =internal/spotify/=: client implementation for Browserless and ScrapingAnt
+- =internal/storage/=: file I/O for input and output
+- =go.mod=: module config
+- =input.txt=: sample list of artist IDs
 
 * Prerequisites
 - **Go toolchain** with support for the =jsonv2= experiment.
-  - The code is gated by the build tag =//go:build goexperiment.jsonv2= and imports =encoding/json/v2=.
-  - Build and run using the environment variable: =GOEXPERIMENT=jsonv2=.
-  - A recent Go toolchain (tip or a future stable with =jsonv2=) is recommended.
-- **Browserless** account and API token.
-  - The code posts to the Browserless Chromium BQL endpoint.
-  - You must provide a valid token. See “Configuration”.
-- **Network access** to Browserless and Spotify.
+  - Build/run using: =GOEXPERIMENT=jsonv2=.
+- **Provider Tokens**:
+  - =BROWSERLESS_TOKEN= (Required for Browserless)
+  - =SCRAPINGANT_TOKEN= (Required for ScrapingAnt)
 
 * Configuration
-Set your Browserless API token in =mise.toml= under the =[vars]= section:
+Set your API tokens in =mise.toml= under the =[env]= section (or export them in your shell):
 
 #+begin_src toml
-[vars]
+[env]
 PROJECT_NAME = "MonthlyListeners"
-BROWSERLESS_TOKEN = "your_browserless_token_here"
+BROWSERLESS_TOKEN = "your_browserless_token"
+SCRAPINGANT_TOKEN = "your_scrapingant_token"
+# Optional overrides
+MAX_CONCURRENCY = "1" # per provider
+MAX_RETRIES = "2"
 #+end_src
 
-Replace =your_browserless_token_here= with your actual Browserless token.
-
-Optional tweaks:
-- **Region/endpoint**: Change =production-sfo= to a different Browserless region if desired.
-- **Concurrency**: Increase the capacity of =concurrencyLimiter= in =main.go= to allow more parallel requests (mind rate limits and blocking).
-- **Selector**: If Spotify changes the UI, update the =waitForSelector= and the =evaluate= section in the BQL query to target the correct element.
-
-* Build
-Build with the =jsonv2= experiment enabled:
+* Build & Run
 
 #+begin_src sh
-# Build a binary
+# Build
 GOEXPERIMENT=jsonv2 go build -o MonthlyListeners .
 
-# Or run directly from source
-GOEXPERIMENT=jsonv2 go run .
-#+end_src
-
-If your Go toolchain does not recognize =jsonv2=, update to a newer version that supports the experiment. As a fallback, you can adapt the code to standard =encoding/json= and remove the build tag and json/v2 usage (not covered here).
-
-* Usage
-1) Put artist IDs in =input.txt=, one per line. Example:
-
-#+begin_example
-6TPJK8tv3AKKSsw0lENTQk
-0y7B2G0jNMGWyQJsOoRMUt
-2NMYOlZHIEsSq7pp5jBjic
-#+end_example
-
-2) Run the program:
-
-#+begin_src sh
+# Run
 GOEXPERIMENT=jsonv2 ./MonthlyListeners
-# …or…
-GOEXPERIMENT=jsonv2 go run .
 #+end_src
 
-3) Inspect output in =artist_stats.json=. It is a JSON object mapping artist IDs to integer counts. Example shape:
-
-#+begin_src json
-{
-  "0y7B2G0jNMGWyQJsOoRMUt": 5381527,
-  "2NMYOlZHIEsSq7pp5jBjic": 5043559
-}
+Using =mise=:
+#+begin_src sh
+mise run build
+mise run run
 #+end_src
-
-Notes:
-- Existing entries are updated in place; unknown IDs are added.
-- Errors for individual IDs are logged to stderr, and processing continues for others.
 
 * Troubleshooting
-- **401/403 from Browserless**: Verify your token and account. Ensure =BROWSERLESS_TOKEN= is set correctly in =mise.toml=.
-- **Timeouts**: The BQL query uses explicit timeouts. Slow responses may trigger retries; consider increasing timeouts in the query template if needed.
-- **Selector not found**: Spotify likely changed the DOM. Update the CSS selector in the =waitForSelector= and =evaluate= steps of the BQL query.
-- **jsonv2/experiment errors**: Ensure your Go version supports =GOEXPERIMENT=jsonv2=. If not, upgrade or adapt the code to use the standard =encoding/json= and remove the jsonv2 build gate.
+- **401/403 Errors**: Check your API tokens.
+- **Provider Logs**: successful fetches are logged with the provider name:
+  - =provider=scrapingant artist=... listeners=...=
+  - =provider=browserless artist=... listeners=...=
+
 
 * Caveats & Ethics
 - **Token security**: Do not commit real tokens. Treat them as secrets and rotate if exposed.
