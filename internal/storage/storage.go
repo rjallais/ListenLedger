@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -54,7 +55,7 @@ func (fs *FileStorage) loadArtistIDs(filename string, requireFile bool) ([]strin
 	}
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close file %s: %v\n", filename, closeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close file %s: %v\n", filename, closeErr)
 		}
 	}()
 
@@ -73,7 +74,7 @@ func (fs *FileStorage) loadArtistIDs(filename string, requireFile bool) ([]strin
 
 		// Basic validation of artist ID format (should be alphanumeric, 22 chars)
 		if len(line) != 22 {
-			fmt.Fprintf(os.Stderr, "warning: line %d has invalid artist ID format: %s\n", lineNum, line)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: line %d has invalid artist ID format: %s\n", lineNum, line)
 			continue
 		}
 
@@ -145,7 +146,7 @@ func (fs *FileStorage) SaveResults(filename string, results map[string]int) erro
 		// Clean up temporary file on failure
 		if removeErr := os.Remove(tempFile); removeErr != nil {
 			// Log but don't override the main error
-			fmt.Fprintf(os.Stderr, "warning: failed to remove temporary file %s: %v\n", tempFile, removeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to remove temporary file %s: %v\n", tempFile, removeErr)
 		}
 		return fmt.Errorf("failed to rename %s to %s: %w", tempFile, filename, err)
 	}
@@ -225,7 +226,7 @@ func (fs *FileStorage) AppendMissedIDs(filename string, ids []string) (int, erro
 	}
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close file %s: %v\n", filename, closeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close file %s: %v\n", filename, closeErr)
 		}
 	}()
 
@@ -276,7 +277,7 @@ func (fs *FileStorage) SaveMissedIDs(filename string, ids []string) error {
 
 	if err := os.Rename(tempFile, filename); err != nil {
 		if removeErr := os.Remove(tempFile); removeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to remove temporary file %s: %v\n", tempFile, removeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to remove temporary file %s: %v\n", tempFile, removeErr)
 		}
 		return fmt.Errorf("failed to rename %s to %s: %w", tempFile, filename, err)
 	}

@@ -53,12 +53,10 @@ func DefaultConfig() *Config {
 
 // LoadFromEnv loads configuration from environment variables
 func (c *Config) LoadFromEnv() error {
-	// Browserless token (required to enable Browserless integration)
-	browserlessToken := os.Getenv("BROWSERLESS_TOKEN")
-	if browserlessToken == "" {
-		return errors.New("BROWSERLESS_TOKEN environment variable not set")
+	// Browserless token (optional; when set, Browserless can be used)
+	if browserlessToken := os.Getenv("BROWSERLESS_TOKEN"); browserlessToken != "" {
+		c.BrowserlessToken = browserlessToken
 	}
-	c.BrowserlessToken = browserlessToken
 
 	// Optional override for Browserless endpoint
 	if endpoint := os.Getenv("BROWSERLESS_ENDPOINT"); endpoint != "" {
@@ -99,12 +97,21 @@ func (c *Config) LoadFromEnv() error {
 	return nil
 }
 
+// HasBrowserless returns true if Browserless is configured.
+func (c *Config) HasBrowserless() bool {
+	return c.BrowserlessToken != "" && c.BrowserlessEndpoint != ""
+}
+
+// HasScrapingAnt returns true if ScrapingAnt is configured.
+func (c *Config) HasScrapingAnt() bool {
+	return c.ScrapingAntToken != "" && c.ScrapingAntEndpoint != ""
+}
+
 // Validate ensures the configuration is valid
 func (c *Config) Validate() error {
-	// For now, Browserless is required as the primary provider.
-	// ScrapingAnt is optional and used when SCRAPINGANT_TOKEN is set.
-	if c.BrowserlessToken == "" {
-		return errors.New("browserless token is required")
+	// At least one provider must be configured.
+	if c.BrowserlessToken == "" && c.ScrapingAntToken == "" {
+		return errors.New("at least one provider token (BROWSERLESS_TOKEN or SCRAPINGANT_TOKEN) must be set")
 	}
 	if c.MaxConcurrency <= 0 {
 		return errors.New("max concurrency must be positive")

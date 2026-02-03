@@ -7,6 +7,7 @@ import (
 	"MonthlyListeners/config"
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"log"
@@ -81,8 +82,8 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 
 	// Determine which providers are available based on configuration.
-	useBrowserless := cfg.BrowserlessToken != "" && cfg.BrowserlessEndpoint != ""
-	useScrapingAnt := cfg.ScrapingAntToken != "" && cfg.ScrapingAntEndpoint != ""
+	useBrowserless := cfg.HasBrowserless()
+	useScrapingAnt := cfg.HasScrapingAnt()
 
 	return &Client{
 		config:         cfg,
@@ -161,7 +162,7 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close browserless response body: %v\n", closeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close browserless response body: %v\n", closeErr)
 		}
 	}()
 
@@ -216,23 +217,18 @@ func (c *Client) buildBQLQuery(artistID string) string {
 			rejectRequests: reject(type: [image, font, media]) { enabled }
 			artistPage: goto(
 			  url: "https://open.spotify.com/artist/%s",
-			  waitUntil: firstMeaningfulPaint,
+			  waitUntil: networkIdle,
 			) { status }
-			waitForListenersText: waitForSelector(
-			  selector: "span.VmDxGgs77HhmKczsLLBQ",
-			  timeout: 3000
-			) { time }
 			getListeners: evaluate(
 			  content: """
 				JSON.stringify(
-					Array.from(
-						document.querySelectorAll('span.VmDxGgs77HhmKczsLLBQ')
-						)
-					.map(e => e.textContent)
-					.find(t => t.includes('monthly listeners')) || 'Not found'
-					)
+					Array.from(document.querySelectorAll('span'))
+					  .map(e => e.textContent && e.textContent.trim())
+					  .filter(Boolean)
+					  .find(t => /monthly listeners/i.test(t)) || ""
+				)
 			  """,
-			  timeout: 2500
+			  timeout: 4000
 			) { value }
 		}
 	`, opName, int(c.config.RequestTimeout.Milliseconds()), artistID)
@@ -247,27 +243,29 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 
 	raw := rsp.Data.GetListeners.Value
 	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
-		raw = raw[1 : len(raw)-1] // Remove surrounding quotes more efficiently
+		raw = raw[1 : len(raw)-1]
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("browserless: empty listeners value")
+	}
+	lower := strings.ToLower(raw)
+	if !strings.Contains(lower, "monthly listeners") {
+		return 0, fmt.Errorf("browserless: 'monthly listeners' text not found in %q", raw)
 	}
 
-	// Find the first space to split number from "monthly listeners"
+	// Format is expected to be "<number> monthly listeners"
 	spaceIdx := strings.IndexByte(raw, ' ')
 	if spaceIdx == -1 {
-		return 0, fmt.Errorf("unexpected format: no space found in %q", raw)
+		return 0, fmt.Errorf("browserless: unexpected format %q", raw)
 	}
-
 	numberStr := raw[:spaceIdx]
-
-	// Remove commas more efficiently - avoid strings.Builder for small strings
-	if strings.ContainsRune(numberStr, ',') {
-		numberStr = strings.ReplaceAll(numberStr, ",", "")
-	}
+	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
 	count, err := strconv.Atoi(numberStr)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse Browserless listener count %q: %w", numberStr, err)
+		return 0, fmt.Errorf("browserless: failed to parse number %q: %w", numberStr, err)
 	}
-
 	return count, nil
 }
 
@@ -289,10 +287,11 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	q.Set("url", url)
 	q.Set("x-api-key", c.config.ScrapingAntToken)
 	q.Set("browser", "true")
-	// Optimization: wait only for the monthly listeners element instead of full page load
-	q.Set("wait_for_selector", "span.VmDxGgs77HhmKczsLLBQ")
-	// Reduce response size by not returning full page source metadata
-	q.Set("return_page_source", "false")
+	// Optimization: wait for a stable element that indicates the artist page has loaded.
+	// We include the known monthly listeners class and a fallback to h1.
+	q.Set("wait_for_selector", "[data-testid='artist-page'], h1, span.OfUgH_tIc38f08wU")
+	// Ensure we get the full page source for our text-based parsing logic.
+	q.Set("return_page_source", "true")
 	req.URL.RawQuery = q.Encode()
 
 	req.Header.Set("User-Agent", "MonthlyListeners/1.0")
@@ -304,7 +303,7 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close ScrapingAnt response body: %v\n", closeErr)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close ScrapingAnt response body: %v\n", closeErr)
 		}
 	}()
 
