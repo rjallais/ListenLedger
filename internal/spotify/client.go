@@ -15,14 +15,19 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Provider defines the service used to fetch listener data.
 type Provider int
 
 const (
-	// ProviderAny tries ScrapingAnt first, then Browserless.
+	// ProviderAny tries Local headless first, then Browserless, then ScrapingAnt.
 	ProviderAny Provider = iota
+	// ProviderLocalHeadless uses local chromedp.
+	ProviderLocalHeadless
 	// ProviderBrowserless uses only Browserless.
 	ProviderBrowserless
 	// ProviderScrapingAnt uses only ScrapingAnt.
@@ -43,12 +48,17 @@ type Client struct {
 	httpClient *http.Client
 
 	// Semaphores per provider to respect individual rate limits
+	semLocal       chan struct{}
 	semBrowserless chan struct{}
 	semScrapingAnt chan struct{}
 
 	// Providers
+	useLocal       atomic.Bool
 	useBrowserless bool
 	useScrapingAnt bool
+
+	local   *localBrowser
+	localMu sync.Mutex
 }
 
 // responseData represents the Browserless/BQL API response structure
@@ -85,53 +95,103 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	useBrowserless := cfg.HasBrowserless()
 	useScrapingAnt := cfg.HasScrapingAnt()
 
-	return &Client{
+	client := &Client{
 		config:         cfg,
 		httpClient:     httpClient,
-		semBrowserless: make(chan struct{}, cfg.MaxConcurrency), // Use MaxConcurrency for each provider for now
+		semLocal:       make(chan struct{}, cfg.LocalConcurrency),
+		semBrowserless: make(chan struct{}, cfg.MaxConcurrency),
 		semScrapingAnt: make(chan struct{}, cfg.MaxConcurrency),
 		useBrowserless: useBrowserless,
 		useScrapingAnt: useScrapingAnt,
-	}, nil
+	}
+
+	client.initLocalHeadless()
+
+	return client, nil
 }
 
 // FetchListenerCount fetches the monthly listener count for an artist.
 // It uses the specified provider or falls back to the default strategy if ProviderAny is used.
 func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provider Provider) (int, error) {
 	switch provider {
+	case ProviderLocalHeadless:
+		if !c.useLocal.Load() {
+			return 0, fmt.Errorf("local headless not configured")
+		}
+		return c.fetchWithProvider(ctx, artistID, c.semLocal, c.fetchViaLocalHeadless, "local")
+
 	case ProviderScrapingAnt:
 		if !c.useScrapingAnt {
 			return 0, fmt.Errorf("scrapingant not configured")
 		}
-		return c.fetchWithSemaphore(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
+		return c.fetchWithProvider(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
 
 	case ProviderBrowserless:
 		if !c.useBrowserless {
 			return 0, fmt.Errorf("browserless not configured")
 		}
-		return c.fetchWithSemaphore(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
+		return c.fetchWithProvider(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
 
 	case ProviderAny:
-		// Default strategy: Try ScrapingAnt first, then Browserless
-		if c.useScrapingAnt {
-			count, err := c.fetchWithSemaphore(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
+		// Default strategy: Local headless -> Browserless -> ScrapingAnt
+		providerErrors := make([]string, 0, 3)
+
+		if c.useLocal.Load() {
+			count, err := c.fetchWithProvider(ctx, artistID, c.semLocal, c.fetchViaLocalHeadless, "local")
 			if err == nil {
 				return count, nil
 			}
-			// If ScrapingAnt fails and Browserless is not available, return error
-			if !c.useBrowserless {
-				return 0, err
+			providerErrors = append(providerErrors, fmt.Sprintf("local: %v", err))
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
 			}
 		}
 
 		if c.useBrowserless {
-			return c.fetchWithSemaphore(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
+			count, err := c.fetchWithProvider(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
+			if err == nil {
+				return count, nil
+			}
+			providerErrors = append(providerErrors, fmt.Sprintf("browserless: %v", err))
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+		}
+
+		if c.useScrapingAnt {
+			count, err := c.fetchWithProvider(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
+			if err == nil {
+				return count, nil
+			}
+			providerErrors = append(providerErrors, fmt.Sprintf("scrapingant: %v", err))
+		}
+
+		if len(providerErrors) > 0 {
+			return 0, fmt.Errorf("all providers failed (%s)", strings.Join(providerErrors, "; "))
 		}
 		return 0, fmt.Errorf("no scraping provider configured")
 
 	default:
 		return 0, fmt.Errorf("unknown provider strategy")
 	}
+}
+
+func (c *Client) fetchWithProvider(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
+	timeout := c.config.RequestTimeout
+	if providerName == "scrapingant" {
+		timeout = 60 * time.Second
+	}
+
+	var requestCtx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		requestCtx, cancel = context.WithCancel(ctx)
+	}
+	defer cancel()
+
+	return c.fetchWithSemaphore(requestCtx, artistID, sem, fetchFunc, providerName)
 }
 
 // fetchWithSemaphore executes a fetch function while respecting the given semaphore.
@@ -166,6 +226,9 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 		}
 	}()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return 0, fmt.Errorf("browserless quota exceeded (401)")
+	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("browserless unexpected status code: %d", resp.StatusCode)
 	}
@@ -201,7 +264,7 @@ func (c *Client) buildBrowserlessRequest(ctx context.Context, artistID string) (
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "MonthlyListeners/1.0")
+	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
 	return req, nil
@@ -255,11 +318,11 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 	}
 
 	// Format is expected to be "<number> monthly listeners"
-	spaceIdx := strings.IndexByte(raw, ' ')
-	if spaceIdx == -1 {
+	before, _, ok := strings.Cut(raw, " ")
+	if !ok {
 		return 0, fmt.Errorf("browserless: unexpected format %q", raw)
 	}
-	numberStr := raw[:spaceIdx]
+	numberStr := before
 	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
 	count, err := strconv.Atoi(numberStr)
@@ -287,14 +350,11 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	q.Set("url", url)
 	q.Set("x-api-key", c.config.ScrapingAntToken)
 	q.Set("browser", "true")
-	// Optimization: wait for a stable element that indicates the artist page has loaded.
-	// We include the known monthly listeners class and a fallback to h1.
-	q.Set("wait_for_selector", "[data-testid='artist-page'], h1, span.OfUgH_tIc38f08wU")
-	// Ensure we get the full page source for our text-based parsing logic.
-	q.Set("return_page_source", "true")
+	// Note: Do NOT set return_page_source=true as it disables JS rendering.
+	// The monthly listeners text is dynamically rendered and appears in the HTML.
 	req.URL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", "MonthlyListeners/1.0")
+	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := c.httpClient.Do(req)
@@ -342,10 +402,7 @@ func (c *Client) parseScrapingAntHTML(body []byte) (int, error) {
 	}
 
 	// Scan backwards from idx to find a reasonable boundary for the number.
-	start := idx - 80
-	if start < 0 {
-		start = 0
-	}
+	start := max(idx-80, 0)
 	segment := html[start:idx]
 
 	// Find the last sequence of digits/commas in the segment.
@@ -380,6 +437,9 @@ func (c *Client) parseScrapingAntHTML(body []byte) (int, error) {
 
 // Close closes the HTTP client and releases resources.
 func (c *Client) Close() error {
+	if c.local != nil {
+		c.local.Close()
+	}
 	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
 	}
