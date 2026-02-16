@@ -51,40 +51,23 @@ func (s *Service) FetchAll(ctx context.Context, artistIDs []string) (map[string]
 		missedMu.Unlock()
 	}
 
-	// Determine availability of providers
-	hasBrowserless := s.config.BrowserlessToken != ""
-	hasScrapingAnt := s.config.ScrapingAntToken != ""
+	workerCount := s.config.LocalConcurrency
+	if workerCount <= 0 {
+		workerCount = 1
+	}
 
-	// Strategy:
-	// If both providers are available, split work 2:1 (Browserless:ScrapingAnt).
-	// If only one is available, use that one for all.
+	jobs := make(chan string)
 
-	// Helper to process a subset of artists with a specific provider
-	processSubset := func(indices []int, provider spotify.Provider, name string) {
+	worker := func() {
 		defer wg.Done()
-
-		count := 0
-		total := len(indices)
-
-		for i, idx := range indices {
-			if idx >= len(artistIDs) {
-				continue
-			}
-			artistID := artistIDs[idx]
-
-			// Progress logging
-			if i > 0 && i%5 == 0 {
-				fmt.Printf("[%s] Progress: %d/%d assigned artists processed\n", name, i, total)
-			}
-
-			// Check context
+		for artistID := range jobs {
 			if ctx.Err() != nil {
 				return
 			}
 
-			val, err := s.fetchWithRetry(ctx, artistID, provider)
+			val, err := s.fetchWithRetry(ctx, artistID, spotify.ProviderAny)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] failed to fetch %s: %v\n", name, artistID, err)
+				_, _ = fmt.Fprintf(os.Stderr, "[fetcher] failed to fetch %s: %v\n", artistID, err)
 				recordMiss(artistID)
 				continue
 			}
@@ -92,49 +75,22 @@ func (s *Service) FetchAll(ctx context.Context, artistIDs []string) (map[string]
 			mu.Lock()
 			results[artistID] = val
 			mu.Unlock()
-			count++
 		}
-		fmt.Printf("[%s] Completed. Successfully fetched %d/%d\n", name, count, total)
 	}
 
-	if hasBrowserless && hasScrapingAnt {
-		var browserlessIndices, scrapingAntIndices []int
-		for i := range artistIDs {
-			// 2:1 split: indices 0,3,6,... -> ScrapingAnt; others -> Browserless.
-			if i%3 == 0 {
-				scrapingAntIndices = append(scrapingAntIndices, i)
-				continue
-			}
-			browserlessIndices = append(browserlessIndices, i)
-		}
-
-		wg.Add(2)
-		go processSubset(browserlessIndices, spotify.ProviderBrowserless, "Browserless")
-		go processSubset(scrapingAntIndices, spotify.ProviderScrapingAnt, "ScrapingAnt")
-
-	} else {
-		// Single provider mode
-		provider := spotify.ProviderAny // Let the client decide default fallback
-		providerName := "Default"
-		if hasBrowserless {
-			provider = spotify.ProviderBrowserless
-			providerName = "Browserless"
-		} else if hasScrapingAnt {
-			provider = spotify.ProviderScrapingAnt
-			providerName = "ScrapingAnt"
-		}
-
-		fmt.Printf("Single provider mode (%s). Processing serially/concurrently based on limits.\n", providerName)
-
-		// Create a list of all indices
-		indices := make([]int, len(artistIDs))
-		for i := range artistIDs {
-			indices[i] = i
-		}
-
-		wg.Add(1)
-		processSubset(indices, provider, providerName)
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
 	}
+
+	for _, id := range artistIDs {
+		select {
+		case <-ctx.Done():
+			break
+		case jobs <- id:
+		}
+	}
+	close(jobs)
 
 	wg.Wait()
 	return results, missed
@@ -155,10 +111,7 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 			}
 		}
 
-		// Create context with timeout for this specific request
-		requestCtx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
-		count, err := s.client.FetchListenerCount(requestCtx, artistID, provider)
-		cancel()
+		count, err := s.client.FetchListenerCount(ctx, artistID, provider)
 
 		if err == nil {
 			return count, nil
