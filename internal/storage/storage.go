@@ -27,11 +27,6 @@ type Storage interface {
 // FileStorage implements file-based storage
 type FileStorage struct{}
 
-// NewFileStorage creates a new file storage instance
-func NewFileStorage() *FileStorage {
-	return &FileStorage{}
-}
-
 // LoadArtistIDs reads artist IDs from a file, with improved performance
 // G304: Potential file inclusion via variable - this is acceptable as we control the filename
 func (fs *FileStorage) LoadArtistIDs(filename string) ([]string, error) {

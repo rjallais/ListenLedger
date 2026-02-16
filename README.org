@@ -1,64 +1,63 @@
-#+TITLE: MonthlyListeners
+#+TITLE: WebMusicCollection
 #+AUTHOR:
 #+OPTIONS: toc:t num:t
 
 * Overview
-MonthlyListeners is a small Go CLI that reads a list of Spotify artist IDs from =input.txt=, fetches each artist’s “monthly listeners” count, and writes the results into =artist_stats.json=.
+WebMusicCollection is a Go web dashboard for managing a Spotify music collection and refreshing monthly listener counts. It runs PocketBase with embedded NATS and serves a Templ + Datastar UI.
 
-It optimizes for throughput and cost by intelligently splitting the workload between two providers:
-- **Browserless** (using Headless Chrome/BQL)
-- **ScrapingAnt** (using HTML scraping)
+* Features
+- Albums, artists, and songs dashboards
+- Add Song flow from =/songs= (modal posts to =/api/songs= and prepends the new row)
+- On-demand refresh per artist with SSE updates
+- Provider-aware scraping: local headless (chromedp), Browserless, ScrapingAnt
+- Quota check endpoint at =/api/quota=
+- CSV seed support from =Music - Sheet1.csv= and =Music - Sheet2.csv=
 
-By default, if both providers are configured, it splits the work: even-indexed artist IDs go to Browserless, and odd-indexed IDs go to ScrapingAnt, effectively doubling the concurrency limit of free-tier plans.
+* Adding Songs
+Open =/songs=, click =Add Song=, then submit song name, release, release year, and artist Spotify IDs (comma-separated).
+The server validates each artist Spotify ID and infers artist names from Spotify before saving.
 
-* How It Works
-- **Input**: One Spotify artist ID per line in =input.txt=. Empty lines are ignored.
-- **Fetch Strategy**:
-  - **Dual Provider Mode**: If both =BROWSERLESS_TOKEN= and =SCRAPINGANT_TOKEN= are set, the application launches two concurrent workers. One worker processes even indices using Browserless, and the other processes odd indices using ScrapingAnt.
-  - **Single Provider Mode**: If only one token is provided, it uses that provider for all requests.
-  - **Fallback**: Within each provider's logic, retries are handled with exponential backoff.
-- **Parse**: The program extracts the listener count (e.g., "1,234,567") from the provider's response.
-- **Store**: Results are merged into =artist_stats.json=. Existing entries are updated; new ones are added.
-- **Reliability**: Each fetch retries up to 2 times (configurable) with backoff.
-
-* Repo Layout
-- =main.go=: program entry point
-- =config/=: configuration management
-- =internal/fetcher/=: orchestration logic (concurrency, retries)
-- =internal/spotify/=: client implementation for Browserless and ScrapingAnt
-- =internal/storage/=: file I/O for input and output
-- =go.mod=: module config
-- =input.txt=: sample list of artist IDs
-
-* Prerequisites
-- **Go toolchain** with support for the =jsonv2= experiment.
-  - Build/run using: =GOEXPERIMENT=jsonv2=.
-- **Provider Tokens**:
-  - =BROWSERLESS_TOKEN= (Required for Browserless)
-  - =SCRAPINGANT_TOKEN= (Required for ScrapingAnt)
+* Architecture
+- =main.go= bootstraps PocketBase, embedded NATS, routes, and the worker
+- =internal/handlers/= HTTP + SSE endpoints
+- =internal/worker/= NATS consumer for =scrape.request=
+- =internal/fetcher/= retries and orchestration
+- =internal/spotify/= provider clients
+- =pb_schema.json= schema export for collections
 
 * Configuration
-Set your API tokens in =mise.toml= under the =[env]= section (or export them in your shell):
+Set env vars (via =mise= or your shell):
 
 #+begin_src toml
 [env]
-PROJECT_NAME = "MonthlyListeners"
+PROJECT_NAME = "WebMusicCollection"
 BROWSERLESS_TOKEN = "your_browserless_token"
 SCRAPINGANT_TOKEN = "your_scrapingant_token"
 # Optional overrides
-MAX_CONCURRENCY = "1" # per provider
+BROWSERLESS_ENDPOINT = "https://production-sfo.browserless.io/chromium/bql"
+SCRAPINGANT_ENDPOINT = "https://api.scrapingant.com/v2/general"
+LOCAL_HEADLESS_ENABLED = "true"
+LOCAL_CHROME_PATH = "C:\\Path\\To\\chrome.exe"
+LOCAL_CONCURRENCY = "8"
+MAX_CONCURRENCY = "1"
 MAX_RETRIES = "2"
+LOG_SUCCESSFUL_FETCHES = "false"
+PB_DATA_DIR = "pb_data"
 #+end_src
 
-* Build & Run
+At least one provider must be configured, or keep local headless enabled.
+Data is stored in =pb_data/= at the repo root by default; override with =PB_DATA_DIR=.
 
+* Build and Run
 #+begin_src sh
-# Build
-GOEXPERIMENT=jsonv2 go build -o MonthlyListeners .
+GOEXPERIMENT=jsonv2 go run .
 
-# Run
-GOEXPERIMENT=jsonv2 ./MonthlyListeners
+# or build
+GOEXPERIMENT=jsonv2 go build -o WebMusicCollection .
+GOEXPERIMENT=jsonv2 ./WebMusicCollection
 #+end_src
+
+The web UI is served on PocketBase's default port (usually http://127.0.0.1:8090). Admin UI: =/_/=.
 
 Using =mise=:
 #+begin_src sh
@@ -66,25 +65,28 @@ mise run build
 mise run run
 #+end_src
 
+* Development
+- Templ: =go tool templ generate=
+- Tailwind: =go tool gotailwind -i input.css -o static/styles.css=
+- Data lives in =pb_data/=. Backups can be made via =cmd/safebackup=.
+
+* CLI Utilities
+- =cmd/update_listeners=: bulk refresh using chromedp with priority ordering.
+  Example:
+#+begin_src sh
+GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners --concurrency 5 --headless=true --limit 0
+#+end_src
+- =cmd/safebackup=: VACUUM INTO backup for SQLite.
+#+begin_src sh
+go run ./cmd/safebackup --db pb_data/data.db --out backups
+#+end_src
+
 * Troubleshooting
-- **401/403 Errors**: Check your API tokens.
-- **Provider Logs**: successful fetches are logged with the provider name:
-  - =provider=scrapingant artist=... listeners=...=
-  - =provider=browserless artist=... listeners=...=
-
-
-* Caveats & Ethics
-- **Token security**: Do not commit real tokens. Treat them as secrets and rotate if exposed.
-- **Website terms**: Ensure your usage complies with Spotify’s and Browserless’s terms of service. Be considerate with concurrency and request volume.
-- **Fragile selectors**: UI changes can break scraper logic; plan to maintain the selector and extraction code over time.
+- =encoding/json/v2= errors: ensure =GOEXPERIMENT=jsonv2=.
+- Provider 401/403/429: verify tokens and quotas.
+- Local headless errors: set =LOCAL_CHROME_PATH= or disable with =LOCAL_HEADLESS_ENABLED=false=.
 
 * Roadmap Ideas
-- Make selector and timeouts configurable via flags.
-- Make selector and timeouts configurable via flags.
-- Add concurrency and rate-limit controls via flags.
-- Add CSV/NDJSON output modes alongside JSON.
-- Optional Spotify Web API path if appropriate for your use case.
-
-* Acknowledgements
-- [[https://www.browserless.io/][Browserless]] for headless Chromium and BQL.
-- Go team’s =encoding/json/v2= experiment and =jsontext= for formatting.
+- JSON-first parsing for scraping providers.
+- Configurable provider priority.
+- Automated batch scheduling for periodic refreshes.

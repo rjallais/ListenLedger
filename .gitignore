@@ -22,6 +22,21 @@ main_original.go
 .mise.local.toml
 spotify_scraper/artist_stats.json
 
+# Build artifacts and temp files
+bin/
+tmp/
+pb_data/
+static/styles.css
+node_modules/
+.air.toml
+MonthlyListeners
+update_listeners
+seed
+backups/
+
+# CSV data files (user-specific)
+Music - Sheet*.csv
+
 # Python caches
 __pycache__/
 *.py[cod]
