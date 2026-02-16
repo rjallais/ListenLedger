@@ -31,8 +31,10 @@ node_modules/
 .air.toml
 MonthlyListeners
 update_listeners
-seed
+/seed
 backups/
+server.log
+pb_schema.json
 
 # CSV data files (user-specific)
 Music - Sheet*.csv
@@ -47,3 +49,8 @@ __pycache__/
 .vscode/
 *.swp
 *.swo
+
+# AI tooling (user-specific)
+/AGENTS.md
+.gemini/
+.agents/
