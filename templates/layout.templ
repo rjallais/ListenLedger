@@ -1,0 +1,155 @@
+package templates
+
+// Base layout template with navigation
+templ Layout(title string, activeNav string) {
+	<!DOCTYPE html>
+	<html
+		lang="en"
+		data-theme="dark"
+		data-signals:theme="localStorage.getItem('theme') || 'dark'"
+		data-attr:data-theme="$theme"
+		data-effect="localStorage.setItem('theme', $theme)"
+	>
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title } - Music Collection</title>
+			<!-- DaisyUI component styles -->
+			<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css"/>
+			<!-- Local compiled Tailwind utilities + custom styles -->
+			<link href="/static/styles.css" rel="stylesheet" type="text/css"/>
+			<!-- Datastar for reactivity -->
+			<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"></script>
+		</head>
+		<body class="min-h-screen bg-base-200">
+			@Navbar(activeNav)
+			<main class="container mx-auto p-4 md:p-6">
+				{ children... }
+			</main>
+		</body>
+	</html>
+}
+
+// Navbar component
+templ Navbar(activeNav string) {
+	<div class="navbar bg-base-100 shadow-lg sticky top-0 z-50">
+		<!-- Logo -->
+		<div class="navbar-start">
+			<a href="/" class="btn btn-ghost text-xl gap-2">
+				<span>🎵</span>
+				<span class="hidden sm:inline">Music Collection</span>
+			</a>
+		</div>
+		<!-- Center Navigation -->
+		<div class="navbar-center">
+			<ul class="menu menu-horizontal px-1 gap-1">
+				@NavLink("/albums", "📀", "Albums", activeNav == "albums")
+				@NavLink("/artists", "🎤", "Artists", activeNav == "artists")
+				@NavLink("/songs", "🎵", "Songs", activeNav == "songs")
+				@NavLinkExternal("/_/", "⚙️", "Admin")
+			</ul>
+		</div>
+		<!-- Right Side -->
+		<div class="navbar-end gap-2">
+			@ThemeSwitcher()
+			@QueueJobsWidget()
+			@SSEIndicator()
+		</div>
+	</div>
+}
+
+// NavLink renders a navigation link
+templ NavLink(href, icon, label string, active bool) {
+	<li>
+		<a href={ templ.SafeURL(href) } class={ "gap-2", templ.KV("nav-active", active) }>
+			{ icon }
+			<span class="hidden md:inline">{ label }</span>
+		</a>
+	</li>
+}
+
+// NavLinkExternal renders an external navigation link
+templ NavLinkExternal(href, icon, label string) {
+	<li>
+		<a href={ templ.SafeURL(href) } target="_blank" class="gap-2">
+			{ icon }
+			<span class="hidden md:inline">{ label }</span>
+		</a>
+	</li>
+}
+
+// ThemeSwitcher renders the theme dropdown
+templ ThemeSwitcher() {
+	<div class="dropdown dropdown-end">
+		<div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path>
+			</svg>
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+			</svg>
+		</div>
+		<div tabindex="0" class="dropdown-content z-[100] p-4 shadow-2xl bg-base-200 rounded-box w-80 max-h-[28rem] overflow-y-auto">
+			<div class="text-sm font-semibold opacity-60 mb-2">Dark Themes</div>
+			<div class="grid grid-cols-2 gap-1 mb-3">
+				for _, theme := range DarkThemes {
+					@ThemeButton(theme)
+				}
+			</div>
+			<div class="divider my-1"></div>
+			<div class="text-sm font-semibold opacity-60 mb-2">Light Themes</div>
+			<div class="grid grid-cols-2 gap-1">
+				for _, theme := range LightThemes {
+					@ThemeButton(theme)
+				}
+			</div>
+		</div>
+	</div>
+}
+
+// ThemeButton renders a single theme button
+templ ThemeButton(theme Theme) {
+	<button
+		class="btn btn-sm btn-ghost justify-start gap-2 theme-option"
+		data-theme={ theme.Value }
+		data-on:click={ "$theme = '" + theme.Value + "'" }
+		data-class:active={ "$theme === '" + theme.Value + "'" }
+	>
+		{ theme.Icon } { theme.Name }
+	</button>
+}
+
+// SSEIndicator shows the live connection status
+templ SSEIndicator() {
+	<div class="flex items-center gap-2" data-init="@get('/api/events')">
+		<span class="badge badge-success badge-xs" id="sse-indicator"></span>
+		<span class="text-sm opacity-70 hidden sm:inline">Live</span>
+	</div>
+}
+
+// QueueJobsWidget shows lightweight queue + job health stats (polled via Datastar SSE).
+templ QueueJobsWidget() {
+	<div
+		class="hidden lg:flex items-center gap-2"
+		data-signals="{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsProcessing:0,jobsFailed:0}"
+		data-init="@get('/api/queue')"
+		data-on-interval__5s="@get('/api/queue')"
+	>
+		<span class="badge badge-outline badge-sm font-mono" title="JetStream pending messages">
+			Q:<span data-text="$queuePending">0</span>
+		</span>
+		<span class="badge badge-outline badge-sm font-mono" title="In-flight (unacked) messages">
+			A:<span data-text="$queueAckPending">0</span>
+		</span>
+		<span class="badge badge-outline badge-sm font-mono" title="Jobs queued / processing / failed">
+			J:<span data-text="$jobsQueued">0</span>/<span data-text="$jobsProcessing">0</span>/<span data-text="$jobsFailed">0</span>
+		</span>
+		<span
+			class="badge badge-error badge-sm font-mono"
+			title="Redelivered (unacked) messages"
+			data-show="$queueRedelivered > 0"
+		>
+			R:<span data-text="$queueRedelivered">0</span>
+		</span>
+	</div>
+}
