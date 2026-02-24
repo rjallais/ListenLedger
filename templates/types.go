@@ -86,6 +86,11 @@ type Song struct {
 	Title       string
 	ArtistName  string
 	ReleaseDate string
+	ReleaseType string // "album", "ep", "single"
+	Album       string
+	IsRecent    bool
+	BatchSeq    int
+	BatchPos    int
 }
 
 // Pagination holds pagination state

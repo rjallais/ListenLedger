@@ -20,10 +20,32 @@ const (
 	ScrapeRequestDedupWindow = 30 * time.Second
 	// ScrapeWorkerConsumerName is the durable consumer name for scrape jobs.
 	ScrapeWorkerConsumerName = "SCRAPE_WORKER"
+	// ScrapeWorkerBrowserlessConsumerName is the durable consumer for Browserless jobs.
+	ScrapeWorkerBrowserlessConsumerName = "SCRAPE_WORKER_BROWSERLESS"
+	// ScrapeWorkerScrapingAntConsumerName is the durable consumer for ScrapingAnt jobs.
+	ScrapeWorkerScrapingAntConsumerName = "SCRAPE_WORKER_SCRAPINGANT"
+	// ScrapeWorkerScraperAPIConsumerName is the durable consumer for ScraperAPI jobs.
+	ScrapeWorkerScraperAPIConsumerName = "SCRAPE_WORKER_SCRAPERAPI"
+	// ScrapeWorkerApifyConsumerName is the durable consumer for Apify jobs.
+	ScrapeWorkerApifyConsumerName = "SCRAPE_WORKER_APIFY"
+	// ScrapeWorkerLocalConsumerName is the durable consumer for local headless jobs.
+	ScrapeWorkerLocalConsumerName = "SCRAPE_WORKER_LOCAL"
 
 	// EventsStreamName is the JetStream stream used for replayable domain events.
 	EventsStreamName = "EVENTS"
 )
+
+// ScrapeWorkerConsumerNames returns all known scrape consumer durables.
+func ScrapeWorkerConsumerNames() []string {
+	return []string{
+		ScrapeWorkerConsumerName,
+		ScrapeWorkerBrowserlessConsumerName,
+		ScrapeWorkerScrapingAntConsumerName,
+		ScrapeWorkerScraperAPIConsumerName,
+		ScrapeWorkerApifyConsumerName,
+		ScrapeWorkerLocalConsumerName,
+	}
+}
 
 // NewJetStream creates a JetStream context from an existing NATS connection.
 func NewJetStream(nc *nats.Conn) (jetstream.JetStream, error) {
@@ -34,7 +56,7 @@ func NewJetStream(nc *nats.Conn) (jetstream.JetStream, error) {
 func EnsureScrapeRequestStream(ctx context.Context, js jetstream.JetStream) error {
 	cfg := jetstream.StreamConfig{
 		Name:       ScrapeRequestsStreamName,
-		Subjects:   []string{SubjectScrapeRequest},
+		Subjects:   []string{SubjectScrapeRequest, SubjectScrapeRequestWildcard},
 		Retention:  jetstream.WorkQueuePolicy,
 		Storage:    jetstream.FileStorage,
 		Discard:    jetstream.DiscardOld,
@@ -106,9 +128,18 @@ func ScrapeRequestMsgID(artistID string) string {
 
 // PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
 func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID string) (*jetstream.PubAck, error) {
+	return PublishScrapeRequestedToSubject(ctx, js, req, msgID, SubjectScrapeRequest)
+}
+
+// PublishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
+func PublishScrapeRequestedToSubject(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID, subject string) (*jetstream.PubAck, error) {
 	data, err := MarshalScrapeRequested(req)
 	if err != nil {
 		return nil, err
+	}
+
+	if subject == "" {
+		subject = SubjectScrapeRequest
 	}
 
 	opts := make([]jetstream.PublishOpt, 0, 1)
@@ -116,7 +147,7 @@ func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req Scr
 		opts = append(opts, jetstream.WithMsgID(msgID))
 	}
 
-	ack, err := js.Publish(ctx, SubjectScrapeRequest, data, opts...)
+	ack, err := js.Publish(ctx, subject, data, opts...)
 	if err != nil {
 		return nil, err
 	}

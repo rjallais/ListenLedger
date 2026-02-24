@@ -130,14 +130,15 @@ func upsertSongsCollection(app core.App) error {
 			&core.NumberField{Name: "release_year", OnlyInt: true, Min: float64Ptr(0)},
 			&core.TextField{
 				Name:    "spotify_id",
-				Min:     22,
-				Max:     22,
-				Pattern: "^[A-Za-z0-9]{22}$",
+				Pattern: `^$|^[A-Za-z0-9]{22}$`,
 			},
 			&core.BoolField{Name: "is_recent"},
+			&core.NumberField{Name: "recent_batch_seq", OnlyInt: true, Min: float64Ptr(0)},
+			&core.NumberField{Name: "recent_batch_pos", OnlyInt: true, Min: float64Ptr(0)},
 		)
 
 		c.AddIndex("idx_songs_is_recent_release_date", false, "`is_recent`, `release_date`", "")
+		c.AddIndex("idx_songs_recent_batch_seq", false, "`is_recent`, `recent_batch_seq`", "")
 		c.AddIndex("idx_songs_artist_name", false, "`artist_name`", "")
 		c.AddIndex("idx_songs_spotify_id_unique", true, "`spotify_id`", "`spotify_id` != ''")
 	})

@@ -23,6 +23,36 @@ type Config struct {
 	ScrapingAntToken    string
 	ScrapingAntEndpoint string
 
+	// ScraperAPI configuration
+	ScraperAPIToken           string
+	ScraperAPIEndpoint        string
+	ScraperAPIConcurrency     int
+	ScraperAPIWaitForSelector string
+
+	// Apify configuration
+	ApifyToken    string
+	ApifyEndpoint string
+	ApifyActorID  string
+
+	// ApifyMemoryMB is the RAM (in MB) allocated per Actor run.
+	// Spotify is a JS-heavy SPA; empirically each concurrent Chrome tab peaks at
+	// ~360 MB, but the Crawlee v3 autoscaler limits actual concurrency to ~3–7
+	// tabs regardless of this setting. The allocation primarily governs CPU: Apify
+	// provisions ~1 vCPU per 4096 MB, so 8192 MB → 2 vCPUs.
+	ApifyMemoryMB int
+
+	// ApifyMaxConcurrency is the maximum number of browser pages the Actor
+	// opens simultaneously within a single run.
+	// Note: apify~puppeteer-scraper does not expose minConcurrency; the Crawlee
+	// autoscaler always ramps from desiredConcurrency=1 at ~5%/10s, reaching a
+	// stable level of ~3–7 concurrent tabs on an 8 GB Actor.
+	ApifyMaxConcurrency int
+
+	// ApifyBatchSize is the number of artist URLs sent in one Actor run.
+	// Setting it equal to ApifyMaxConcurrency means all URLs in a batch are
+	// processed concurrently (one "wave"), which is the most efficient option.
+	ApifyBatchSize int
+
 	// Local headless (chromedp) configuration
 	LocalHeadlessEnabled bool
 	LocalChromePath      string
@@ -53,6 +83,31 @@ func DefaultConfig() *Config {
 
 		// ScrapingAnt defaults
 		ScrapingAntEndpoint: "https://api.scrapingant.com/v2/general",
+
+		// ScraperAPI defaults
+		ScraperAPIEndpoint: "https://api.scraperapi.com",
+		// ScraperAPI supports up to 5 concurrent threads on compatible plans.
+		ScraperAPIConcurrency:     5,
+		ScraperAPIWaitForSelector: "span",
+
+		// Apify defaults
+		ApifyEndpoint: "https://api.apify.com/v2/acts",
+		// puppeteer-scraper exposes the raw Puppeteer `page` object in the
+		// pageFunction context, which is required for waitForFunction/evaluate.
+		// web-scraper only exposes jQuery/Cheerio and does not have context.page.
+		ApifyActorID: "apify~puppeteer-scraper",
+		// 8 GB: use the full allocation Apify provides.
+		// Note: the Crawlee v3 autoscaler in apify~puppeteer-scraper starts at
+		// desiredConcurrency=1 and ramps ~5% per 10 s regardless of maxConcurrency;
+		// minConcurrency is not exposed in the input schema. Empirically this yields
+		// ~7 artists/min throughput on 8 GB. Memory peaks at ~1.8 GB for 5 concurrent
+		// tabs; the 8 GB allocation primarily provides 2 vCPUs rather than memory.
+		ApifyMemoryMB: 8192,
+		// 5 concurrent pages: matches the autoscaler's stable concurrency under
+		// normal load without overwhelming the 2 vCPUs the 8 GB allocation provides.
+		ApifyMaxConcurrency: 5,
+		// One batch = one "wave" of concurrent pages; all 5 URLs load in parallel.
+		ApifyBatchSize: 5,
 
 		// Local headless defaults
 		// Disabled by default on WSL since Linux Chrome is typically not installed and Windows Chrome causes popup windows
@@ -97,6 +152,60 @@ func (c *Config) LoadFromEnv() error {
 	// Optional override for ScrapingAnt endpoint
 	if scrapingAntEndpoint := os.Getenv("SCRAPINGANT_ENDPOINT"); scrapingAntEndpoint != "" {
 		c.ScrapingAntEndpoint = scrapingAntEndpoint
+	}
+
+	// ScraperAPI token (optional; when set, ScraperAPI can be used)
+	if scraperAPIToken := os.Getenv("SCRAPERAPI_TOKEN"); scraperAPIToken != "" {
+		c.ScraperAPIToken = scraperAPIToken
+	}
+
+	// Optional override for ScraperAPI endpoint
+	if scraperAPIEndpoint := os.Getenv("SCRAPERAPI_ENDPOINT"); scraperAPIEndpoint != "" {
+		c.ScraperAPIEndpoint = scraperAPIEndpoint
+	}
+	if concStr := os.Getenv("SCRAPERAPI_CONCURRENCY"); concStr != "" {
+		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
+			c.ScraperAPIConcurrency = conc
+		}
+	}
+	if selector := os.Getenv("SCRAPERAPI_WAIT_FOR_SELECTOR"); selector != "" {
+		c.ScraperAPIWaitForSelector = selector
+	}
+
+	// Apify token (optional; when set, Apify can be used as a provider)
+	if apifyToken := os.Getenv("APIFY_TOKEN"); apifyToken != "" {
+		c.ApifyToken = apifyToken
+	}
+
+	// Optional override for Apify endpoint
+	if apifyEndpoint := os.Getenv("APIFY_ENDPOINT"); apifyEndpoint != "" {
+		c.ApifyEndpoint = apifyEndpoint
+	}
+
+	// Optional override for Apify Actor ID
+	if apifyActorID := os.Getenv("APIFY_ACTOR_ID"); apifyActorID != "" {
+		c.ApifyActorID = apifyActorID
+	}
+
+	// Apify memory allocation per run (MB)
+	if memStr := os.Getenv("APIFY_MEMORY_MB"); memStr != "" {
+		if mem, err := strconv.Atoi(memStr); err == nil && mem > 0 {
+			c.ApifyMemoryMB = mem
+		}
+	}
+
+	// Maximum concurrent browser pages per Actor run
+	if concStr := os.Getenv("APIFY_MAX_CONCURRENCY"); concStr != "" {
+		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
+			c.ApifyMaxConcurrency = conc
+		}
+	}
+
+	// Number of artist URLs per Actor run (batch size)
+	if batchStr := os.Getenv("APIFY_BATCH_SIZE"); batchStr != "" {
+		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 {
+			c.ApifyBatchSize = batch
+		}
 	}
 
 	// Local headless settings
@@ -192,11 +301,21 @@ func (c *Config) HasScrapingAnt() bool {
 	return c.ScrapingAntToken != "" && c.ScrapingAntEndpoint != ""
 }
 
+// HasScraperAPI returns true if ScraperAPI is configured.
+func (c *Config) HasScraperAPI() bool {
+	return c.ScraperAPIToken != "" && c.ScraperAPIEndpoint != ""
+}
+
+// HasApify returns true if Apify is configured.
+func (c *Config) HasApify() bool {
+	return c.ApifyToken != "" && c.ApifyEndpoint != "" && c.ApifyActorID != ""
+}
+
 // Validate ensures the configuration is valid
 func (c *Config) Validate() error {
 	// At least one provider must be configured, or local headless must be enabled.
-	if !c.HasLocalHeadless() && c.BrowserlessToken == "" && c.ScrapingAntToken == "" {
-		return errors.New("at least one provider token (BROWSERLESS_TOKEN or SCRAPINGANT_TOKEN) must be set, or enable local headless")
+	if !c.HasLocalHeadless() && c.BrowserlessToken == "" && c.ScrapingAntToken == "" && c.ScraperAPIToken == "" && c.ApifyToken == "" {
+		return errors.New("at least one provider token (BROWSERLESS_TOKEN, SCRAPINGANT_TOKEN, SCRAPERAPI_TOKEN, or APIFY_TOKEN) must be set, or enable local headless")
 	}
 	if c.MaxConcurrency <= 0 {
 		return errors.New("max concurrency must be positive")
@@ -206,6 +325,9 @@ func (c *Config) Validate() error {
 	}
 	if c.LocalConcurrency <= 0 {
 		return errors.New("local concurrency must be positive")
+	}
+	if c.ScraperAPIConcurrency <= 0 {
+		return errors.New("scraperapi concurrency must be positive")
 	}
 	return nil
 }

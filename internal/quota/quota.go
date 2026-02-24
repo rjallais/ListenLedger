@@ -13,14 +13,24 @@ import (
 	"time"
 )
 
+// ApifyUserResponse represents the Apify account/user API response.
+type ApifyUserResponse struct {
+	Data struct {
+		Plan struct {
+			MonthlyUsageCreditsUSD float64 `json:"monthlyUsageCreditsUsd"`
+			MaxMonthlyUsageUSD     float64 `json:"maxMonthlyUsageUsd"`
+		} `json:"plan"`
+	} `json:"data"`
+}
+
 // Info represents the quota status for a provider.
 type Info struct {
 	Provider        string `json:"provider"`
 	Available       bool   `json:"available"`
 	RemainingCredit int    `json:"remaining_credits"`
 	TotalCredits    int    `json:"total_credits"`
-	PlanName        string `json:"plan_name,omitempty"`
-	Error           string `json:"error,omitempty"`
+	PlanName        string `json:"plan_name,omitzero"`
+	Error           string `json:"error,omitzero"`
 }
 
 // ScrapingAntUsageResponse represents the ScrapingAnt usage API response.
@@ -56,8 +66,16 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
 	}
 
+	if c.cfg.HasScraperAPI() {
+		results["scraperapi"] = c.CheckScraperAPI()
+	}
+
 	if c.cfg.HasBrowserless() {
 		results["browserless"] = c.CheckBrowserless()
+	}
+
+	if c.cfg.HasApify() {
+		results["apify"] = c.CheckApify(ctx)
 	}
 
 	return results
@@ -141,6 +159,117 @@ func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 	}
 }
 
+// CheckScraperAPI checks the quota for ScraperAPI.
+// ScraperAPI free tier usage is dashboard-only; we assume availability if configured.
+func (c *Checker) CheckScraperAPI() Info {
+	if !c.cfg.HasScraperAPI() {
+		return Info{
+			Provider:  "scraperapi",
+			Available: false,
+			Error:     "ScraperAPI not configured",
+		}
+	}
+
+	return Info{
+		Provider:  "scraperapi",
+		Available: true,
+		Error:     "ScraperAPI usage API not integrated; quota assumed available",
+	}
+}
+
+// CheckApify checks the quota for Apify by calling the account info endpoint.
+// It maps the USD usage/limit values to a credit-like integer (cents) for
+// a consistent Info representation across providers.
+func (c *Checker) CheckApify(ctx context.Context) Info {
+	if !c.cfg.HasApify() {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     "Apify not configured",
+		}
+	}
+
+	url := fmt.Sprintf("https://api.apify.com/v2/users/me?token=%s", c.cfg.ApifyToken)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("failed to create request: %v", err),
+		}
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("request failed: %v", err),
+		}
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode),
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(body)),
+		}
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("failed to read response: %v", err),
+		}
+	}
+
+	var userResp ApifyUserResponse
+	if err := json.Unmarshal(body, &userResp); err != nil {
+		return Info{
+			Provider:  "apify",
+			Available: false,
+			Error:     fmt.Sprintf("failed to parse response: %v", err),
+		}
+	}
+
+	usedUSD := userResp.Data.Plan.MonthlyUsageCreditsUSD
+	maxUSD := userResp.Data.Plan.MaxMonthlyUsageUSD
+
+	// Convert USD values to integer cents for the shared Info representation.
+	usedCents := int(usedUSD * 100)
+	maxCents := int(maxUSD * 100)
+	remainingCents := maxCents - usedCents
+	if remainingCents < 0 {
+		remainingCents = 0
+	}
+
+	// Consider available if the account has any remaining budget.
+	// Each Actor run costs at minimum a fraction of a cent, so any positive
+	// remaining balance means we can still run tasks.
+	available := remainingCents > 0 || maxCents == 0 // maxCents==0 means unlimited/pay-as-you-go
+
+	return Info{
+		Provider:        "apify",
+		Available:       available,
+		RemainingCredit: remainingCents,
+		TotalCredits:    maxCents,
+	}
+}
+
 // CheckBrowserless checks the quota for Browserless.
 // Note: Browserless does not have a public API for checking quota.
 // We assume it's available if configured and return a placeholder response.
@@ -175,17 +304,27 @@ func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 }
 
 // GetBestProvider returns the provider with the most remaining credits.
-// For Browserless (which doesn't report credits), it returns it only if
-// no ScrapingAnt credits are available.
+// Priority order: ScrapingAnt (if credits remain) -> ScraperAPI ->
+// Apify (if credits remain) ->
+// Browserless (assumed available when configured, no usage API).
 func (c *Checker) GetBestProvider(ctx context.Context) string {
 	quotas := c.CheckAll(ctx)
 
-	// Prefer ScrapingAnt if it has credits
+	// Prefer ScrapingAnt if it has credits.
 	if sa, ok := quotas["scrapingant"]; ok && sa.Available && sa.RemainingCredit > 0 {
 		return "scrapingant"
 	}
 
-	// Fall back to Browserless
+	if scraperAPI, ok := quotas["scraperapi"]; ok && scraperAPI.Available {
+		return "scraperapi"
+	}
+
+	// Try Apify next if it has remaining budget.
+	if ap, ok := quotas["apify"]; ok && ap.Available && ap.RemainingCredit > 0 {
+		return "apify"
+	}
+
+	// Fall back to Browserless (quota assumed available when configured).
 	if bl, ok := quotas["browserless"]; ok && bl.Available {
 		return "browserless"
 	}

@@ -228,14 +228,12 @@ func canStartFromGo(path string) bool {
 		return true
 	}
 
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if _, ok := errors.AsType[*exec.ExitError](err); ok {
 		// Command executed and exited non-zero, but executable is runnable.
 		return true
 	}
 
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
+	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
 		if errors.Is(pathErr.Err, syscall.EACCES) || errors.Is(pathErr.Err, syscall.ENOEXEC) {
 			return false
 		}

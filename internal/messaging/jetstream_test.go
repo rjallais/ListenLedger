@@ -16,7 +16,7 @@ import (
 func TestScrapeStreamDedupAndDurability(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "nats-store")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	ns := startTestNATSServer(t, storeDir)
@@ -97,7 +97,7 @@ func TestScrapeStreamDedupAndDurability(t *testing.T) {
 func TestScrapeWorkerConsumerFetchAfterRestart(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "nats-store")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	ns := startTestNATSServer(t, storeDir)
@@ -186,7 +186,7 @@ func TestScrapeWorkerConsumerFetchAfterRestart(t *testing.T) {
 func TestScrapeDLQStreamDurability(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "nats-store")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	ns := startTestNATSServer(t, storeDir)
@@ -234,7 +234,7 @@ func TestScrapeDLQStreamDurability(t *testing.T) {
 func TestEventsStreamDurability(t *testing.T) {
 	storeDir := filepath.Join(t.TempDir(), "nats-store")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	ns := startTestNATSServer(t, storeDir)

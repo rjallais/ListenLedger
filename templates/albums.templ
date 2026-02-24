@@ -296,6 +296,26 @@ templ NewAlbumEntry(album Album) {
 	}
 }
 
+templ AddAlbumSuccessNotice(albumTitle string) {
+	<div id="add-album-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<p class="font-semibold">Album added</p>
+				<p class="text-xs">{ albumTitle }</p>
+			</div>
+			<label for="add-album-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewAlbumCreateResponse(album Album) {
+	@NewAlbumEntry(album)
+	@AddAlbumSuccessNotice(album.Title)
+}
+
 // AlbumStatusTransition moves an album between sections after a status change.
 templ AlbumStatusTransition(oldStatus string, album Album) {
 	if oldStatus == "waiting" {
@@ -319,7 +339,10 @@ templ AddAlbumModal() {
 	<input type="checkbox" id="add-album-modal" class="modal-toggle"/>
 	<div class="modal modal-bottom sm:modal-middle">
 		<div class="modal-box">
-			<h3 class="font-bold text-lg mb-4">Add New Album</h3>
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Album</h3>
+				<label for="add-album-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
 			<form
 				id="add-album-form"
 				data-on:submit="evt.preventDefault(); @post('/api/albums', {contentType: 'form'})"
@@ -406,6 +429,7 @@ templ AddAlbumModal() {
 					</button>
 				</div>
 			</form>
+			<div id="add-album-feedback" class="mt-2"></div>
 		</div>
 		<label class="modal-backdrop" for="add-album-modal">Close</label>
 	</div>

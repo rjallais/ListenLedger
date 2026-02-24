@@ -1529,7 +1529,7 @@ func AddArtistModal(currentGenre string) templ.Component {
 			templ_7745c5c3_Var77 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 109, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><h3 class=\"font-bold text-lg mb-4\">Add New Artist</h3><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\"><!-- Artist Name --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <label><input type=\"text\" name=\"name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></label></div><!-- Artist ID (Spotify ID) --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <label><input type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" required></label></div><!-- Genre Group --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Genre Group</span></label> <label><select name=\"genre_group\" class=\"select select-bordered w-full\"><option value=\"rock_metal\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 109, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Artist</h3><label for=\"add-artist-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\"><!-- Artist Name --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <label><input type=\"text\" name=\"name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></label></div><!-- Artist ID (Spotify ID) --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <label><input type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" required></label></div><!-- Genre Group --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Genre Group</span></label> <label><select name=\"genre_group\" class=\"select select-bordered w-full\"><option value=\"rock_metal\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1549,7 +1549,7 @@ func AddArtistModal(currentGenre string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, ">🎵 Everything Else</option></select></label></div><!-- List Status --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Initial Status</span></label> <label><select name=\"list_status\" class=\"select select-bordered w-full\"><option value=\"recently_added\" selected>Recently Added</option> <option value=\"included\">Included</option> <option value=\"not_added\">Not Added</option> <option value=\"waiting\">Waiting (Queue)</option></select></label></div><!-- Optional: Monthly Listeners and Collection Songs in a row --><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Monthly Listeners</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"monthly_listeners\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Collection Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div></div><!-- Actions --><div class=\"modal-action\"><label for=\"add-artist-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-5 w-5\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M12 6v6m0 0v6m0-6h6m-6 0H6\"></path></svg> Add Artist</button></div></form></div><label class=\"modal-backdrop\" for=\"add-artist-modal\">Close</label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, ">🎵 Everything Else</option></select></label></div><!-- List Status --><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Initial Status</span></label> <label><select name=\"list_status\" class=\"select select-bordered w-full\"><option value=\"recently_added\" selected>Recently Added</option> <option value=\"included\">Included</option> <option value=\"not_added\">Not Added</option> <option value=\"waiting\">Waiting (Queue)</option></select></label></div><!-- Optional: Monthly Listeners and Collection Songs in a row --><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Monthly Listeners</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"monthly_listeners\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Collection Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div></div><!-- Actions --><div class=\"modal-action\"><label for=\"add-artist-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-5 w-5\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M12 6v6m0 0v6m0-6h6m-6 0H6\"></path></svg> Add Artist</button></div></form><div id=\"add-artist-feedback\" class=\"mt-2\"></div></div><label class=\"modal-backdrop\" for=\"add-artist-modal\">Close</label></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1586,7 +1586,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var79 string
 		templ_7745c5c3_Var79, templ_7745c5c3_Err = templ.JoinStringErrs("artists-tbody-" + artist.GenreGroup)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 561, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 565, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var79))
 		if templ_7745c5c3_Err != nil {
@@ -1599,7 +1599,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var80 string
 		templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinStringErrs("artist-" + artist.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 562, Col: 32}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 566, Col: 32}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 		if templ_7745c5c3_Err != nil {
@@ -1612,7 +1612,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var81 string
 		templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(artistSignalsJSON(artist))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 562, Col: 97}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 566, Col: 97}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 		if templ_7745c5c3_Err != nil {
@@ -1625,7 +1625,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var82 string
 		templ_7745c5c3_Var82, templ_7745c5c3_Err = templ.JoinStringErrs(artist.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 563, Col: 40}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 567, Col: 40}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var82))
 		if templ_7745c5c3_Err != nil {
@@ -1638,7 +1638,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var83 string
 		templ_7745c5c3_Var83, templ_7745c5c3_Err = templ.JoinStringErrs("artist-listeners-" + artist.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 566, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 570, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var83))
 		if templ_7745c5c3_Err != nil {
@@ -1651,7 +1651,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var84 string
 		templ_7745c5c3_Var84, templ_7745c5c3_Err = templ.JoinStringErrs(artistListenerSignal(artist.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 567, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 571, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var84))
 		if templ_7745c5c3_Err != nil {
@@ -1664,7 +1664,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var85 string
 		templ_7745c5c3_Var85, templ_7745c5c3_Err = templ.JoinStringErrs(FormatNumber(artist.MonthlyListeners))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 568, Col: 44}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 572, Col: 44}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var85))
 		if templ_7745c5c3_Err != nil {
@@ -1685,7 +1685,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var86 string
 		templ_7745c5c3_Var86, templ_7745c5c3_Err = templ.JoinStringErrs("@post('/api/artists/" + artist.ID + "/collection/dec')")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 579, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 583, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var86))
 		if templ_7745c5c3_Err != nil {
@@ -1699,7 +1699,7 @@ func NewArtistRow(artist Artist) templ.Component {
 			var templ_7745c5c3_Var87 string
 			templ_7745c5c3_Var87, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d/%d", artist.CollectionSongs, artist.TotalSongs))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 588, Col: 72}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 592, Col: 72}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var87))
 			if templ_7745c5c3_Err != nil {
@@ -1709,7 +1709,7 @@ func NewArtistRow(artist Artist) templ.Component {
 			var templ_7745c5c3_Var88 string
 			templ_7745c5c3_Var88, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", artist.CollectionSongs))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 590, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 594, Col: 50}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var88))
 			if templ_7745c5c3_Err != nil {
@@ -1723,7 +1723,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var89 string
 		templ_7745c5c3_Var89, templ_7745c5c3_Err = templ.JoinStringErrs("@post('/api/artists/" + artist.ID + "/collection/inc')")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 595, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 599, Col: 78}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var89))
 		if templ_7745c5c3_Err != nil {
@@ -1736,7 +1736,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var90 string
 		templ_7745c5c3_Var90, templ_7745c5c3_Err = templ.JoinStringErrs("artist-updated-" + artist.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 606, Col: 39}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 610, Col: 39}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var90))
 		if templ_7745c5c3_Err != nil {
@@ -1749,7 +1749,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var91 string
 		templ_7745c5c3_Var91, templ_7745c5c3_Err = templ.JoinStringErrs(artistUpdatedSignal(artist.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 607, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 611, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var91))
 		if templ_7745c5c3_Err != nil {
@@ -1762,7 +1762,7 @@ func NewArtistRow(artist Artist) templ.Component {
 		var templ_7745c5c3_Var92 string
 		templ_7745c5c3_Var92, templ_7745c5c3_Err = templ.JoinStringErrs(artist.LastUpdated)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 608, Col: 25}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 612, Col: 25}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var92))
 		if templ_7745c5c3_Err != nil {
@@ -1784,6 +1784,81 @@ func NewArtistRow(artist Artist) templ.Component {
 	})
 }
 
+func AddArtistSuccessNotice(artistName string) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var93 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var93 == nil {
+			templ_7745c5c3_Var93 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 130, "<div id=\"add-artist-feedback\" class=\"mt-2\" data-merge-mode=\"morph\"><div class=\"alert alert-success\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-5 w-5\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M5 13l4 4L19 7\"></path></svg><div class=\"flex-1\"><p class=\"font-semibold\">Artist added</p><p class=\"text-xs\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var94 string
+		templ_7745c5c3_Var94, templ_7745c5c3_Err = templ.JoinStringErrs(artistName)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 629, Col: 35}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var94))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 131, "</p></div><label for=\"add-artist-modal\" class=\"btn btn-success btn-sm\">Close</label></div></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+func NewArtistCreateResponse(artist Artist) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var95 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var95 == nil {
+			templ_7745c5c3_Var95 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = NewArtistRow(artist).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = AddArtistSuccessNotice(artist.Name).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
 func artistSignalsJSON(artist Artist) string {
 	return fmt.Sprintf(
 		`{"artistListeners":{%q:%d},"artistUpdated":{%q:%q},"artistFetchStatus":{%q:%q}}`,
@@ -1797,7 +1872,7 @@ func artistSignalsJSON(artist Artist) string {
 }
 
 func artistListenerSignal(artistID string) string {
-	return fmt.Sprintf("$artistListeners[%q]", artistID)
+	return fmt.Sprintf("($artistListeners[%q] ?? 0).toLocaleString('en-US')", artistID)
 }
 
 func artistUpdatedSignal(artistID string) string {
@@ -1824,12 +1899,12 @@ func BatchRefreshModal() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var93 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var93 == nil {
-			templ_7745c5c3_Var93 = templ.NopComponent
+		templ_7745c5c3_Var96 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var96 == nil {
+			templ_7745c5c3_Var96 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 130, "<input type=\"checkbox\" id=\"batch-refresh-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" data-signals-batchTotal=\"0\" data-signals-batchCompleted=\"0\"><div class=\"modal-box\"><h3 class=\"font-bold text-lg mb-4\">Batch Refresh Artists</h3><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last hour are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-on:submit=\"evt.preventDefault(); @post('/api/refresh/batch', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select name=\"count\" class=\"select select-bordered w-full\"><option value=\"5\">5 artists</option> <option value=\"10\" selected>10 artists</option> <option value=\"25\">25 artists</option> <option value=\"50\">50 artists</option> <option value=\"100\">100 artists</option></select> <label class=\"label\"><span class=\"label-text-alt text-base-content/60\">Higher counts use more scraping quota</span></label></div><div class=\"modal-action\"><label for=\"batch-refresh-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary\">Start Refresh</button></div></form><div id=\"batch-refresh-result\"></div></div><label class=\"modal-backdrop\" for=\"batch-refresh-modal\"></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 132, "<input type=\"checkbox\" id=\"batch-refresh-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" data-signals=\"{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false}\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Batch Refresh Artists</h3><label for=\"batch-refresh-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-on:submit=\"evt.preventDefault(); if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } @post('/api/refresh/batch', {contentType: 'form'})\"><input type=\"hidden\" name=\"batch_id\" data-bind=\"$batchID\"><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select name=\"count\" class=\"select select-bordered w-full\"><option value=\"5\">5 artists</option> <option value=\"10\" selected>10 artists</option> <option value=\"25\">25 artists</option> <option value=\"50\">50 artists</option> <option value=\"100\">100 artists</option></select> <label class=\"label\"><span class=\"label-text-alt text-base-content/60\">Higher counts use more scraping quota</span></label></div><div class=\"modal-action\"><label for=\"batch-refresh-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary\">Start Refresh</button></div></form><div id=\"batch-refresh-result\"></div></div><label class=\"modal-backdrop\" for=\"batch-refresh-modal\"></label></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1837,7 +1912,7 @@ func BatchRefreshModal() templ.Component {
 	})
 }
 
-func BatchRefreshResult(queued int, stats map[string]int) templ.Component {
+func BatchRefreshResult(batchID string, queued int, completed int, stats map[string]int, done bool) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -1853,90 +1928,139 @@ func BatchRefreshResult(queued int, stats map[string]int) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var94 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var94 == nil {
-			templ_7745c5c3_Var94 = templ.NopComponent
+		templ_7745c5c3_Var97 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var97 == nil {
+			templ_7745c5c3_Var97 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 131, "<div id=\"batch-refresh-result\" class=\"mt-4\"><div class=\"alert alert-success\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-6 w-6\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z\"></path></svg><div class=\"flex-1\"><h4 class=\"font-bold\">Batch Refresh Queued</h4><div class=\"text-sm\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var95 string
-		templ_7745c5c3_Var95, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d artists queued for refresh", queued))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 689, Col: 59}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var95))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 132, "<div class=\"mt-1 text-xs text-success-content\">P0 (queued): ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var96 string
-		templ_7745c5c3_Var96, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P0_Queued"]))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 691, Col: 58}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var96))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 133, " | P1-P2 (recent): ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var97 string
-		templ_7745c5c3_Var97, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P1_RockRecent"]+stats["P2_OtherRecent"]))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 692, Col: 89}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var97))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 134, " | P3-P4 (not added): ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 133, "<div id=\"batch-refresh-result\" class=\"mt-4\" data-batch-done=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var98 string
-		templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P3_RockNotAdded"]+stats["P4_OtherNotAdded"]))
+		templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%t", done))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 693, Col: 96}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 709, Col: 86}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var98))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 135, " | P5-P6 (included): ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 134, "\"><div class=\"alert alert-warning\" data-show=\"$batchTotal === 0\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-6 w-6\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M12 8v4m0 4h.01M5 3h14l2 3v12l-2 3H5l-2-3V6l2-3z\"></path></svg><div class=\"flex-1\"><h4 class=\"font-bold\">No Artists Queued</h4><p class=\"text-sm\">No eligible artists were queued in this attempt.</p></div><label for=\"batch-refresh-modal\" class=\"btn btn-warning btn-sm\">Close</label></div><div class=\"alert alert-info\" data-show=\"$batchTotal > 0 && !$batchDone\"><span class=\"loading loading-spinner loading-sm\"></span><div class=\"flex-1\"><h4 class=\"font-bold\">Batch Refresh Running</h4><div class=\"text-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var99 string
-		templ_7745c5c3_Var99, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P5_RockIncluded"]+stats["P6_OtherIncluded"]))
+		templ_7745c5c3_Var99, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d artists queued for refresh", queued))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 694, Col: 95}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 725, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var99))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 136, "</div></div></div></div><div class=\"mt-3\"><div class=\"flex items-center justify-between text-xs text-base-content/70 mb-1\"><span data-text=\"'Progress: ' + $batchCompleted + ' / ' + $batchTotal\"></span> <span data-show=\"$batchTotal > 0\" data-text=\"Math.round($batchCompleted / $batchTotal * 100) + '%'\"></span></div><progress class=\"progress progress-primary w-full\" data-attr=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 135, "<div class=\"mt-1 text-xs\">P0 (queued): ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var100 string
-		templ_7745c5c3_Var100, templ_7745c5c3_Err = templ.JoinStringErrs("{'value': $batchCompleted, 'max': $batchTotal}")
+		templ_7745c5c3_Var100, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P0_Queued"]))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 704, Col: 113}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 727, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var100))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 137, "\"></progress></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 136, " | P1-P2 (recent): ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var101 string
+		templ_7745c5c3_Var101, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P1_RockRecent"]+stats["P2_OtherRecent"]))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 728, Col: 89}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var101))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 137, " | P3-P4 (not added): ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var102 string
+		templ_7745c5c3_Var102, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P3_RockNotAdded"]+stats["P4_OtherNotAdded"]))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 729, Col: 96}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var102))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 138, " | P5-P6 (included): ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var103 string
+		templ_7745c5c3_Var103, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", stats["P5_RockIncluded"]+stats["P6_OtherIncluded"]))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 730, Col: 95}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var103))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 139, "</div></div></div><label for=\"batch-refresh-modal\" class=\"btn btn-ghost btn-sm\">Close</label></div><div class=\"alert alert-success\" data-show=\"$batchTotal > 0 && $batchDone\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-6 w-6\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M5 13l4 4L19 7\"></path></svg><div class=\"flex-1\"><h4 class=\"font-bold\">Batch Refresh Complete</h4><p class=\"text-sm\" data-text=\"'Processed ' + $batchCompleted + ' / ' + $batchTotal + ' artists'\"></p></div><label for=\"batch-refresh-modal\" class=\"btn btn-success btn-sm\">Close</label></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if batchID != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 140, "<div class=\"mt-2 text-[11px] font-mono text-base-content/50\">Batch ID: ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var104 string
+			templ_7745c5c3_Var104, templ_7745c5c3_Err = templ.JoinStringErrs(batchID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 748, Col: 23}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var104))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 141, "</div>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 142, "<div class=\"mt-3\" data-show=\"$batchTotal > 0\"><div class=\"flex items-center justify-between text-xs text-base-content/70 mb-1\"><span data-text=\"'Progress: ' + $batchCompleted + ' / ' + $batchTotal\"></span> <span data-text=\"Math.round($batchCompleted / $batchTotal * 100) + '%'\"></span></div><progress class=\"progress progress-primary w-full\" data-attr=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var105 string
+		templ_7745c5c3_Var105, templ_7745c5c3_Err = templ.JoinStringErrs("{'value': $batchCompleted, 'max': $batchTotal}")
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 756, Col: 114}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var105))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 143, "\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var106 string
+		templ_7745c5c3_Var106, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", completed))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists.templ`, Line: 756, Col: 147}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var106))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 144, "</progress></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

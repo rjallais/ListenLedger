@@ -6,6 +6,7 @@ package messaging
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,26 +16,43 @@ const (
 
 	// SubjectScrapeRequest is the work queue subject for scrape jobs.
 	SubjectScrapeRequest = "scrape.request"
+	// SubjectScrapeRequestWildcard matches provider-routed scrape jobs.
+	SubjectScrapeRequestWildcard = "scrape.request.*"
 	// SubjectScrapeDLQ is the subject for dead-lettered scrape jobs.
 	SubjectScrapeDLQ = "scrape.dlq"
 	// SubjectArtistUpdated is the fanout subject for artist update notifications.
 	SubjectArtistUpdated = "artist.updated"
 )
 
+const (
+	// ScrapeProviderAny routes to the legacy/fallback worker.
+	ScrapeProviderAny = "any"
+	// ScrapeProviderLocal targets local headless scraping.
+	ScrapeProviderLocal = "local"
+	// ScrapeProviderBrowserless targets Browserless scraping.
+	ScrapeProviderBrowserless = "browserless"
+	// ScrapeProviderScrapingAnt targets ScrapingAnt scraping.
+	ScrapeProviderScrapingAnt = "scrapingant"
+	// ScrapeProviderScraperAPI targets ScraperAPI scraping.
+	ScrapeProviderScraperAPI = "scraperapi"
+	// ScrapeProviderApify targets Apify scraping.
+	ScrapeProviderApify = "apify"
+)
+
 // ScrapeRequested is the durable queue payload for a listener refresh job.
 type ScrapeRequested struct {
 	Version    string `json:"version"`
-	RequestID  string `json:"request_id,omitempty"`
+	RequestID  string `json:"request_id,omitzero"`
 	ArtistID   string `json:"artist_id"`
 	SpotifyID  string `json:"spotify_id"`
 	ArtistName string `json:"artist_name"`
-	QueuedAt   string `json:"queued_at,omitempty"`
+	QueuedAt   string `json:"queued_at,omitzero"`
 }
 
 // ArtistUpdated is the event payload emitted after an artist update attempt.
 type ArtistUpdated struct {
 	Version          string `json:"version"`
-	RequestID        string `json:"request_id,omitempty"`
+	RequestID        string `json:"request_id,omitzero"`
 	ArtistID         string `json:"artist_id"`
 	Name             string `json:"name"`
 	MonthlyListeners int    `json:"monthly_listeners"`
@@ -52,6 +70,44 @@ func NewScrapeRequested(artistID, spotifyID, artistName, requestID string) Scrap
 		ArtistName: artistName,
 		QueuedAt:   time.Now().Format(time.RFC3339),
 	}
+}
+
+// NormalizeScrapeProvider sanitizes a provider key for subject routing.
+func NormalizeScrapeProvider(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case ScrapeProviderLocal,
+		ScrapeProviderBrowserless,
+		ScrapeProviderScrapingAnt,
+		ScrapeProviderScraperAPI,
+		ScrapeProviderApify:
+		return provider
+	default:
+		return ScrapeProviderAny
+	}
+}
+
+// SubjectScrapeRequestForProvider returns the routed scrape subject for a provider.
+func SubjectScrapeRequestForProvider(provider string) string {
+	normalized := NormalizeScrapeProvider(provider)
+	if normalized == ScrapeProviderAny {
+		return SubjectScrapeRequest
+	}
+	return SubjectScrapeRequest + "." + normalized
+}
+
+// ScrapeProviderFromSubject decodes a provider key from a scrape subject.
+func ScrapeProviderFromSubject(subject string) string {
+	if subject == SubjectScrapeRequest {
+		return ScrapeProviderAny
+	}
+
+	prefix := SubjectScrapeRequest + "."
+	if !strings.HasPrefix(subject, prefix) {
+		return ScrapeProviderAny
+	}
+
+	return NormalizeScrapeProvider(strings.TrimPrefix(subject, prefix))
 }
 
 // MarshalScrapeRequested serializes a scrape request payload.

@@ -445,7 +445,10 @@ templ AddArtistModal(currentGenre string) {
 	<input type="checkbox" id="add-artist-modal" class="modal-toggle"/>
 	<div class="modal modal-bottom sm:modal-middle">
 		<div class="modal-box">
-			<h3 class="font-bold text-lg mb-4">Add New Artist</h3>
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Artist</h3>
+				<label for="add-artist-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
 			<form
 				id="add-artist-form"
 				data-on:submit="evt.preventDefault(); @post('/api/artists', {contentType: 'form'})"
@@ -550,6 +553,7 @@ templ AddArtistModal(currentGenre string) {
 					</button>
 				</div>
 			</form>
+			<div id="add-artist-feedback" class="mt-2"></div>
 		</div>
 		<label class="modal-backdrop" for="add-artist-modal">Close</label>
 	</div>
@@ -614,6 +618,26 @@ templ NewArtistRow(artist Artist) {
 	</tbody>
 }
 
+templ AddArtistSuccessNotice(artistName string) {
+	<div id="add-artist-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<p class="font-semibold">Artist added</p>
+				<p class="text-xs">{ artistName }</p>
+			</div>
+			<label for="add-artist-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewArtistCreateResponse(artist Artist) {
+	@NewArtistRow(artist)
+	@AddArtistSuccessNotice(artist.Name)
+}
+
 func artistSignalsJSON(artist Artist) string {
 	return fmt.Sprintf(
 		`{"artistListeners":{%q:%d},"artistUpdated":{%q:%q},"artistFetchStatus":{%q:%q}}`,
@@ -627,7 +651,7 @@ func artistSignalsJSON(artist Artist) string {
 }
 
 func artistListenerSignal(artistID string) string {
-	return fmt.Sprintf("$artistListeners[%q]", artistID)
+	return fmt.Sprintf("($artistListeners[%q] ?? 0).toLocaleString('en-US')", artistID)
 }
 
 func artistUpdatedSignal(artistID string) string {
@@ -640,17 +664,21 @@ func artistFetchStatusSignal(artistID string) string {
 
 templ BatchRefreshModal() {
 	<input type="checkbox" id="batch-refresh-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle" data-signals-batchTotal="0" data-signals-batchCompleted="0">
+	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false}">
 		<div class="modal-box">
-			<h3 class="font-bold text-lg mb-4">Batch Refresh Artists</h3>
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Batch Refresh Artists</h3>
+				<label for="batch-refresh-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
 			<p class="text-sm text-base-content/70 mb-4">
-				Refresh monthly listener counts for multiple artists. Artists updated in the last hour are skipped.
+				Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped.
 				Jobs are prioritized: queued → recently added (rock first) → not added → included.
 			</p>
 			<form
 				id="batch-refresh-form"
-				data-on:submit="evt.preventDefault(); @post('/api/refresh/batch', {contentType: 'form'})"
+				data-on:submit="evt.preventDefault(); if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } @post('/api/refresh/batch', {contentType: 'form'})"
 			>
+				<input type="hidden" name="batch_id" data-bind="$batchID"/>
 				<div class="form-control w-full mb-4">
 					<label class="label">
 						<span class="label-text">Number of Artists to Refresh</span>
@@ -677,17 +705,25 @@ templ BatchRefreshModal() {
 	</div>
 }
 
-templ BatchRefreshResult(queued int, stats map[string]int) {
-	<div id="batch-refresh-result" class="mt-4">
-		<div class="alert alert-success">
+templ BatchRefreshResult(batchID string, queued int, completed int, stats map[string]int, done bool) {
+	<div id="batch-refresh-result" class="mt-4" data-batch-done={ fmt.Sprintf("%t", done) }>
+		<div class="alert alert-warning" data-show="$batchTotal === 0">
 			<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M5 3h14l2 3v12l-2 3H5l-2-3V6l2-3z"></path>
 			</svg>
 			<div class="flex-1">
-				<h4 class="font-bold">Batch Refresh Queued</h4>
+				<h4 class="font-bold">No Artists Queued</h4>
+				<p class="text-sm">No eligible artists were queued in this attempt.</p>
+			</div>
+			<label for="batch-refresh-modal" class="btn btn-warning btn-sm">Close</label>
+		</div>
+		<div class="alert alert-info" data-show="$batchTotal > 0 && !$batchDone">
+			<span class="loading loading-spinner loading-sm"></span>
+			<div class="flex-1">
+				<h4 class="font-bold">Batch Refresh Running</h4>
 				<div class="text-sm">
 					{ fmt.Sprintf("%d artists queued for refresh", queued) }
-					<div class="mt-1 text-xs text-success-content">
+					<div class="mt-1 text-xs">
 						P0 (queued): { fmt.Sprintf("%d", stats["P0_Queued"]) } |
 						P1-P2 (recent): { fmt.Sprintf("%d", stats["P1_RockRecent"]+stats["P2_OtherRecent"]) } |
 						P3-P4 (not added): { fmt.Sprintf("%d", stats["P3_RockNotAdded"]+stats["P4_OtherNotAdded"]) } |
@@ -695,13 +731,29 @@ templ BatchRefreshResult(queued int, stats map[string]int) {
 					</div>
 				</div>
 			</div>
+			<label for="batch-refresh-modal" class="btn btn-ghost btn-sm">Close</label>
 		</div>
-	<div class="mt-3">
-		<div class="flex items-center justify-between text-xs text-base-content/70 mb-1">
-			<span data-text="'Progress: ' + $batchCompleted + ' / ' + $batchTotal"></span>
-			<span data-show="$batchTotal > 0" data-text="Math.round($batchCompleted / $batchTotal * 100) + '%'"></span>
+		<div class="alert alert-success" data-show="$batchTotal > 0 && $batchDone">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<h4 class="font-bold">Batch Refresh Complete</h4>
+				<p class="text-sm" data-text="'Processed ' + $batchCompleted + ' / ' + $batchTotal + ' artists'"></p>
+			</div>
+			<label for="batch-refresh-modal" class="btn btn-success btn-sm">Close</label>
 		</div>
-		<progress class="progress progress-primary w-full" data-attr={ "{'value': $batchCompleted, 'max': $batchTotal}" }></progress>
-	</div>
+		if batchID != "" {
+			<div class="mt-2 text-[11px] font-mono text-base-content/50">
+				Batch ID: { batchID }
+			</div>
+		}
+		<div class="mt-3" data-show="$batchTotal > 0">
+			<div class="flex items-center justify-between text-xs text-base-content/70 mb-1">
+				<span data-text="'Progress: ' + $batchCompleted + ' / ' + $batchTotal"></span>
+				<span data-text="Math.round($batchCompleted / $batchTotal * 100) + '%'"></span>
+			</div>
+			<progress class="progress progress-primary w-full" data-attr={ "{'value': $batchCompleted, 'max': $batchTotal}" }>{ fmt.Sprintf("%d", completed) }</progress>
+		</div>
 	</div>
 }

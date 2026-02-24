@@ -69,3 +69,21 @@ func TestArtistUpdatedRoundTrip(t *testing.T) {
 		t.Fatal("UpdatedAt should be populated")
 	}
 }
+
+func TestSubjectScrapeRequestForProvider(t *testing.T) {
+	if got := SubjectScrapeRequestForProvider(ScrapeProviderBrowserless); got != "scrape.request.browserless" {
+		t.Fatalf("SubjectScrapeRequestForProvider(browserless) = %q, want %q", got, "scrape.request.browserless")
+	}
+	if got := SubjectScrapeRequestForProvider("unknown"); got != SubjectScrapeRequest {
+		t.Fatalf("SubjectScrapeRequestForProvider(unknown) = %q, want %q", got, SubjectScrapeRequest)
+	}
+}
+
+func TestScrapeProviderFromSubject(t *testing.T) {
+	if got := ScrapeProviderFromSubject("scrape.request.scraperapi"); got != ScrapeProviderScraperAPI {
+		t.Fatalf("ScrapeProviderFromSubject(scrape.request.scraperapi) = %q, want %q", got, ScrapeProviderScraperAPI)
+	}
+	if got := ScrapeProviderFromSubject(SubjectScrapeRequest); got != ScrapeProviderAny {
+		t.Fatalf("ScrapeProviderFromSubject(scrape.request) = %q, want %q", got, ScrapeProviderAny)
+	}
+}

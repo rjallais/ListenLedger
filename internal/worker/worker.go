@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +32,7 @@ type Worker struct {
 	js         jetstream.JetStream
 	cfg        *config.Config
 	fetcher    *fetcher.Service
-	consume    jetstream.ConsumeContext
+	consumes   []jetstream.ConsumeContext
 	maxDeliver int
 	ackWait    time.Duration
 	progress   time.Duration
@@ -39,20 +41,41 @@ type Worker struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	recalcMu      sync.Mutex
+	recalcTimer   *time.Timer
+	recalcPending map[string]struct{}
+
+	providerStatsMu sync.Mutex
+	providerStats   map[spotify.Provider]*providerRuntime
 }
 
 // New creates a new worker instance.
 func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg *config.Config) *Worker {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Worker{
+	w := &Worker{
 		app:    app,
 		nc:     nc,
 		js:     js,
 		cfg:    cfg,
 		ctx:    ctx,
 		cancel: cancel,
+
+		recalcPending: make(map[string]struct{}),
 	}
+
+	w.providerStats = make(map[spotify.Provider]*providerRuntime)
+	for _, provider := range w.availableProviders() {
+		w.providerStats[provider] = &providerRuntime{}
+	}
+	return w
+}
+
+type providerRuntime struct {
+	inFlight     int
+	completed    int
+	totalLatency time.Duration
 }
 
 // Start begins listening for scrape requests on NATS.
@@ -80,7 +103,7 @@ func (w *Worker) Start() {
 
 	ackWait := w.cfg.ScrapeAckWait
 	if ackWait <= 0 {
-		ackWait = 2 * w.fetchTimeout()
+		ackWait = 2 * w.fetchTimeout(spotify.ProviderAny)
 		if ackWait < 2*time.Minute {
 			ackWait = 2 * time.Minute
 		}
@@ -107,26 +130,26 @@ func (w *Worker) Start() {
 	}
 	w.progress = progress
 
-	// Durable JetStream consumer (restart-safe)
+	// Single durable JetStream consumer (restart-safe) for shared queue.
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 	defer cancel()
+
 	consumer, err := messaging.EnsureScrapeWorkerConsumer(ctx, w.js, jetstream.ConsumerConfig{
 		Durable:       messaging.ScrapeWorkerConsumerName,
+		FilterSubject: messaging.SubjectScrapeRequest,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       ackWait,
 		MaxDeliver:    maxDeliver,
 		BackOff:       backoff,
-		MaxAckPending: max(1, w.cfg.MaxConcurrency),
+		MaxAckPending: max(1, w.maxAckPending()),
 	})
 	if err != nil {
 		log.Printf("[worker] Failed to ensure scrape consumer: %v", err)
 		return
 	}
 
-	// Align local behavior to the *actual* consumer config stored server-side.
-	// This prevents redelivery duplicates if an existing durable consumer has a
-	// smaller AckWait than we expect (e.g., from a prior run).
-	if info, err := consumer.Info(ctx); err == nil && info != nil {
+	// Align local behavior to the actual consumer config stored server-side.
+	if info, infoErr := consumer.Info(ctx); infoErr == nil && info != nil {
 		if info.Config.MaxDeliver > 0 {
 			w.maxDeliver = info.Config.MaxDeliver
 		}
@@ -143,18 +166,18 @@ func (w *Worker) Start() {
 		if len(info.Config.BackOff) > 0 {
 			w.backoff = info.Config.BackOff
 		}
-
 		log.Printf(
-			"[worker] Consumer config: durable=%s ack_wait=%s max_deliver=%d backoff=%v max_ack_pending=%d progress=%s",
+			"[worker] Consumer config: durable=%s subject=%s ack_wait=%s max_deliver=%d backoff=%v max_ack_pending=%d progress=%s",
 			info.Config.Durable,
+			info.Config.FilterSubject,
 			info.Config.AckWait,
 			info.Config.MaxDeliver,
 			info.Config.BackOff,
 			info.Config.MaxAckPending,
 			w.progress,
 		)
-	} else if err != nil {
-		log.Printf("[worker] Warning: failed to load consumer info: %v", err)
+	} else if infoErr != nil {
+		log.Printf("[worker] Warning: failed to load consumer info: %v", infoErr)
 	}
 
 	consume, err := consumer.Consume(w.handleJetStreamMsg)
@@ -162,17 +185,26 @@ func (w *Worker) Start() {
 		log.Printf("[worker] Failed to start consumer: %v", err)
 		return
 	}
-	w.consume = consume
+	w.consumes = []jetstream.ConsumeContext{consume}
 
-	log.Println("[worker] Started listening for scrape requests (JetStream)")
+	log.Println("[worker] Started listening for scrape requests (shared JetStream queue)")
 }
 
 // Stop gracefully stops the worker.
 func (w *Worker) Stop() {
 	w.cancel()
 
-	if w.consume != nil {
-		w.consume.Drain()
+	w.recalcMu.Lock()
+	if w.recalcTimer != nil {
+		w.recalcTimer.Stop()
+		w.recalcTimer = nil
+	}
+	w.recalcMu.Unlock()
+
+	for _, consume := range w.consumes {
+		if consume != nil {
+			consume.Drain()
+		}
 	}
 
 	// Wait for in-flight requests to complete (with timeout)
@@ -197,58 +229,216 @@ func (w *Worker) Stop() {
 }
 
 func (w *Worker) handleJetStreamMsg(msg jetstream.Msg) {
-	w.wg.Add(1)
-	defer w.wg.Done()
-
-	meta, _ := msg.Metadata()
-	req, err := messaging.UnmarshalScrapeRequested(msg.Data())
-	if err != nil {
-		log.Printf("[worker] Failed to unmarshal request (terminating): %v", err)
-		w.publishScrapeDLQ(msg, meta, nil, "unmarshal_error")
-		if err := msg.Term(); err != nil {
-			log.Printf("[worker] Failed to terminate poison message: %v", err)
-		}
-		return
-	}
-
-	done := make(chan struct{})
-	go w.inProgressLoop(msg, done)
-	stopProgress := func() {
-		select {
-		case <-done:
-		default:
-			close(done)
-		}
-	}
-	defer stopProgress()
-
-	if err := w.processRequest(req, meta); err != nil {
-		stopProgress()
-		log.Printf("[worker] Retryable error processing %s: %v", req.ArtistID, err)
-
-		// If we keep failing after MaxDeliver attempts, dead-letter the message.
-		if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
-			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
-			w.publishScrapeDLQ(msg, meta, &req, "retry_exhausted: "+err.Error())
+	w.wg.Go(func() {
+		meta, _ := msg.Metadata()
+		provider, subjectProviderLabel := providerForSubject(msg.Subject())
+		req, err := messaging.UnmarshalScrapeRequested(msg.Data())
+		if err != nil {
+			log.Printf("[worker] Failed to unmarshal request (terminating): %v", err)
+			w.publishScrapeDLQ(msg, meta, nil, "unmarshal_error")
 			if err := msg.Term(); err != nil {
-				log.Printf("[worker] Failed to terminate retry-exhausted message: %v", err)
+				log.Printf("[worker] Failed to terminate poison message: %v", err)
 			}
 			return
 		}
 
-		// Delay retries to avoid immediate reprocessing.
-		if err := msg.NakWithDelay(w.retryDelay(meta)); err != nil {
-			log.Printf("[worker] Failed to NAK message: %v", err)
+		done := make(chan struct{})
+		go w.inProgressLoop(msg, done)
+		stopProgress := func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
 		}
-		return
+		defer stopProgress()
+
+		if err := w.processRequest(req, meta, provider, subjectProviderLabel); err != nil {
+			stopProgress()
+			log.Printf("[worker] Retryable error processing %s (provider=%s): %v", req.ArtistID, subjectProviderLabel, err)
+
+			// If we keep failing after MaxDeliver attempts, dead-letter the message.
+			if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
+				w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
+				w.publishScrapeDLQ(msg, meta, &req, "retry_exhausted: "+err.Error())
+				if err := msg.Term(); err != nil {
+					log.Printf("[worker] Failed to terminate retry-exhausted message: %v", err)
+				}
+				return
+			}
+
+			// Delay retries to avoid immediate reprocessing.
+			if err := msg.NakWithDelay(w.retryDelay(meta)); err != nil {
+				log.Printf("[worker] Failed to NAK message: %v", err)
+			}
+			return
+		}
+
+		stopProgress()
+		ackCtx, cancel := context.WithTimeout(w.ctx, 2*time.Second)
+		defer cancel()
+		if err := msg.DoubleAck(ackCtx); err != nil {
+			log.Printf("[worker] Failed to DoubleAck message: %v", err)
+		}
+	})
+}
+
+func providerForSubject(subject string) (spotify.Provider, string) {
+	switch messaging.ScrapeProviderFromSubject(subject) {
+	case messaging.ScrapeProviderLocal:
+		return spotify.ProviderLocalHeadless, messaging.ScrapeProviderLocal
+	case messaging.ScrapeProviderBrowserless:
+		return spotify.ProviderBrowserless, messaging.ScrapeProviderBrowserless
+	case messaging.ScrapeProviderScrapingAnt:
+		return spotify.ProviderScrapingAnt, messaging.ScrapeProviderScrapingAnt
+	case messaging.ScrapeProviderScraperAPI:
+		return spotify.ProviderScraperAPI, messaging.ScrapeProviderScraperAPI
+	case messaging.ScrapeProviderApify:
+		return spotify.ProviderApify, messaging.ScrapeProviderApify
+	default:
+		return spotify.ProviderAny, "adaptive"
+	}
+}
+
+func (w *Worker) availableProviders() []spotify.Provider {
+	providers := make([]spotify.Provider, 0, 5)
+	if w.cfg.HasBrowserless() {
+		providers = append(providers, spotify.ProviderBrowserless)
+	}
+	if w.cfg.HasScrapingAnt() {
+		providers = append(providers, spotify.ProviderScrapingAnt)
+	}
+	if w.cfg.HasScraperAPI() {
+		providers = append(providers, spotify.ProviderScraperAPI)
+	}
+	if w.cfg.HasApify() {
+		providers = append(providers, spotify.ProviderApify)
+	}
+	if w.cfg.HasLocalHeadless() {
+		providers = append(providers, spotify.ProviderLocalHeadless)
 	}
 
-	stopProgress()
-	ackCtx, cancel := context.WithTimeout(w.ctx, 2*time.Second)
-	defer cancel()
-	if err := msg.DoubleAck(ackCtx); err != nil {
-		log.Printf("[worker] Failed to DoubleAck message: %v", err)
+	if len(providers) == 0 {
+		return []spotify.Provider{spotify.ProviderAny}
 	}
+	return providers
+}
+
+func providerLabel(provider spotify.Provider) string {
+	switch provider {
+	case spotify.ProviderLocalHeadless:
+		return messaging.ScrapeProviderLocal
+	case spotify.ProviderBrowserless:
+		return messaging.ScrapeProviderBrowserless
+	case spotify.ProviderScrapingAnt:
+		return messaging.ScrapeProviderScrapingAnt
+	case spotify.ProviderScraperAPI:
+		return messaging.ScrapeProviderScraperAPI
+	case spotify.ProviderApify:
+		return messaging.ScrapeProviderApify
+	default:
+		return messaging.ScrapeProviderAny
+	}
+}
+
+func (w *Worker) rankedProviders() []spotify.Provider {
+	providers := w.availableProviders()
+	if len(providers) <= 1 {
+		return providers
+	}
+
+	w.providerStatsMu.Lock()
+	defer w.providerStatsMu.Unlock()
+
+	sort.SliceStable(providers, func(i, j int) bool {
+		left := w.providerStats[providers[i]]
+		right := w.providerStats[providers[j]]
+		leftLatency := w.fetchTimeout(providers[i])
+		rightLatency := w.fetchTimeout(providers[j])
+		leftInFlight := 0
+		rightInFlight := 0
+
+		if left != nil {
+			leftInFlight = left.inFlight
+			if left.completed > 0 && left.totalLatency > 0 {
+				leftLatency = left.totalLatency / time.Duration(left.completed)
+			}
+		}
+		if right != nil {
+			rightInFlight = right.inFlight
+			if right.completed > 0 && right.totalLatency > 0 {
+				rightLatency = right.totalLatency / time.Duration(right.completed)
+			}
+		}
+
+		leftScore := leftLatency * time.Duration(leftInFlight+1)
+		rightScore := rightLatency * time.Duration(rightInFlight+1)
+		if leftScore == rightScore {
+			return providers[i] < providers[j]
+		}
+		return leftScore < rightScore
+	})
+
+	return providers
+}
+
+func (w *Worker) markProviderStart(provider spotify.Provider) {
+	w.providerStatsMu.Lock()
+	defer w.providerStatsMu.Unlock()
+	stats, ok := w.providerStats[provider]
+	if !ok {
+		stats = &providerRuntime{}
+		w.providerStats[provider] = stats
+	}
+	stats.inFlight++
+}
+
+func (w *Worker) markProviderFinish(provider spotify.Provider, duration time.Duration) {
+	w.providerStatsMu.Lock()
+	defer w.providerStatsMu.Unlock()
+	stats, ok := w.providerStats[provider]
+	if !ok {
+		stats = &providerRuntime{}
+		w.providerStats[provider] = stats
+	}
+	if stats.inFlight > 0 {
+		stats.inFlight--
+	}
+	if duration > 0 {
+		stats.completed++
+		stats.totalLatency += duration
+	}
+}
+
+func (w *Worker) fetchWithProvider(ctx context.Context, spotifyID string, provider spotify.Provider) (int, error) {
+	startedAt := time.Now()
+	w.markProviderStart(provider)
+	defer func() {
+		w.markProviderFinish(provider, time.Since(startedAt))
+	}()
+	return w.fetcher.FetchOne(ctx, spotifyID, provider)
+}
+
+func (w *Worker) fetchWithAdaptiveProviders(ctx context.Context, spotifyID string) (int, string, error) {
+	providers := w.rankedProviders()
+	if len(providers) == 1 && providers[0] == spotify.ProviderAny {
+		listeners, err := w.fetchWithProvider(ctx, spotifyID, spotify.ProviderAny)
+		return listeners, providerLabel(spotify.ProviderAny), err
+	}
+
+	errorsByProvider := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		listeners, err := w.fetchWithProvider(ctx, spotifyID, provider)
+		if err == nil {
+			return listeners, providerLabel(provider), nil
+		}
+		errorsByProvider = append(errorsByProvider, fmt.Sprintf("%s: %v", providerLabel(provider), err))
+		if ctx.Err() != nil {
+			return 0, providerLabel(provider), ctx.Err()
+		}
+	}
+
+	return 0, "adaptive", fmt.Errorf("all providers failed (%s)", strings.Join(errorsByProvider, "; "))
 }
 
 func (w *Worker) retryDelay(meta *jetstream.MsgMetadata) time.Duration {
@@ -324,7 +514,7 @@ func (w *Worker) publishScrapeDLQ(msg jetstream.Msg, meta *jetstream.MsgMetadata
 	}
 }
 
-func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.MsgMetadata) error {
+func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.MsgMetadata, provider spotify.Provider, subjectProviderLabel string) error {
 	numDelivered := uint64(0)
 	streamSeq := uint64(0)
 	if meta != nil {
@@ -332,10 +522,11 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 		streamSeq = meta.Sequence.Stream
 	}
 	log.Printf(
-		"[worker] Processing scrape request (request_id=%s, delivered=%d, seq=%d) for artist: %s (spotify_id: %s)",
+		"[worker] Processing scrape request (request_id=%s, delivered=%d, seq=%d, provider=%s) for artist: %s (spotify_id: %s)",
 		req.RequestID,
 		numDelivered,
 		streamSeq,
+		subjectProviderLabel,
 		req.ArtistName,
 		req.SpotifyID,
 	)
@@ -358,28 +549,24 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 	}
 
 	// Fetch the listener count
-	ctx, cancel := context.WithTimeout(w.ctx, w.fetchTimeout())
+	ctx, cancel := context.WithTimeout(w.ctx, w.fetchTimeout(provider))
 	defer cancel()
 
-	results, missed := w.fetcher.FetchAll(ctx, []string{req.SpotifyID})
-
-	if len(missed) > 0 {
-		log.Printf("[worker] Failed to fetch listeners for %s", req.SpotifyID)
+	listeners := 0
+	usedProvider := providerLabel(provider)
+	var err error
+	if provider == spotify.ProviderAny {
+		listeners, usedProvider, err = w.fetchWithAdaptiveProviders(ctx, req.SpotifyID)
+	} else {
+		listeners, err = w.fetchWithProvider(ctx, req.SpotifyID, provider)
+	}
+	if err != nil {
+		log.Printf("[worker] Failed to fetch listeners for %s via %s: %v", req.SpotifyID, usedProvider, err)
 		if err := w.updateArtistStatus(req.ArtistID, "failed"); err != nil {
 			return fmt.Errorf("set failed: %w", err)
 		}
 		w.setScrapeJobFinished(req.RequestID, "failed", "fetch_failed")
-		return fmt.Errorf("fetch failed for %s", req.SpotifyID)
-	}
-
-	listeners, ok := results[req.SpotifyID]
-	if !ok {
-		log.Printf("[worker] No result for %s", req.SpotifyID)
-		if err := w.updateArtistStatus(req.ArtistID, "failed"); err != nil {
-			return fmt.Errorf("set failed: %w", err)
-		}
-		w.setScrapeJobFinished(req.RequestID, "failed", "missing_result")
-		return fmt.Errorf("no result for %s", req.SpotifyID)
+		return fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, usedProvider, err)
 	}
 
 	// Update the artist record with new listener count
@@ -387,8 +574,10 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 		return fmt.Errorf("update listeners: %w", err)
 	}
 
-	log.Printf("[worker] Successfully updated %s with %d monthly listeners", req.ArtistName, listeners)
+	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", req.ArtistName, listeners, usedProvider)
 	w.setScrapeJobFinished(req.RequestID, "succeeded", "")
+	w.queueTotalSongsRecalc(req.ArtistID)
+	w.clearFailedJobsForArtist(req.ArtistID, req.RequestID)
 	return nil
 }
 
@@ -440,7 +629,167 @@ func (w *Worker) setScrapeJobFinished(requestID, status, errMsg string) {
 	}
 }
 
-func (w *Worker) fetchTimeout() time.Duration {
+func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
+	if artistID == "" {
+		return
+	}
+
+	records, err := w.app.FindRecordsByFilter(
+		"scrape_jobs",
+		"artist = {:artist} && status = {:status} && request_id != {:request_id}",
+		"",
+		500,
+		0,
+		dbx.Params{
+			"artist":     artistID,
+			"status":     "failed",
+			"request_id": succeededRequestID,
+		},
+	)
+	if err != nil {
+		log.Printf("[worker] Warning: failed to load failed jobs for artist %s: %v", artistID, err)
+		return
+	}
+
+	if len(records) == 0 {
+		return
+	}
+
+	note := "recovered_by_retry"
+	if strings.TrimSpace(succeededRequestID) != "" {
+		note = "recovered_by_retry:" + succeededRequestID
+	}
+
+	for _, rec := range records {
+		rec.Set("status", "succeeded")
+		rec.Set("finished_at", time.Now())
+		if rec.GetString("error") == "" {
+			rec.Set("error", note)
+		} else {
+			rec.Set("error", note+" | "+rec.GetString("error"))
+		}
+		if saveErr := w.app.Save(rec); saveErr != nil {
+			log.Printf("[worker] Warning: failed to reconcile failed job %s: %v", rec.Id, saveErr)
+		}
+	}
+}
+
+func (w *Worker) queueTotalSongsRecalc(artistID string) {
+	if strings.TrimSpace(artistID) == "" {
+		return
+	}
+
+	const debounce = 3 * time.Second
+
+	w.recalcMu.Lock()
+	defer w.recalcMu.Unlock()
+
+	w.recalcPending[artistID] = struct{}{}
+	if w.recalcTimer == nil {
+		w.recalcTimer = time.AfterFunc(debounce, w.flushTotalSongsRecalc)
+		return
+	}
+	w.recalcTimer.Reset(debounce)
+}
+
+func (w *Worker) flushTotalSongsRecalc() {
+	w.recalcMu.Lock()
+	pending := make(map[string]struct{}, len(w.recalcPending))
+	for artistID := range w.recalcPending {
+		pending[artistID] = struct{}{}
+	}
+	w.recalcPending = make(map[string]struct{})
+	w.recalcTimer = nil
+	w.recalcMu.Unlock()
+
+	if len(pending) == 0 {
+		return
+	}
+
+	if err := w.recalculateTotalSongsForArtists(pending); err != nil {
+		log.Printf("[worker] Warning: failed to recalculate total_songs ranks: %v", err)
+	}
+}
+
+func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) error {
+	byGenre := map[string]map[string]struct{}{
+		"rock_metal":      map[string]struct{}{},
+		"everything_else": map[string]struct{}{},
+	}
+
+	for artistID := range artistIDs {
+		record, err := w.app.FindRecordById("artists", artistID)
+		if err != nil {
+			continue
+		}
+		if record.GetString("list_status") == "waiting" {
+			continue
+		}
+		genre := record.GetString("genre_group")
+		if _, ok := byGenre[genre]; !ok {
+			continue
+		}
+		byGenre[genre][artistID] = struct{}{}
+	}
+
+	for genre, targets := range byGenre {
+		if len(targets) == 0 {
+			continue
+		}
+
+		records, err := w.app.FindRecordsByFilter(
+			"artists",
+			"genre_group = {:genre} && list_status != {:waiting}",
+			"-monthly_listeners,name",
+			0,
+			0,
+			dbx.Params{"genre": genre, "waiting": "waiting"},
+		)
+		if err != nil {
+			return fmt.Errorf("list artists for %s: %w", genre, err)
+		}
+
+		totalCount := len(records)
+		for index, record := range records {
+			if _, tracked := targets[record.Id]; !tracked {
+				continue
+			}
+
+			targetTotalSongs := totalCount - index
+			if record.GetInt("total_songs") == targetTotalSongs {
+				continue
+			}
+
+			record.Set("total_songs", targetTotalSongs)
+			if err := w.app.Save(record); err != nil {
+				return fmt.Errorf("save total_songs for artist %s: %w", record.Id, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (w *Worker) fetchTimeout(provider spotify.Provider) time.Duration {
+	switch provider {
+	case spotify.ProviderApify:
+		if w.cfg.RequestTimeout > 2*time.Minute {
+			return w.cfg.RequestTimeout
+		}
+		return 2 * time.Minute
+	case spotify.ProviderScrapingAnt, spotify.ProviderScraperAPI:
+		if w.cfg.RequestTimeout > 60*time.Second {
+			return w.cfg.RequestTimeout
+		}
+		return 60 * time.Second
+	case spotify.ProviderBrowserless, spotify.ProviderLocalHeadless:
+		if w.cfg.RequestTimeout > 30*time.Second {
+			return w.cfg.RequestTimeout
+		}
+		return 30 * time.Second
+	}
+
+	// ProviderAny fallback: account for all configured providers.
 	providerCount := 0
 	if w.cfg.HasLocalHeadless() {
 		providerCount++
@@ -449,6 +798,12 @@ func (w *Worker) fetchTimeout() time.Duration {
 		providerCount++
 	}
 	if w.cfg.HasScrapingAnt() {
+		providerCount++
+	}
+	if w.cfg.HasScraperAPI() {
+		providerCount++
+	}
+	if w.cfg.HasApify() {
 		providerCount++
 	}
 	if providerCount == 0 {
@@ -464,6 +819,20 @@ func (w *Worker) fetchTimeout() time.Duration {
 	}
 
 	return timeout
+}
+
+func (w *Worker) maxAckPending() int {
+	limit := w.cfg.MaxConcurrency
+	if w.cfg.LocalConcurrency > limit {
+		limit = w.cfg.LocalConcurrency
+	}
+	if w.cfg.ScraperAPIConcurrency > limit {
+		limit = w.cfg.ScraperAPIConcurrency
+	}
+	if limit <= 0 {
+		return 1
+	}
+	return limit
 }
 
 // updateArtistStatus updates the fetch_status field of an artist.

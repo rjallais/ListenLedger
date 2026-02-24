@@ -1,6 +1,6 @@
 //go:build goexperiment.jsonv2
 
-// Package spotify provides a client for fetching Spotify artist listener data via Browserless and ScrapingAnt.
+// Package spotify provides a client for fetching Spotify artist listener data via multiple providers.
 package spotify
 
 import (
@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ import (
 type Provider int
 
 const (
-	// ProviderAny tries Local headless first, then Browserless, then ScrapingAnt.
+	// ProviderAny tries Local headless first, then Browserless, ScrapingAnt, ScraperAPI, and Apify.
 	ProviderAny Provider = iota
 	// ProviderLocalHeadless uses local chromedp.
 	ProviderLocalHeadless
@@ -32,6 +33,10 @@ const (
 	ProviderBrowserless
 	// ProviderScrapingAnt uses only ScrapingAnt.
 	ProviderScrapingAnt
+	// ProviderScraperAPI uses only ScraperAPI.
+	ProviderScraperAPI
+	// ProviderApify uses only Apify.
+	ProviderApify
 )
 
 // ListenerFetcher defines the interface for fetching listener counts
@@ -44,18 +49,30 @@ type ListenerFetcher interface {
 type Client struct {
 	config *config.Config
 
-	// Shared HTTP client
+	// Shared HTTP client (used for Browserless and ScrapingAnt).
 	httpClient *http.Client
+
+	// Dedicated ScraperAPI client; rendered pages can exceed the default timeout.
+	httpClientScraperAPI *http.Client
+
+	// httpClientApify is a dedicated client with a longer timeout for Apify
+	// runs, which can take up to 90 s for the Actor to complete.
+	// The shared httpClient uses cfg.HTTPTimeout (30 s), which is too short.
+	httpClientApify *http.Client
 
 	// Semaphores per provider to respect individual rate limits
 	semLocal       chan struct{}
 	semBrowserless chan struct{}
 	semScrapingAnt chan struct{}
+	semScraperAPI  chan struct{}
+	semApify       chan struct{}
 
 	// Providers
 	useLocal       atomic.Bool
 	useBrowserless bool
 	useScrapingAnt bool
+	useScraperAPI  bool
+	useApify       bool
 
 	local   *localBrowser
 	localMu sync.Mutex
@@ -71,7 +88,6 @@ type responseData struct {
 }
 
 // NewClient creates a new Spotify client with optimized HTTP settings and provider selection.
-// Browserless is primary; ScrapingAnt is used when configured to take advantage of both free plans.
 func NewClient(cfg *config.Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -91,18 +107,45 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		Timeout:   cfg.HTTPTimeout,
 	}
 
+	scraperAPITimeout := cfg.HTTPTimeout
+	if scraperAPITimeout < 120*time.Second {
+		scraperAPITimeout = 120 * time.Second
+	}
+	httpClientScraperAPI := &http.Client{
+		Transport: transport,
+		Timeout:   scraperAPITimeout,
+	}
+
+	// Apify runs the Actor synchronously and can take up to ~90 s plus container
+	// startup overhead. Use a dedicated client so the long timeout doesn't affect
+	// Browserless / ScrapingAnt requests that share the same transport.
+	// Timeout must exceed the maximum possible Actor run duration (300 s) plus
+	// network round-trip and container startup overhead.
+	httpClientApify := &http.Client{
+		Transport: transport,
+		Timeout:   340 * time.Second,
+	}
+
 	// Determine which providers are available based on configuration.
 	useBrowserless := cfg.HasBrowserless()
 	useScrapingAnt := cfg.HasScrapingAnt()
+	useScraperAPI := cfg.HasScraperAPI()
+	useApify := cfg.HasApify()
 
 	client := &Client{
-		config:         cfg,
-		httpClient:     httpClient,
-		semLocal:       make(chan struct{}, cfg.LocalConcurrency),
-		semBrowserless: make(chan struct{}, cfg.MaxConcurrency),
-		semScrapingAnt: make(chan struct{}, cfg.MaxConcurrency),
-		useBrowserless: useBrowserless,
-		useScrapingAnt: useScrapingAnt,
+		config:               cfg,
+		httpClient:           httpClient,
+		httpClientScraperAPI: httpClientScraperAPI,
+		httpClientApify:      httpClientApify,
+		semLocal:             make(chan struct{}, cfg.LocalConcurrency),
+		semBrowserless:       make(chan struct{}, cfg.MaxConcurrency),
+		semScrapingAnt:       make(chan struct{}, cfg.MaxConcurrency),
+		semScraperAPI:        make(chan struct{}, max(1, cfg.ScraperAPIConcurrency)),
+		semApify:             make(chan struct{}, cfg.MaxConcurrency),
+		useBrowserless:       useBrowserless,
+		useScrapingAnt:       useScrapingAnt,
+		useScraperAPI:        useScraperAPI,
+		useApify:             useApify,
 	}
 
 	client.initLocalHeadless()
@@ -126,6 +169,18 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 		}
 		return c.fetchWithProvider(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
 
+	case ProviderScraperAPI:
+		if !c.useScraperAPI {
+			return 0, fmt.Errorf("scraperapi not configured")
+		}
+		return c.fetchWithProvider(ctx, artistID, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi")
+
+	case ProviderApify:
+		if !c.useApify {
+			return 0, fmt.Errorf("apify not configured")
+		}
+		return c.fetchWithProvider(ctx, artistID, c.semApify, c.fetchViaApify, "apify")
+
 	case ProviderBrowserless:
 		if !c.useBrowserless {
 			return 0, fmt.Errorf("browserless not configured")
@@ -133,8 +188,8 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 		return c.fetchWithProvider(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
 
 	case ProviderAny:
-		// Default strategy: Local headless -> Browserless -> ScrapingAnt
-		providerErrors := make([]string, 0, 3)
+		// Default strategy: Local headless -> Browserless -> ScrapingAnt -> ScraperAPI -> Apify
+		providerErrors := make([]string, 0, 5)
 
 		if c.useLocal.Load() {
 			count, err := c.fetchWithProvider(ctx, artistID, c.semLocal, c.fetchViaLocalHeadless, "local")
@@ -164,6 +219,28 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 				return count, nil
 			}
 			providerErrors = append(providerErrors, fmt.Sprintf("scrapingant: %v", err))
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+		}
+
+		if c.useScraperAPI {
+			count, err := c.fetchWithProvider(ctx, artistID, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi")
+			if err == nil {
+				return count, nil
+			}
+			providerErrors = append(providerErrors, fmt.Sprintf("scraperapi: %v", err))
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+		}
+
+		if c.useApify {
+			count, err := c.fetchWithProvider(ctx, artistID, c.semApify, c.fetchViaApify, "apify")
+			if err == nil {
+				return count, nil
+			}
+			providerErrors = append(providerErrors, fmt.Sprintf("apify: %v", err))
 		}
 
 		if len(providerErrors) > 0 {
@@ -178,8 +255,18 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 
 func (c *Client) fetchWithProvider(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
 	timeout := c.config.RequestTimeout
-	if providerName == "scrapingant" {
-		timeout = 60 * time.Second
+	if providerName == "scrapingant" || providerName == "scraperapi" {
+		if timeout < 60*time.Second {
+			timeout = 60 * time.Second
+		}
+	}
+	// Apify runs the Actor synchronously; the Actor itself is given 90 s to
+	// complete (see the timeout= query param in fetchViaApify). Add 30 s of
+	// overhead for container startup and network round-trips.
+	if providerName == "apify" {
+		if timeout < 120*time.Second {
+			timeout = 120 * time.Second
+		}
 	}
 
 	var requestCtx context.Context
@@ -216,7 +303,7 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 		return 0, fmt.Errorf("failed to build Browserless request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClientScraperAPI.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("browserless http request failed: %w", err)
 	}
@@ -387,18 +474,83 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 		return 0, fmt.Errorf("scrapingant failed to read response body: %w", err)
 	}
 
-	return c.parseScrapingAntHTML(body)
+	return parseHTMLMonthlyListeners(body, "scrapingant")
 }
 
-// parseScrapingAntHTML parses the HTML body returned by ScrapingAnt
+// fetchViaScraperAPI fetches the monthly listener count via ScraperAPI HTML scraping.
+func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, error) {
+	if c.config.ScraperAPIToken == "" || c.config.ScraperAPIEndpoint == "" {
+		return 0, fmt.Errorf("scraperapi not configured")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.ScraperAPIEndpoint, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create ScraperAPI request: %w", err)
+	}
+
+	q := req.URL.Query()
+	q.Set("api_key", c.config.ScraperAPIToken)
+	q.Set("url", fmt.Sprintf("https://open.spotify.com/artist/%s", artistID))
+	q.Set("render", "true")
+	if selector := strings.TrimSpace(c.config.ScraperAPIWaitForSelector); selector != "" {
+		q.Set("wait_for_selector", selector)
+	}
+	req.URL.RawQuery = q.Encode()
+
+	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("Connection", "keep-alive")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("scraperapi http request failed: %w", err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close ScraperAPI response body: %v\n", closeErr)
+		}
+	}()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired {
+		return 0, fmt.Errorf("scraperapi quota/authentication error (status %d)", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		snippet := strings.TrimSpace(string(snippetBytes))
+		if snippet != "" {
+			if len(snippet) > 400 {
+				snippet = snippet[:400] + "..."
+			}
+			return 0, fmt.Errorf("scraperapi unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
+		}
+		return 0, fmt.Errorf("scraperapi unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("scraperapi failed to read response body: %w", err)
+	}
+
+	return parseHTMLMonthlyListeners(body, "scraperapi")
+}
+
+// parseHTMLMonthlyListeners parses a rendered Spotify artist page HTML body
 // and extracts the "X monthly listeners" number.
-func (c *Client) parseScrapingAntHTML(body []byte) (int, error) {
+func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 	html := string(body)
+
+	// Fast path: Spotify JSON blobs often include "monthlyListeners":<number>.
+	jsonMatch := regexp.MustCompile(`"monthlyListeners"\s*:\s*(\d+)`).FindStringSubmatch(html)
+	if len(jsonMatch) == 2 {
+		count, err := strconv.Atoi(jsonMatch[1])
+		if err == nil && count > 0 {
+			return count, nil
+		}
+	}
 
 	// Look for the "monthly listeners" phrase and backtrack to extract the number.
 	idx := strings.Index(strings.ToLower(html), "monthly listeners")
 	if idx == -1 {
-		return 0, fmt.Errorf("scrapingant: 'monthly listeners' text not found")
+		return 0, fmt.Errorf("%s: 'monthly listeners' text not found", source)
 	}
 
 	// Scan backwards from idx to find a reasonable boundary for the number.
@@ -421,7 +573,7 @@ func (c *Client) parseScrapingAntHTML(body []byte) (int, error) {
 	}
 
 	if startNum == -1 || endNum == -1 || startNum >= endNum {
-		return 0, fmt.Errorf("scrapingant: could not locate numeric listeners value")
+		return 0, fmt.Errorf("%s: could not locate numeric listeners value", source)
 	}
 
 	numberStr := segment[startNum:endNum]
@@ -429,7 +581,7 @@ func (c *Client) parseScrapingAntHTML(body []byte) (int, error) {
 
 	count, err := strconv.Atoi(strings.TrimSpace(numberStr))
 	if err != nil {
-		return 0, fmt.Errorf("scrapingant: failed to parse listener count %q: %w", numberStr, err)
+		return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)
 	}
 
 	return count, nil

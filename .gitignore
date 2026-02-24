@@ -53,4 +53,4 @@ __pycache__/
 # AI tooling (user-specific)
 /AGENTS.md
 .gemini/
-.agents/
+# .agents/

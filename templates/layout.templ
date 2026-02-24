@@ -131,9 +131,9 @@ templ SSEIndicator() {
 templ QueueJobsWidget() {
 	<div
 		class="hidden lg:flex items-center gap-2"
-		data-signals="{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsProcessing:0,jobsFailed:0}"
+		data-signals="{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsFailed:0,forceRetry:false}"
 		data-init="@get('/api/queue')"
-		data-on-interval__5s="@get('/api/queue')"
+		data-on-interval__5s="if ($forceRetry && ($jobsQueued > 0 || $jobsFailed > 0)) { @post('/api/queue/retry') } @get('/api/queue'); if ($forceRetry && $jobsQueued === 0 && $jobsFailed === 0) { $forceRetry = false }"
 	>
 		<span class="badge badge-outline badge-sm font-mono" title="JetStream pending messages">
 			Q:<span data-text="$queuePending">0</span>
@@ -141,8 +141,19 @@ templ QueueJobsWidget() {
 		<span class="badge badge-outline badge-sm font-mono" title="In-flight (unacked) messages">
 			A:<span data-text="$queueAckPending">0</span>
 		</span>
-		<span class="badge badge-outline badge-sm font-mono" title="Jobs queued / processing / failed">
-			J:<span data-text="$jobsQueued">0</span>/<span data-text="$jobsProcessing">0</span>/<span data-text="$jobsFailed">0</span>
+		<span class="badge badge-error badge-sm font-mono" title="Failed jobs">
+			F:<span data-text="$jobsFailed">0</span>
+		</span>
+		<button
+			class="btn btn-xs btn-warning"
+			title="Force retries until queued and failed are zero"
+			data-on:click="if ($forceRetry) { $forceRetry = false } else { $forceRetry = true; @post('/api/queue/retry') } @get('/api/queue')"
+		>
+			<span data-show="!$forceRetry">Force Retry</span>
+			<span data-show="$forceRetry">Retrying...</span>
+		</button>
+		<span class="badge badge-success badge-sm font-mono" data-show="$forceRetry">
+			Auto
 		</span>
 		<span
 			class="badge badge-error badge-sm font-mono"
