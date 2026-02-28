@@ -1,5 +1,12 @@
+# .github/ISSUE_TEMPLATE/config.yml
 blank_issues_enabled: false
 contact_links:
-  - name: Report an Issue on GitLab
+  - name: 🐛 Report a Bug or Request a Feature
     url: https://gitlab.com/rjallais/listenledger/-/issues/new
-    about: This repository is mirrored from GitLab. Please open all issues on the primary GitLab instance.
+    about: We use GitLab for our issue tracker and Kanban boards.
+  - name: 💬 Ask a Question
+    url: https://github.com/rjallais/ListenLedger/discussions
+    about: Need help? Use GitHub Discussions!
+  - name: 💻 Contribute Code (Merge Requests)
+    url: https://gitlab.com/rjallais/listenledger/-/merge_requests
+    about: We use GitLab for Merge Requests and AI Code Reviews.
