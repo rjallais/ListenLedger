@@ -1,0 +1,54 @@
+# name: forgejo-ci
+#
+# on:
+#   push:
+#     branches:
+#       - main
+#   pull_request:
+#
+# permissions:
+#   contents: read
+#
+# jobs:
+#   test:
+#     runs-on: ubuntu-latest
+#     env:
+#       GOEXPERIMENT: jsonv2
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+#
+#       - name: Setup Go
+#         uses: actions/setup-go@v5
+#         with:
+#           go-version-file: go.mod
+#
+#       - name: Compile test packages
+#         run: go test ./... -run TestDoesNotExist
+#
+#       - name: Run tests
+#         run: go test ./...
+#
+#   dispatch-github-oci:
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     needs: test
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: read
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+#
+#       - name: Dispatch OCI build to GitHub
+#         env:
+#           GITHUB_OWNER: ${{ secrets.GITHUB_OWNER }}
+#           GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+#           GITHUB_TOKEN: ${{ secrets.GITHUB_DISPATCH_TOKEN }}
+#           SOURCE_SHA: ${{ github.sha }}
+#           SOURCE_REF: ${{ github.ref }}
+#         run: |
+#           if [ -z "${GITHUB_OWNER}" ] || [ -z "${GITHUB_REPO}" ] || [ -z "${GITHUB_TOKEN}" ]; then
+#             echo "Skipping dispatch: missing GitHub dispatch secrets."
+#             exit 0
+#           fi
+#           bash .forge-sync/dispatch-github-oci.sh
