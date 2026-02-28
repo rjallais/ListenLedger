@@ -84,10 +84,11 @@ type batchProgressSnapshot struct {
 }
 
 type Handler struct {
-	app *pocketbase.PocketBase
-	nc  *nats.Conn
-	js  jetstream.JetStream
-	cfg *config.Config
+	app       *pocketbase.PocketBase
+	nc        *nats.Conn
+	js        jetstream.JetStream
+	cfg       *config.Config
+	startedAt time.Time
 
 	batchMu      sync.RWMutex
 	batches      map[string]*batchProgress
@@ -99,10 +100,11 @@ type Handler struct {
 // New creates a new Handler instance.
 func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg *config.Config) *Handler {
 	return &Handler{
-		app: app,
-		nc:  nc,
-		js:  js,
-		cfg: cfg,
+		app:       app,
+		nc:        nc,
+		js:        js,
+		cfg:       cfg,
+		startedAt: time.Now(),
 
 		batches:     make(map[string]*batchProgress),
 		artistBatch: make(map[string]string),
@@ -148,6 +150,7 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 	r.GET("/api/quota", h.handleQuota)
 	r.GET("/api/queue", h.handleQueue)
 	r.POST("/api/queue/retry", h.handleQueueRetry)
+	r.GET("/api/health", h.handleHealth)
 
 	log.Println("[handlers] Routes registered")
 }
@@ -2214,6 +2217,18 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	}
 
 	return h.handleQueue(e)
+}
+
+// handleHealth returns a lightweight JSON health check with app name and uptime.
+func (h *Handler) handleHealth(e *core.RequestEvent) error {
+	uptime := time.Since(h.startedAt)
+	return e.JSON(http.StatusOK, map[string]any{
+		"status":     "ok",
+		"app":        "ListenLedger",
+		"version":    "0.1.0",
+		"uptime_s":   int(uptime.Seconds()),
+		"started_at": h.startedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 // handleRefresh triggers a refresh request for an artist.
