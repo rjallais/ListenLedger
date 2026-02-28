@@ -1,17 +1,17 @@
 //go:build goexperiment.jsonv2
 
-// Package main provides the WebMusicCollection Dashboard
+// Package main provides the ListenLedger Dashboard
 // powered by PocketBase, NATS, Templ, and Datastar.
 package main
 
 import (
-	"MonthlyListeners/config"
-	"MonthlyListeners/internal/appdir"
-	"MonthlyListeners/internal/correlation"
-	"MonthlyListeners/internal/handlers"
-	"MonthlyListeners/internal/messaging"
-	"MonthlyListeners/internal/worker"
-	_ "MonthlyListeners/migrations"
+	"ListenLedger/config"
+	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/handlers"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/worker"
+	_ "ListenLedger/migrations"
 	"context"
 	"fmt"
 	"log"

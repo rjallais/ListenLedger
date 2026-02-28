@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"MonthlyListeners/config"
-	"MonthlyListeners/internal/spotify"
+	"ListenLedger/config"
+	"ListenLedger/internal/spotify"
 )
 
 func main() {

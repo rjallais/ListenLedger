@@ -4,10 +4,11 @@
 package spotify
 
 import (
-	"MonthlyListeners/config"
+	"ListenLedger/config"
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,10 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrQuotaExhausted is returned when a provider's quota or billing limit has
+// been reached. Callers should not retry the request against the same provider.
+var ErrQuotaExhausted = errors.New("provider quota exhausted")
 
 // Provider defines the service used to fetch listener data.
 type Provider int
@@ -314,7 +319,7 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return 0, fmt.Errorf("browserless quota exceeded (401)")
+		return 0, fmt.Errorf("browserless quota exceeded (401): %w", ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("browserless unexpected status code: %d", resp.StatusCode)
@@ -351,7 +356,7 @@ func (c *Client) buildBrowserlessRequest(ctx context.Context, artistID string) (
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
 	return req, nil
@@ -441,7 +446,7 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	// The monthly listeners text is dynamically rendered and appears in the HTML.
 	req.URL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := c.httpClient.Do(req)
@@ -454,6 +459,9 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 		}
 	}()
 
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusPaymentRequired {
+		return 0, fmt.Errorf("scrapingant quota/rate limit exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Attempt to read a small snippet of the response body for debugging.
 		// Limit the read to avoid consuming large bodies; ignore read errors here.
@@ -497,7 +505,7 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 	}
 	req.URL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
 	resp, err := c.httpClient.Do(req)
@@ -511,7 +519,7 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired {
-		return 0, fmt.Errorf("scraperapi quota/authentication error (status %d)", resp.StatusCode)
+		return 0, fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

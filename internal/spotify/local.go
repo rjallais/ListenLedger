@@ -4,8 +4,8 @@
 package spotify
 
 import (
-	"MonthlyListeners/config"
-	chromeutil "MonthlyListeners/internal/chrome"
+	"ListenLedger/config"
+	chromeutil "ListenLedger/internal/chrome"
 	"context"
 	"encoding/json/v2"
 	"fmt"

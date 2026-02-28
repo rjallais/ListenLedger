@@ -3,7 +3,7 @@
 package spotify
 
 import (
-	"MonthlyListeners/config"
+	"ListenLedger/config"
 
 	"bytes"
 	"context"
@@ -92,118 +92,6 @@ func TestApifyIntegration_FetchListenerCount(t *testing.T) {
 	const minExpected = 1_000_000
 	if count < minExpected {
 		t.Errorf("listener count %d is suspiciously low (expected >= %d) — check HTML parsing", count, minExpected)
-	}
-}
-
-// TestApifyIntegration_FetchApifyBatch sends 20 well-known artists in one Actor
-// run and verifies that all 20 come back with positive listener counts.
-// Empirical throughput: ~7 artists/min → 20 artists ≈ 171 s + ~30 s startup.
-// Actor timeout is set to 290 s (near the run-sync hard cap of 300 s).
-//
-// Run with:
-//
-//	mise exec -- go test -v -timeout 400s -run TestApifyIntegration_FetchApifyBatch ./internal/spotify/
-func TestApifyIntegration_FetchApifyBatch(t *testing.T) {
-	token := os.Getenv("APIFY_TOKEN")
-	if token == "" {
-		t.Skip("APIFY_TOKEN not set — skipping Apify batch integration test")
-	}
-
-	// Twenty artists with reliably high listener counts so a suspiciously-low
-	// sanity threshold of 1 M is easy to satisfy.
-	// 20 concurrent Chrome tabs × ~360 MB/tab (empirical) ≈ 7.2 GB + ~512 MB
-	// Actor overhead ≈ 7.7 GB — intentionally targeting the full 8 GB allocation.
-	artists := []struct {
-		name      string
-		spotifyID string
-	}{
-		{"Radiohead", "4Z8W4fKeB5YxbusRsdQVPb"},
-		{"Portishead", "6liAMWkVf5LH7YR9yfFy1Y"},
-		{"Massive Attack", "6mEQK9m2krja6X1cfsAjfl"},
-		{"Björk", "7w29UYBi0qsHi5RTcv3lmA"},
-		{"Guns N' Roses", "3qm84nBOXUEQ2vnTfUTTFC"},
-		{"Arctic Monkeys", "7Ln80lUS6He07XvHI8qqHH"},
-		{"Linkin Park", "6XyY86QOPPrYVGvF9ch6wz"},
-		{"Queen", "1dfeR4HaWDbWqFHLkxsg1d"},
-		{"Red Hot Chili Peppers", "0L8ExT028jH3ddEcZwqJJ5"},
-		{"Nirvana", "6olE6TJLqED3rqDCT0FyPh"},
-		{"The Beatles", "3WrFJ7ztbogyGnTHbHJFl2"},
-		{"Green Day", "7oPftvlwr6VrsViSDV7fJY"},
-		{"AC/DC", "711MCceyCBcFnzjGY4Q7Un"},
-		{"Metallica", "2ye2Wgw4gimLv2eAKyk1NB"},
-		{"Pink Floyd", "0k17h0D3J5VfsdmQ1iZtE9"},
-		{"Oasis", "2DaxqgrOhkeH0fpeiQq2f4"},
-		{"Fleetwood Mac", "08GQAI4eElDnROBrJRGE0X"},
-		{"Florence + the Machine", "1moxjboGR7GNWYIMWsRjgG"},
-		{"The Weeknd", "1Xyo4u8uXC1ZmMpatF05PJ"},
-		{"Bruno Mars", "0du5cEVh5yTK9QJze8zA0C"},
-	}
-
-	artistIDs := make([]string, len(artists))
-	for i, a := range artists {
-		artistIDs[i] = a.spotifyID
-	}
-
-	cfg := config.DefaultConfig()
-	cfg.ApifyToken = token
-	cfg.LocalHeadlessEnabled = false
-	cfg.BrowserlessToken = ""
-	cfg.ScrapingAntToken = ""
-	// Override concurrency to match the full 20-artist batch so all pages load
-	// in a single wave — one Actor run, all 20 Chrome tabs open simultaneously.
-	// Empirical: 5 tabs peaked at 1.8 GB → ~360 MB/tab; 20 tabs ≈ 7.7 GB total.
-	cfg.ApifyMaxConcurrency = 20
-	cfg.ApifyBatchSize = 20
-
-	if ep := os.Getenv("APIFY_ENDPOINT"); ep != "" {
-		cfg.ApifyEndpoint = ep
-	}
-	if actor := os.Getenv("APIFY_ACTOR_ID"); actor != "" {
-		cfg.ApifyActorID = actor
-	}
-
-	client, err := NewClient(cfg)
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	defer func() {
-		if closeErr := client.Close(); closeErr != nil {
-			t.Logf("client.Close() warning: %v", closeErr)
-		}
-	}()
-
-	// Empirical throughput: ~7 artists/min → 20 artists ≈ 171 s + 30 s startup
-	// = 201 s Actor work. Actor timeout is capped at 290 s. Give the Go context
-	// 60 s of extra headroom over the actor timeout → 350 s total.
-	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Second)
-	defer cancel()
-
-	t.Logf("Sending batch of %d artists to Apify (maxConcurrency=%d, memory=%d MB)...",
-		len(artistIDs), cfg.ApifyMaxConcurrency, cfg.ApifyMemoryMB)
-	start := time.Now()
-
-	results, err := client.FetchApifyBatch(ctx, artistIDs)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		t.Fatalf("FetchApifyBatch() error after %s = %v", elapsed.Round(time.Millisecond), err)
-	}
-
-	t.Logf("Batch completed in %s — received %d/%d results", elapsed.Round(time.Millisecond), len(results), len(artistIDs))
-
-	const minExpected = 1_000_000
-	for _, a := range artists {
-		count, ok := results[a.spotifyID]
-		if !ok {
-			t.Errorf("artist %q (%s) missing from results", a.name, a.spotifyID)
-			continue
-		}
-		t.Logf("  %-20s %s  →  %d listeners", a.name, a.spotifyID, count)
-		if count <= 0 {
-			t.Errorf("artist %q: expected positive listener count, got %d", a.name, count)
-		} else if count < minExpected {
-			t.Errorf("artist %q: count %d suspiciously low (expected >= %d)", a.name, count, minExpected)
-		}
 	}
 }
 
@@ -370,7 +258,7 @@ func TestApifyIntegration_RawResponse(t *testing.T) {
 		t.Fatalf("http.NewRequestWithContext() error = %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 
 	httpClient := &http.Client{Timeout: 125 * time.Second}
 

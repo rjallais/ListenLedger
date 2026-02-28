@@ -3,7 +3,7 @@
 package main
 
 import (
-	"MonthlyListeners/internal/appdir"
+	"ListenLedger/internal/appdir"
 
 	"bufio"
 	"flag"

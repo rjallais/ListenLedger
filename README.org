@@ -1,9 +1,9 @@
-#+TITLE: WebMusicCollection
+#+TITLE: ListenLedger
 #+AUTHOR:
 #+OPTIONS: toc:t num:t
 
 * Overview
-WebMusicCollection is a Go web dashboard for managing a Spotify music collection and refreshing monthly listener counts. It runs PocketBase with embedded NATS and serves a Templ + Datastar UI.
+ListenLedger is a Go web dashboard for managing a Spotify music collection and refreshing monthly listener counts. It runs PocketBase with embedded NATS and serves a Templ + Datastar UI.
 
 * Features
 - Albums, artists, and songs dashboards
@@ -20,7 +20,7 @@ The server validates each artist Spotify ID and infers artist names from Spotify
 * Architecture
 - =main.go= bootstraps PocketBase, embedded NATS, routes, and the worker
 - =internal/handlers/= HTTP + SSE endpoints
-- =internal/worker/= NATS consumer for shared =scrape.request= with adaptive provider selection
+- =internal/worker/= NATS consumer with pull-based per-provider goroutine pools (quota-aware shutdown)
 - =internal/fetcher/= retries and orchestration
 - =internal/spotify/= provider clients
 - =pb_schema.json= schema export for collections
@@ -30,7 +30,7 @@ Set env vars (via =mise= or your shell):
 
 #+begin_src toml
 [env]
-PROJECT_NAME = "WebMusicCollection"
+PROJECT_NAME = "ListenLedger"
 BROWSERLESS_TOKEN = "your_browserless_token"
 SCRAPINGANT_TOKEN = "your_scrapingant_token"
 SCRAPERAPI_TOKEN = "your_scraperapi_token"
@@ -58,8 +58,8 @@ Data is stored in =pb_data/= at the repo root by default; override with =PB_DATA
 GOEXPERIMENT=jsonv2 go run .
 
 # or build
-GOEXPERIMENT=jsonv2 go build -o WebMusicCollection .
-GOEXPERIMENT=jsonv2 ./WebMusicCollection
+GOEXPERIMENT=jsonv2 go build -o ListenLedger .
+GOEXPERIMENT=jsonv2 ./ListenLedger
 #+end_src
 
 The web UI is served on PocketBase's default port (usually http://127.0.0.1:8090). Admin UI: =/_/=.

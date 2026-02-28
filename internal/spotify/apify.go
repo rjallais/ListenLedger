@@ -132,7 +132,7 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 
 	resp, err := c.httpClientApify.Do(req)
 	if err != nil {
@@ -148,7 +148,7 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 		return 0, fmt.Errorf("apify: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
-		return 0, fmt.Errorf("apify: quota exceeded (status 402)")
+		return 0, fmt.Errorf("apify: quota exceeded (status 402): %w", ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -259,7 +259,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		StartURLs:           startURLs,
 		PageFunction:        buildApifyPageFunction(),
 		MaxRequestsPerCrawl: len(artistIDs),
-		MaxConcurrency: maxConc,
+		MaxConcurrency:      maxConc,
 		// networkidle2: same reasoning as the single-artist path — let React
 		// finish fetching listener data before pageFunction runs.
 		WaitUntil: []string{"networkidle2"},
@@ -286,7 +286,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		return nil, fmt.Errorf("apify batch: failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "WebMusicCollection/1.0")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
 
 	log.Printf("[apify] batch run: %d artists, maxConcurrency=%d, actorTimeout=%ds, memory=%dMB",
 		len(artistIDs), maxConc, actorTimeoutSec, c.config.ApifyMemoryMB)
@@ -305,7 +305,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		return nil, fmt.Errorf("apify batch: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
-		return nil, fmt.Errorf("apify batch: quota exceeded (status 402)")
+		return nil, fmt.Errorf("apify batch: quota exceeded (status 402): %w", ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

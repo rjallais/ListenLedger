@@ -4,10 +4,11 @@
 package fetcher
 
 import (
-	"MonthlyListeners/config"
-	"MonthlyListeners/internal/spotify"
+	"ListenLedger/config"
+	"ListenLedger/internal/spotify"
 
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -133,6 +134,11 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 		}
 
 		lastErr = err
+
+		// Don't retry on quota exhaustion — it's permanent for the billing cycle.
+		if errors.Is(err, spotify.ErrQuotaExhausted) {
+			break
+		}
 
 		// Don't retry on context cancellation
 		if ctx.Err() != nil {

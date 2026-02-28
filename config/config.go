@@ -1,10 +1,10 @@
 //go:build goexperiment.jsonv2
 
-// Package config provides configuration management for the WebMusicCollection application.
+// Package config provides configuration management for the ListenLedger application.
 package config
 
 import (
-	"MonthlyListeners/internal/chrome"
+	"ListenLedger/internal/chrome"
 
 	"errors"
 	"os"

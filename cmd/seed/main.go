@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"MonthlyListeners/internal/appdir"
+	"ListenLedger/internal/appdir"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"

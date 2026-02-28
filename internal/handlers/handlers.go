@@ -4,12 +4,12 @@
 package handlers
 
 import (
-	"MonthlyListeners/config"
-	"MonthlyListeners/internal/correlation"
-	"MonthlyListeners/internal/messaging"
-	"MonthlyListeners/internal/priority"
-	"MonthlyListeners/internal/quota"
-	"MonthlyListeners/templates"
+	"ListenLedger/config"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/priority"
+	"ListenLedger/internal/quota"
+	"ListenLedger/templates"
 	"context"
 	"encoding/json"
 	"fmt"
