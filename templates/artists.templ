@@ -1,0 +1,759 @@
+package templates
+
+import "fmt"
+
+// ArtistsPage renders the artists page with pagination
+templ ArtistsPage(artists []Artist, rockMetalCount, everythingElseCount int, currentGenre string, waitingCount int, pagination Pagination) {
+	@Layout("Artists", "artists") {
+		<div class="flex justify-between items-center mb-6">
+			<h1 class="text-3xl font-bold">Artists</h1>
+			<div class="flex gap-2">
+				<label for="batch-refresh-modal" class="btn btn-secondary gap-2">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+					</svg>
+					Batch Refresh
+				</label>
+				<label for="add-artist-modal" class="btn btn-primary gap-2">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+					</svg>
+					Add Artist
+				</label>
+			</div>
+		</div>
+		<!-- Genre Tabs -->
+		<div role="tablist" class="tabs tabs-boxed mb-6">
+			@GenreTab("/artists?genre=rock_metal", "🎸 Rock & Metal", rockMetalCount, currentGenre == "rock_metal")
+			@GenreTab("/artists?genre=everything_else", "🎵 Everything Else", everythingElseCount, currentGenre == "everything_else")
+		</div>
+		<!-- Artists Table -->
+		@ArtistsTable(artists, currentGenre)
+		<!-- Pagination -->
+		if pagination.TotalPages > 1 {
+			@PaginationControls(pagination)
+		}
+		<!-- Artist Queue Section (waiting artists) -->
+		if waitingCount > 0 {
+			<div class="divider mt-10"></div>
+			@ArtistQueueSection(waitingCount)
+		}
+		<!-- Add Artist Modal -->
+		@AddArtistModal(currentGenre)
+		<!-- Batch Refresh Modal -->
+		@BatchRefreshModal()
+	}
+}
+
+// GenreTab renders a genre tab link
+templ GenreTab(href, label string, count int, active bool) {
+	<a
+		href={ templ.SafeURL(href) }
+		role="tab"
+		class={ "tab", templ.KV("tab-active", active) }
+	>
+		{ label } ({ fmt.Sprintf("%d", count) })
+	</a>
+}
+
+// ArtistsTable renders the artists data table
+templ ArtistsTable(artists []Artist, currentGenre string) {
+	<div class="overflow-x-auto">
+		<table class="table table-zebra">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th class="text-right">Monthly Listeners</th>
+					<th class="text-center">List Status</th>
+					<th class="text-center">Collection</th>
+					<th>Last Updated</th>
+					<th class="text-center">Actions</th>
+				</tr>
+			</thead>
+			<tbody id={ "artists-tbody-" + currentGenre }>
+				for _, artist := range artists {
+					@ArtistRow(artist)
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+// ArtistRow renders a single artist table row
+templ ArtistRow(artist Artist) {
+	<tr id={ "artist-" + artist.ID } data-signals={ artistSignalsJSON(artist) }>
+		<td class="font-medium">{ artist.Name }</td>
+		<td class="text-right font-mono">
+			<span
+				id={ "artist-listeners-" + artist.ID }
+				data-text={ artistListenerSignal(artist.ID) }
+			>{ FormatNumber(artist.MonthlyListeners) }</span>
+		</td>
+		<td class="text-center">
+			<div class="flex justify-center">
+				@ListStatusDropdown(artist.ID, artist.ListStatus)
+			</div>
+		</td>
+		<td class="text-center">
+			<div class="flex items-center justify-center gap-1">
+				<button
+					class="btn btn-xs btn-ghost btn-square"
+					data-on:click={ "@post('/api/artists/" + artist.ID + "/collection/dec')" }
+					title="Decrease collection count"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+					</svg>
+				</button>
+				<span class="font-mono min-w-[4rem] text-center">
+					if artist.TotalSongs > 0 {
+						{ fmt.Sprintf("%d/%d", artist.CollectionSongs, artist.TotalSongs) }
+					} else {
+						{ fmt.Sprintf("%d", artist.CollectionSongs) }
+					}
+				</span>
+				<button
+					class="btn btn-xs btn-ghost btn-square"
+					data-on:click={ "@post('/api/artists/" + artist.ID + "/collection/inc')" }
+					title="Increase collection count"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+					</svg>
+				</button>
+			</div>
+		</td>
+		<td>
+			<span
+				id={ "artist-updated-" + artist.ID }
+				data-text={ artistUpdatedSignal(artist.ID) }
+			>{ artist.LastUpdated }</span>
+		</td>
+		<td class="text-center">
+			@ArtistRefreshAction(artist.ID)
+		</td>
+	</tr>
+}
+
+// ListStatusDropdown renders an interactive dropdown to change list status
+templ ListStatusDropdown(artistID, currentStatus string) {
+	<div class="dropdown dropdown-end">
+		<div tabindex="0" role="button" class="btn btn-xs btn-ghost gap-1">
+			@ListStatusBadge(currentStatus)
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+			</svg>
+		</div>
+		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-48">
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "included") }
+					data-on:click={ "@post('/api/artists/" + artistID + "/status/included')" }
+				>
+					<span class="badge badge-success badge-xs"></span>
+					Included
+				</button>
+			</li>
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "recently_added") }
+					data-on:click={ "@post('/api/artists/" + artistID + "/status/recently_added')" }
+				>
+					<span class="badge badge-info badge-xs"></span>
+					Recently Added
+				</button>
+			</li>
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "not_added") }
+					data-on:click={ "@post('/api/artists/" + artistID + "/status/not_added')" }
+				>
+					<span class="badge badge-ghost badge-xs"></span>
+					Not Added
+				</button>
+			</li>
+			<li class="border-t border-base-300 mt-1 pt-1">
+				<button
+					class={ "text-left text-warning", templ.KV("active", currentStatus == "waiting") }
+					data-on:click={ "@post('/api/artists/" + artistID + "/status/waiting')" }
+				>
+					<span class="badge badge-warning badge-xs"></span>
+					Move to Queue
+				</button>
+			</li>
+		</ul>
+	</div>
+}
+
+// ListStatusBadge renders a colored badge based on list status
+templ ListStatusBadge(status string) {
+	switch status {
+		case "included":
+			<span class="badge badge-success badge-sm gap-1">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+				</svg>
+				included
+			</span>
+		case "recently_added":
+			<span class="badge badge-info badge-sm gap-1">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+				</svg>
+				recently added
+			</span>
+		case "not_added":
+			<span class="badge badge-ghost badge-sm gap-1">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+				</svg>
+				not added
+			</span>
+		case "waiting":
+			<span class="badge badge-warning badge-sm gap-1">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+				</svg>
+				queued
+			</span>
+		default:
+			<span class="badge badge-ghost badge-sm">unknown</span>
+	}
+}
+
+// StatusBadge renders a status badge based on fetch status
+templ StatusBadge(status string) {
+	switch status {
+		case "pending":
+			<span class="badge badge-warning">pending</span>
+		case "failed":
+			<span class="badge badge-error">failed</span>
+		default:
+			<span class="badge badge-ghost">idle</span>
+	}
+}
+
+// FetchStatusDot renders a small colored dot that binds to fetch status signal.
+templ FetchStatusDot(artistID string) {
+	<span class="w-2 h-2 rounded-full bg-warning animate-pulse" title="Fetching..." data-show={ artistFetchStatusSignal(artistID) + " === 'pending'" }></span>
+	<span class="w-2 h-2 rounded-full bg-error" title="Fetch failed" data-show={ artistFetchStatusSignal(artistID) + " === 'failed'" }></span>
+}
+
+// ArtistRefreshAction renders the refresh control bound to fetch status signal.
+templ ArtistRefreshAction(artistID string) {
+	<div class="flex items-center justify-center gap-1">
+		@FetchStatusDot(artistID)
+		<button
+			class="btn btn-xs btn-primary"
+			data-on:click={ "@post('/api/refresh/" + artistID + "')" }
+			data-attr-disabled={ artistFetchStatusSignal(artistID) + " === 'pending' ? '' : null" }
+			title="Refresh monthly listeners"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+			</svg>
+		</button>
+	</div>
+}
+
+// PaginationControls renders pagination links
+templ PaginationControls(p Pagination) {
+	<div class="flex items-center justify-between mt-6">
+		<div class="text-sm text-base-content/70">
+			Showing page { fmt.Sprintf("%d", p.CurrentPage) } of { fmt.Sprintf("%d", p.TotalPages) } ({ fmt.Sprintf("%d", p.TotalCount) } total artists)
+		</div>
+		<div class="join">
+			<!-- Previous -->
+			if p.CurrentPage > 1 {
+				<a href={ templ.SafeURL(paginationURL(p.Genre, p.CurrentPage-1)) } class="join-item btn btn-sm">«</a>
+			} else {
+				<button class="join-item btn btn-sm btn-disabled">«</button>
+			}
+			<!-- Page Numbers -->
+			for _, pageNum := range paginationRange(p.CurrentPage, p.TotalPages) {
+				if pageNum == p.CurrentPage {
+					<button class="join-item btn btn-sm btn-active">{ fmt.Sprintf("%d", pageNum) }</button>
+				} else {
+					<a href={ templ.SafeURL(paginationURL(p.Genre, pageNum)) } class="join-item btn btn-sm">{ fmt.Sprintf("%d", pageNum) }</a>
+				}
+			}
+			<!-- Next -->
+			if p.CurrentPage < p.TotalPages {
+				<a href={ templ.SafeURL(paginationURL(p.Genre, p.CurrentPage+1)) } class="join-item btn btn-sm">»</a>
+			} else {
+				<button class="join-item btn btn-sm btn-disabled">»</button>
+			}
+		</div>
+	</div>
+}
+
+func paginationURL(genre string, page int) string {
+	return fmt.Sprintf("/artists?genre=%s&page=%d", genre, page)
+}
+
+func paginationRange(current, total int) []int {
+	start := current - 2
+	if start < 1 {
+		start = 1
+	}
+	end := start + 4
+	if end > total {
+		end = total
+		start = end - 4
+		if start < 1 {
+			start = 1
+		}
+	}
+	var pages []int
+	for i := start; i <= end; i++ {
+		pages = append(pages, i)
+	}
+	return pages
+}
+
+// ArtistQueueSection renders the waiting artists queue with lazy loading
+templ ArtistQueueSection(count int) {
+	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
+		<input type="checkbox" class="artist-queue-toggle" aria-label="Toggle artists queue"/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-warning">Queue</span>
+			<span>Artists Waiting to be Added ({ fmt.Sprintf("%d", count) })</span>
+		</div>
+		<div class="collapse-content">
+			<p class="text-sm text-base-content/70 mb-4">
+				Artists queued for potential inclusion. Click "Show Next" to reveal one at a time.
+				Use the dropdown to change their status when you decide to include them.
+			</p>
+			<div id="artists-waiting" class="space-y-3">
+				<!-- Lazy loaded -->
+			</div>
+			<div id="load-more-artists" class="mt-4">
+				<button
+					class="btn btn-warning btn-sm gap-2"
+					data-on:click="@get('/api/artists/waiting?offset=0&limit=1')"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+					</svg>
+					Show First Artist
+				</button>
+			</div>
+		</div>
+	</div>
+}
+
+// WaitingArtistRows renders waiting artist cards for lazy loading responses
+templ WaitingArtistRows(artists []Artist, nextOffset int, hasMore bool) {
+	<!-- Merge into the artists-waiting container -->
+	<div id="artists-waiting" data-merge-mode="append">
+		for _, artist := range artists {
+			@WaitingArtistCard(artist)
+		}
+	</div>
+	<!-- Update the load more button -->
+	if hasMore {
+		<div id="load-more-artists" data-merge-mode="morph">
+			<button
+				class="btn btn-warning btn-sm gap-2"
+				data-on:click={ "@get('/api/artists/waiting?offset=" + fmt.Sprintf("%d", nextOffset) + "&limit=1')" }
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+				</svg>
+				Show Next Artist ({ fmt.Sprintf("%d", nextOffset) } shown)
+			</button>
+		</div>
+	} else {
+		<div id="load-more-artists" data-merge-mode="morph">
+			<p class="text-sm text-success">✓ All waiting artists shown</p>
+		</div>
+	}
+}
+
+// WaitingArtistCard renders a waiting artist as a card with actions
+templ WaitingArtistCard(artist Artist) {
+	<div id={ "artist-card-" + artist.ID } class="card bg-base-200 shadow-sm border border-base-300" data-signals={ artistSignalsJSON(artist) }>
+		<div class="card-body py-4 px-5">
+			<div class="flex justify-between items-start gap-4">
+				<div class="flex-1">
+					<h3 class="font-semibold text-lg">{ artist.Name }</h3>
+					<div class="flex flex-wrap gap-2 mt-2 text-sm text-base-content/70">
+						<span class="flex items-center gap-1">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
+							</svg>
+							<span
+								id={ "artist-card-listeners-" + artist.ID }
+								data-text={ artistListenerSignal(artist.ID) }
+							>{ FormatNumber(artist.MonthlyListeners) }</span> monthly listeners
+						</span>
+						<span class="flex items-center gap-1">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+							</svg>
+							<span
+								id={ "artist-card-updated-" + artist.ID }
+								data-text={ artistUpdatedSignal(artist.ID) }
+							>{ artist.LastUpdated }</span>
+						</span>
+						<span class="badge badge-ghost badge-sm">{ artist.GenreGroup }</span>
+					</div>
+				</div>
+				<div class="flex flex-col gap-2 items-end">
+					<!-- Status Dropdown -->
+					@ListStatusDropdown(artist.ID, artist.ListStatus)
+					@ArtistRefreshAction(artist.ID)
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// RemovedArtistCard replaces a card in the queue when artist is moved to main list
+templ RemovedArtistCard(artistID string) {
+	<div id={ "artist-card-" + artistID } class="alert alert-success py-2">
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+		</svg>
+		<span class="text-sm">Moved to main list</span>
+	</div>
+}
+
+// ArtistStatusTransition moves artists between the queue and the main table.
+templ ArtistStatusTransition(oldStatus string, artist Artist, currentGenre string) {
+	if oldStatus == "waiting" {
+		<div id={ "artist-card-" + artist.ID } data-merge-mode="remove"></div>
+	} else {
+		<tr id={ "artist-" + artist.ID } data-merge-mode="remove"></tr>
+	}
+	if artist.ListStatus == "waiting" {
+		<div id="artists-waiting" data-merge-mode="prepend">
+			@WaitingArtistCard(artist)
+		</div>
+	} else {
+		if artist.GenreGroup == currentGenre {
+			<tbody id={ "artists-tbody-" + currentGenre } data-merge-mode="prepend">
+				@ArtistRow(artist)
+			</tbody>
+		}
+	}
+}
+
+// AddArtistModal renders the modal for adding a new artist
+templ AddArtistModal(currentGenre string) {
+	<input type="checkbox" id="add-artist-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Artist</h3>
+				<label for="add-artist-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+			<form
+				id="add-artist-form"
+				data-on:submit="evt.preventDefault(); @post('/api/artists', {contentType: 'form'})"
+			>
+				<!-- Artist Name -->
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Artist Name *</span>
+					</label>
+					<label>
+						<input
+							type="text"
+							name="name"
+							placeholder="Enter artist name"
+							class="input input-bordered w-full"
+							required
+						/>
+					</label>
+				</div>
+				<!-- Artist ID (Spotify ID) -->
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Artist ID (Spotify ID) *</span>
+					</label>
+					<label>
+						<input
+							type="text"
+							name="spotify_id"
+							placeholder="e.g., 0L8ExT028jH3ddEcZwqJJ5"
+							class="input input-bordered w-full font-mono"
+							required
+						/>
+					</label>
+				</div>
+				<!-- Genre Group -->
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Genre Group</span>
+					</label>
+					<label>
+						<select name="genre_group" class="select select-bordered w-full">
+							<option value="rock_metal" selected?={ currentGenre == "rock_metal" }>🎸 Rock & Metal</option>
+							<option value="everything_else" selected?={ currentGenre == "everything_else" }>🎵 Everything Else</option>
+						</select>
+					</label>
+				</div>
+				<!-- List Status -->
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Initial Status</span>
+					</label>
+					<label>
+						<select name="list_status" class="select select-bordered w-full">
+							<option value="recently_added" selected>Recently Added</option>
+							<option value="included">Included</option>
+							<option value="not_added">Not Added</option>
+							<option value="waiting">Waiting (Queue)</option>
+						</select>
+					</label>
+				</div>
+				<!-- Optional: Monthly Listeners and Collection Songs in a row -->
+				<div class="grid grid-cols-2 gap-4 mb-6">
+					<div class="form-control w-full">
+						<label class="label">
+							<span class="label-text">Monthly Listeners</span>
+							<span class="label-text-alt text-base-content/50">Optional</span>
+						</label>
+						<label>
+							<input
+								type="number"
+								name="monthly_listeners"
+								placeholder="0"
+								min="0"
+								class="input input-bordered w-full"
+							/>
+						</label>
+					</div>
+					<div class="form-control w-full">
+						<label class="label">
+							<span class="label-text">Collection Songs</span>
+							<span class="label-text-alt text-base-content/50">Optional</span>
+						</label>
+						<label>
+							<input
+								type="number"
+								name="collection_songs"
+								placeholder="0"
+								min="0"
+								class="input input-bordered w-full"
+							/>
+						</label>
+					</div>
+				</div>
+				<!-- Actions -->
+				<div class="modal-action">
+					<label for="add-artist-modal" class="btn btn-ghost">Cancel</label>
+					<button type="submit" class="btn btn-primary gap-2">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+						</svg>
+						Add Artist
+					</button>
+				</div>
+			</form>
+			<div id="add-artist-feedback" class="mt-2"></div>
+		</div>
+		<label class="modal-backdrop" for="add-artist-modal">Close</label>
+	</div>
+}
+
+// NewArtistRow wraps ArtistRow for prepending to table with success highlight
+templ NewArtistRow(artist Artist) {
+	<!-- Prepend to the table body for the artist's genre -->
+	<tbody id={ "artists-tbody-" + artist.GenreGroup } data-merge-mode="prepend">
+		<tr id={ "artist-" + artist.ID } class="bg-success/10" data-signals={ artistSignalsJSON(artist) }>
+			<td class="font-medium">{ artist.Name }</td>
+			<td class="text-right font-mono">
+				<span
+					id={ "artist-listeners-" + artist.ID }
+					data-text={ artistListenerSignal(artist.ID) }
+				>{ FormatNumber(artist.MonthlyListeners) }</span>
+			</td>
+			<td class="text-center">
+				<div class="flex justify-center">
+					@ListStatusDropdown(artist.ID, artist.ListStatus)
+				</div>
+			</td>
+			<td class="text-center">
+				<div class="flex items-center justify-center gap-1">
+					<button
+						class="btn btn-xs btn-ghost btn-square"
+						data-on:click={ "@post('/api/artists/" + artist.ID + "/collection/dec')" }
+						title="Decrease collection count"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+						</svg>
+					</button>
+					<span class="font-mono min-w-[4rem] text-center">
+						if artist.TotalSongs > 0 {
+							{ fmt.Sprintf("%d/%d", artist.CollectionSongs, artist.TotalSongs) }
+						} else {
+							{ fmt.Sprintf("%d", artist.CollectionSongs) }
+						}
+					</span>
+					<button
+						class="btn btn-xs btn-ghost btn-square"
+						data-on:click={ "@post('/api/artists/" + artist.ID + "/collection/inc')" }
+						title="Increase collection count"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+						</svg>
+					</button>
+				</div>
+			</td>
+			<td>
+				<span
+					id={ "artist-updated-" + artist.ID }
+					data-text={ artistUpdatedSignal(artist.ID) }
+				>{ artist.LastUpdated }</span>
+			</td>
+			<td class="text-center">
+				@ArtistRefreshAction(artist.ID)
+			</td>
+		</tr>
+	</tbody>
+}
+
+templ AddArtistSuccessNotice(artistName string) {
+	<div id="add-artist-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<p class="font-semibold">Artist added</p>
+				<p class="text-xs">{ artistName }</p>
+			</div>
+			<label for="add-artist-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewArtistCreateResponse(artist Artist) {
+	@NewArtistRow(artist)
+	@AddArtistSuccessNotice(artist.Name)
+}
+
+func artistSignalsJSON(artist Artist) string {
+	return fmt.Sprintf(
+		`{"artistListeners":{%q:%d},"artistUpdated":{%q:%q},"artistFetchStatus":{%q:%q}}`,
+		artist.ID,
+		artist.MonthlyListeners,
+		artist.ID,
+		artist.LastUpdated,
+		artist.ID,
+		artist.FetchStatus,
+	)
+}
+
+func artistListenerSignal(artistID string) string {
+	return fmt.Sprintf("($artistListeners[%q] ?? 0).toLocaleString('en-US')", artistID)
+}
+
+func artistUpdatedSignal(artistID string) string {
+	return fmt.Sprintf("$artistUpdated[%q]", artistID)
+}
+
+func artistFetchStatusSignal(artistID string) string {
+	return fmt.Sprintf("$artistFetchStatus[%q]", artistID)
+}
+
+templ BatchRefreshModal() {
+	<input type="checkbox" id="batch-refresh-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false}">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Batch Refresh Artists</h3>
+				<label for="batch-refresh-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+			<p class="text-sm text-base-content/70 mb-4">
+				Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped.
+				Jobs are prioritized: queued → recently added (rock first) → not added → included.
+			</p>
+			<form
+				id="batch-refresh-form"
+				data-on:submit="evt.preventDefault(); if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } @post('/api/refresh/batch', {contentType: 'form'})"
+			>
+				<input type="hidden" name="batch_id" data-bind="$batchID"/>
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Number of Artists to Refresh</span>
+					</label>
+					<select name="count" class="select select-bordered w-full">
+						<option value="5">5 artists</option>
+						<option value="10" selected>10 artists</option>
+						<option value="25">25 artists</option>
+						<option value="50">50 artists</option>
+						<option value="100">100 artists</option>
+					</select>
+					<label class="label">
+						<span class="label-text-alt text-base-content/60">Higher counts use more scraping quota</span>
+					</label>
+				</div>
+				<div class="modal-action">
+					<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
+					<button type="submit" class="btn btn-primary">Start Refresh</button>
+				</div>
+			</form>
+			<div id="batch-refresh-result"></div>
+		</div>
+		<label class="modal-backdrop" for="batch-refresh-modal"></label>
+	</div>
+}
+
+templ BatchRefreshResult(batchID string, queued int, completed int, stats map[string]int, done bool) {
+	<div id="batch-refresh-result" class="mt-4" data-batch-done={ fmt.Sprintf("%t", done) }>
+		<div class="alert alert-warning" data-show="$batchTotal === 0">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M5 3h14l2 3v12l-2 3H5l-2-3V6l2-3z"></path>
+			</svg>
+			<div class="flex-1">
+				<h4 class="font-bold">No Artists Queued</h4>
+				<p class="text-sm">No eligible artists were queued in this attempt.</p>
+			</div>
+			<label for="batch-refresh-modal" class="btn btn-warning btn-sm">Close</label>
+		</div>
+		<div class="alert alert-info" data-show="$batchTotal > 0 && !$batchDone">
+			<span class="loading loading-spinner loading-sm"></span>
+			<div class="flex-1">
+				<h4 class="font-bold">Batch Refresh Running</h4>
+				<div class="text-sm">
+					{ fmt.Sprintf("%d artists queued for refresh", queued) }
+					<div class="mt-1 text-xs">
+						P0 (queued): { fmt.Sprintf("%d", stats["P0_Queued"]) } |
+						P1-P2 (recent): { fmt.Sprintf("%d", stats["P1_RockRecent"]+stats["P2_OtherRecent"]) } |
+						P3-P4 (not added): { fmt.Sprintf("%d", stats["P3_RockNotAdded"]+stats["P4_OtherNotAdded"]) } |
+						P5-P6 (included): { fmt.Sprintf("%d", stats["P5_RockIncluded"]+stats["P6_OtherIncluded"]) }
+					</div>
+				</div>
+			</div>
+			<label for="batch-refresh-modal" class="btn btn-ghost btn-sm">Close</label>
+		</div>
+		<div class="alert alert-success" data-show="$batchTotal > 0 && $batchDone">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<h4 class="font-bold">Batch Refresh Complete</h4>
+				<p class="text-sm" data-text="'Processed ' + $batchCompleted + ' / ' + $batchTotal + ' artists'"></p>
+			</div>
+			<label for="batch-refresh-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+		if batchID != "" {
+			<div class="mt-2 text-[11px] font-mono text-base-content/50">
+				Batch ID: { batchID }
+			</div>
+		}
+		<div class="mt-3" data-show="$batchTotal > 0">
+			<div class="flex items-center justify-between text-xs text-base-content/70 mb-1">
+				<span data-text="'Progress: ' + $batchCompleted + ' / ' + $batchTotal"></span>
+				<span data-text="Math.round($batchCompleted / $batchTotal * 100) + '%'"></span>
+			</div>
+			<progress class="progress progress-primary w-full" data-attr={ "{'value': $batchCompleted, 'max': $batchTotal}" }>{ fmt.Sprintf("%d", completed) }</progress>
+		</div>
+	</div>
+}

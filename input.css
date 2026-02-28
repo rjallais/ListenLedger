@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Custom styles */
+.nav-active {
+  background: oklch(var(--p));
+  color: oklch(var(--pc));
+  border-radius: 0.5rem;
+}

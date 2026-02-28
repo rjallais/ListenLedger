@@ -15,7 +15,12 @@
 # vendor/
 
 # Project specific ignores
+artist_stats.json
+*.bak.txt
+main_go_bck
+main_original.go
 .mise.local.toml
+spotify_scraper/artist_stats.json
 
 # Build artifacts and temp files
 bin/
@@ -24,6 +29,7 @@ pb_data/
 static/styles.css
 node_modules/
 .air.toml
+ListenLedger
 update_listeners
 /seed
 backups/
@@ -47,4 +53,4 @@ __pycache__/
 # AI tooling (user-specific)
 /AGENTS.md
 .gemini/
-.agents/
+# .agents/

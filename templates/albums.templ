@@ -1,0 +1,458 @@
+package templates
+
+import "fmt"
+
+// AlbumsPage renders the albums collection page with lazy-loaded sections
+templ AlbumsPage(fullCount, processedCount, waitingCount int) {
+	@Layout("Albums", "albums") {
+		<div class="flex justify-between items-center mb-6">
+			<h1 class="text-3xl font-bold">Albums Collection</h1>
+			<label for="add-album-modal" class="btn btn-primary gap-2">
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+				</svg>
+				Add Album
+			</label>
+		</div>
+		<div class="space-y-4">
+			@AlbumSectionLazy("full", "Full", "Complete Albums", "success", fullCount)
+			@AlbumSectionLazy("processed", "Processed", "Partially Complete", "warning", processedCount)
+			@AlbumSectionWaiting("waiting", "Waiting", "Not Yet Processed", waitingCount)
+		</div>
+		@AddAlbumModal()
+	}
+}
+
+// AlbumSectionLazy renders a collapsible album section with lazy loading
+templ AlbumSectionLazy(status, badge, title, badgeColor string, count int) {
+	<div class={ "collapse collapse-arrow border", sectionBorderClass(badgeColor) }>
+		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class={ "badge", badgeClass(badgeColor) }>{ badge }</span>
+			<span>{ title } ({ fmt.Sprintf("%d", count) })</span>
+		</div>
+		<div class="collapse-content">
+			<div class="overflow-x-auto">
+				<table class="table table-zebra">
+					<thead>
+						<tr>
+							<th>Title</th>
+							<th>Artist</th>
+							<th class="text-center">Status</th>
+							<th class="text-right">Songs</th>
+						</tr>
+					</thead>
+					<tbody id={ "albums-" + status }>
+						<!-- Lazy loaded -->
+					</tbody>
+				</table>
+			</div>
+			<div id={ "load-more-" + status } class="mt-4 text-center">
+				<button
+					class="btn btn-outline btn-sm"
+					data-on:click={ "@get('/api/albums/" + status + "?offset=0')" }
+				>
+					Load Albums
+				</button>
+			</div>
+		</div>
+	</div>
+}
+
+// AlbumSectionWaiting renders the waiting section with one-at-a-time loading
+templ AlbumSectionWaiting(status, badge, title string, count int) {
+	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
+		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-ghost">{ badge }</span>
+			<span>{ title } ({ fmt.Sprintf("%d", count) })</span>
+		</div>
+		<div class="collapse-content">
+			<p class="text-sm text-base-content/70 mb-4">
+				Albums waiting to be processed. Click "Show Next" to reveal one at a time.
+			</p>
+			<div id="albums-waiting" class="space-y-2">
+				<!-- Lazy loaded -->
+			</div>
+			<div id="load-more-waiting" class="mt-4">
+				<button
+					class="btn btn-primary btn-sm gap-2"
+					data-on:click="@get('/api/albums/waiting?offset=0&limit=1')"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+					</svg>
+					Show First Album
+				</button>
+			</div>
+		</div>
+	</div>
+}
+
+// AlbumRows renders album table rows for lazy loading responses
+// This returns HTML fragments that Datastar will merge into the DOM
+templ AlbumRows(albums []Album, status string, nextOffset int, hasMore bool) {
+	<!-- Merge into the albums container -->
+	if status == "waiting" {
+		<div id={ "albums-" + status } data-merge-mode="append">
+			for _, album := range albums {
+				@AlbumCard(album)
+			}
+		</div>
+	} else {
+		<tbody id={ "albums-" + status } data-merge-mode="append">
+			for _, album := range albums {
+				@AlbumRow(album)
+			}
+		</tbody>
+	}
+	<!-- Update the load more button -->
+	if hasMore {
+		if status == "waiting" {
+			<div id="load-more-waiting" data-merge-mode="morph">
+				<button
+					class="btn btn-primary btn-sm gap-2"
+					data-on:click={ "@get('/api/albums/waiting?offset=" + fmt.Sprintf("%d", nextOffset) + "&limit=1')" }
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+					</svg>
+					Show Next Album ({ fmt.Sprintf("%d", nextOffset) } shown)
+				</button>
+			</div>
+		} else {
+			<div id={ "load-more-" + status } data-merge-mode="morph">
+				<button
+					class="btn btn-outline btn-sm"
+					data-on:click={ "@get('/api/albums/" + status + "?offset=" + fmt.Sprintf("%d", nextOffset) + "')" }
+				>
+					Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+				</button>
+			</div>
+		}
+	} else {
+		if status == "waiting" {
+			<div id="load-more-waiting" data-merge-mode="morph">
+				<p class="text-sm text-success">✓ All albums shown</p>
+			</div>
+		} else {
+			<div id={ "load-more-" + status } data-merge-mode="morph">
+				<p class="text-sm text-success text-center">✓ All albums loaded</p>
+			</div>
+		}
+	}
+}
+
+// AlbumRow renders a single album table row
+templ AlbumRow(album Album) {
+	<tr id={ "album-" + album.ID }>
+		<td class="font-medium">{ album.Title }</td>
+		<td>{ album.ArtistName }</td>
+		<td class="text-center">
+			<div class="flex justify-center">
+				@AlbumStatusDropdown(album.ID, album.Status)
+			</div>
+		</td>
+		<td class="text-right">
+			@AlbumSongControls(album)
+		</td>
+	</tr>
+}
+
+// AlbumCard renders an album as a card (for waiting section)
+templ AlbumCard(album Album) {
+	<div id={ "album-card-" + album.ID } class="card bg-base-200 shadow-sm">
+		<div class="card-body py-3 px-4">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h3 class="font-medium">{ album.Title }</h3>
+					<p class="text-sm text-base-content/70">{ album.ArtistName }</p>
+				</div>
+				<div class="flex items-center gap-3">
+					@AlbumSongControls(album)
+					@AlbumStatusDropdown(album.ID, album.Status)
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// AlbumSongControls renders collection and total song controls.
+templ AlbumSongControls(album Album) {
+	<div class="flex flex-col items-end gap-1">
+		<div class="flex items-center gap-1">
+			<span class="text-xs opacity-60">Owned</span>
+			<button
+				class="btn btn-xs btn-ghost btn-square"
+				data-on:click={ "@post('/api/albums/" + album.ID + "/collection/dec')" }
+				title="Decrease owned songs"
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+				</svg>
+			</button>
+			<span class="font-mono min-w-[2.5rem] text-center">{ fmt.Sprintf("%d", album.CollectionSongs) }</span>
+			<button
+				class="btn btn-xs btn-ghost btn-square"
+				data-on:click={ "@post('/api/albums/" + album.ID + "/collection/inc')" }
+				title="Increase owned songs"
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+				</svg>
+			</button>
+		</div>
+		<div class="flex items-center gap-1">
+			<span class="text-xs opacity-60">Total</span>
+			<button
+				class="btn btn-xs btn-ghost btn-square"
+				data-on:click={ "@post('/api/albums/" + album.ID + "/total/dec')" }
+				title="Decrease total songs"
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+				</svg>
+			</button>
+			<span class="font-mono min-w-[2.5rem] text-center">{ fmt.Sprintf("%d", album.TotalSongs) }</span>
+			<button
+				class="btn btn-xs btn-ghost btn-square"
+				data-on:click={ "@post('/api/albums/" + album.ID + "/total/inc')" }
+				title="Increase total songs"
+			>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+				</svg>
+			</button>
+		</div>
+	</div>
+}
+
+// AlbumStatusDropdown renders a dropdown to change album status.
+templ AlbumStatusDropdown(albumID, currentStatus string) {
+	<div class="dropdown dropdown-end">
+		<div tabindex="0" role="button" class="btn btn-xs btn-ghost gap-1">
+			@AlbumStatusBadge(currentStatus)
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+			</svg>
+		</div>
+		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-40">
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "full") }
+					data-on:click={ "@post('/api/albums/" + albumID + "/status/full')" }
+				>
+					<span class="badge badge-success badge-xs"></span>
+					Full
+				</button>
+			</li>
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "processed") }
+					data-on:click={ "@post('/api/albums/" + albumID + "/status/processed')" }
+				>
+					<span class="badge badge-warning badge-xs"></span>
+					Processed
+				</button>
+			</li>
+			<li>
+				<button
+					class={ "text-left", templ.KV("active", currentStatus == "waiting") }
+					data-on:click={ "@post('/api/albums/" + albumID + "/status/waiting')" }
+				>
+					<span class="badge badge-ghost badge-xs"></span>
+					Waiting
+				</button>
+			</li>
+		</ul>
+	</div>
+}
+
+// AlbumStatusBadge renders the current album status as a badge.
+templ AlbumStatusBadge(status string) {
+	switch status {
+		case "full":
+			<span class="badge badge-success badge-sm">full</span>
+		case "processed":
+			<span class="badge badge-warning badge-sm">processed</span>
+		case "waiting":
+			<span class="badge badge-ghost badge-sm">waiting</span>
+		default:
+			<span class="badge badge-ghost badge-sm">unknown</span>
+	}
+}
+
+// NewAlbumEntry inserts a newly created album into the correct section.
+templ NewAlbumEntry(album Album) {
+	if album.Status == "waiting" {
+		<div id="albums-waiting" data-merge-mode="prepend">
+			@AlbumCard(album)
+		</div>
+	} else {
+		<tbody id={ "albums-" + album.Status } data-merge-mode="prepend">
+			@AlbumRow(album)
+		</tbody>
+	}
+}
+
+templ AddAlbumSuccessNotice(albumTitle string) {
+	<div id="add-album-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<p class="font-semibold">Album added</p>
+				<p class="text-xs">{ albumTitle }</p>
+			</div>
+			<label for="add-album-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewAlbumCreateResponse(album Album) {
+	@NewAlbumEntry(album)
+	@AddAlbumSuccessNotice(album.Title)
+}
+
+// AlbumStatusTransition moves an album between sections after a status change.
+templ AlbumStatusTransition(oldStatus string, album Album) {
+	if oldStatus == "waiting" {
+		<div id={ "album-card-" + album.ID } data-merge-mode="remove"></div>
+	} else {
+		<tr id={ "album-" + album.ID } data-merge-mode="remove"></tr>
+	}
+	if album.Status == "waiting" {
+		<div id="albums-waiting" data-merge-mode="prepend">
+			@AlbumCard(album)
+		</div>
+	} else {
+		<tbody id={ "albums-" + album.Status } data-merge-mode="prepend">
+			@AlbumRow(album)
+		</tbody>
+	}
+}
+
+// AddAlbumModal renders the modal for adding a new album.
+templ AddAlbumModal() {
+	<input type="checkbox" id="add-album-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Album</h3>
+				<label for="add-album-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+			<form
+				id="add-album-form"
+				data-on:submit="evt.preventDefault(); @post('/api/albums', {contentType: 'form'})"
+			>
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Album Title *</span>
+					</label>
+					<label>
+						<input
+							type="text"
+							name="title"
+							placeholder="Enter album title"
+							class="input input-bordered w-full"
+							required
+						/>
+					</label>
+				</div>
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Artist Name *</span>
+					</label>
+					<label>
+						<input
+							type="text"
+							name="artist_name"
+							placeholder="Enter artist name"
+							class="input input-bordered w-full"
+							required
+						/>
+					</label>
+				</div>
+				<div class="form-control w-full mb-4">
+					<label class="label">
+						<span class="label-text">Status</span>
+					</label>
+					<label>
+						<select name="status" class="select select-bordered w-full">
+							<option value="waiting" selected>Waiting</option>
+							<option value="processed">Processed</option>
+							<option value="full">Full</option>
+						</select>
+					</label>
+				</div>
+				<div class="grid grid-cols-2 gap-4 mb-6">
+					<div class="form-control w-full">
+						<label class="label">
+							<span class="label-text">Owned Songs</span>
+							<span class="label-text-alt text-base-content/50">Optional</span>
+						</label>
+						<label>
+							<input
+								type="number"
+								name="collection_songs"
+								placeholder="0"
+								min="0"
+								class="input input-bordered w-full"
+							/>
+						</label>
+					</div>
+					<div class="form-control w-full">
+						<label class="label">
+							<span class="label-text">Total Songs</span>
+							<span class="label-text-alt text-base-content/50">Optional</span>
+						</label>
+						<label>
+							<input
+								type="number"
+								name="total_songs"
+								placeholder="0"
+								min="0"
+								class="input input-bordered w-full"
+							/>
+						</label>
+					</div>
+				</div>
+				<div class="modal-action">
+					<label for="add-album-modal" class="btn btn-ghost">Cancel</label>
+					<button type="submit" class="btn btn-primary gap-2">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+						</svg>
+						Add Album
+					</button>
+				</div>
+			</form>
+			<div id="add-album-feedback" class="mt-2"></div>
+		</div>
+		<label class="modal-backdrop" for="add-album-modal">Close</label>
+	</div>
+}
+
+func sectionBorderClass(color string) string {
+	switch color {
+	case "success":
+		return "bg-success/10 border-success"
+	case "warning":
+		return "bg-warning/10 border-warning"
+	default:
+		return "bg-base-100 border-base-300"
+	}
+}
+
+func badgeClass(color string) string {
+	switch color {
+	case "success":
+		return "badge-success"
+	case "warning":
+		return "badge-warning"
+	default:
+		return "badge-ghost"
+	}
+}
