@@ -4,7 +4,8 @@
 package quota
 
 import (
-	"MonthlyListeners/config"
+	"ListenLedger/config"
+
 	"context"
 	"encoding/json/v2"
 	"fmt"
@@ -13,13 +14,21 @@ import (
 	"time"
 )
 
-// ApifyUserResponse represents the Apify account/user API response.
-type ApifyUserResponse struct {
+// ApifyLimitsResponse represents the Apify /v2/users/me/limits endpoint response.
+// This endpoint returns both plan limits and current usage in a single call,
+// unlike /v2/users/me which only contains plan metadata (not actual consumption).
+type ApifyLimitsResponse struct {
 	Data struct {
-		Plan struct {
-			MonthlyUsageCreditsUSD float64 `json:"monthlyUsageCreditsUsd"`
+		Limits struct {
 			MaxMonthlyUsageUSD     float64 `json:"maxMonthlyUsageUsd"`
-		} `json:"plan"`
+			MaxActorMemoryGbytes   float64 `json:"maxActorMemoryGbytes"`
+			MaxConcurrentActorJobs int     `json:"maxConcurrentActorJobs"`
+		} `json:"limits"`
+		Current struct {
+			MonthlyUsageUSD     float64 `json:"monthlyUsageUsd"`
+			ActorMemoryGbytes   float64 `json:"actorMemoryGbytes"`
+			ActiveActorJobCount int     `json:"activeActorJobCount"`
+		} `json:"current"`
 	} `json:"data"`
 }
 
@@ -42,10 +51,27 @@ type ScrapingAntUsageResponse struct {
 	RemainedCredits  int    `json:"remained_credits"`
 }
 
+// ScraperAPIAccountResponse represents the ScraperAPI /account endpoint response.
+type ScraperAPIAccountResponse struct {
+	RequestCount  int    `json:"requestCount"`
+	RequestLimit  int    `json:"requestLimit"`
+	ConcLimit     int    `json:"concurrencyLimit"`
+	FailedCount   int    `json:"failedRequestCount"`
+	PlanName      string `json:"planName"`
+	AccountStatus string `json:"accountStatus"`
+}
+
 // Checker provides methods to check quota for scraping providers.
 type Checker struct {
 	cfg        *config.Config
 	httpClient *http.Client
+
+	// Overridable base URLs for quota API endpoints.
+	// When empty the production defaults are used.
+	// These exist primarily so unit tests can point at httptest servers.
+	ScrapingAntAPIBase string // default: "https://api.scrapingant.com"
+	ScraperAPIBase     string // default: "https://api.scraperapi.com"
+	ApifyAPIBase       string // default: "https://api.apify.com"
 }
 
 // NewChecker creates a new quota checker.
@@ -58,16 +84,41 @@ func NewChecker(cfg *config.Config) *Checker {
 	}
 }
 
+func (c *Checker) scrapingAntAPIBase() string {
+	if c.ScrapingAntAPIBase != "" {
+		return c.ScrapingAntAPIBase
+	}
+	return "https://api.scrapingant.com"
+}
+
+func (c *Checker) scraperAPIBase() string {
+	if c.ScraperAPIBase != "" {
+		return c.ScraperAPIBase
+	}
+	return "https://api.scraperapi.com"
+}
+
+func (c *Checker) apifyAPIBase() string {
+	if c.ApifyAPIBase != "" {
+		return c.ApifyAPIBase
+	}
+	return "https://api.apify.com"
+}
+
 // CheckAll checks quota for all configured providers.
 func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 	results := make(map[string]Info)
+
+	if c.cfg.HasLocalHeadless() {
+		results["local"] = c.CheckLocalHeadless()
+	}
 
 	if c.cfg.HasScrapingAnt() {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
 	}
 
 	if c.cfg.HasScraperAPI() {
-		results["scraperapi"] = c.CheckScraperAPI()
+		results["scraperapi"] = c.CheckScraperAPI(ctx)
 	}
 
 	if c.cfg.HasBrowserless() {
@@ -81,6 +132,25 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 	return results
 }
 
+// CheckLocalHeadless checks whether local headless scraping is available.
+// Local headless has no external quota — it is always available when enabled
+// and a Chrome binary can be found.
+func (c *Checker) CheckLocalHeadless() Info {
+	if !c.cfg.HasLocalHeadless() {
+		return Info{
+			Provider:  "local",
+			Available: false,
+			Error:     "Local headless not enabled",
+		}
+	}
+
+	return Info{
+		Provider:  "local",
+		Available: true,
+		Error:     fmt.Sprintf("Local headless enabled (concurrency %d); no external quota", c.cfg.LocalConcurrency),
+	}
+}
+
 // CheckScrapingAnt checks the quota for ScrapingAnt.
 func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 	if !c.cfg.HasScrapingAnt() {
@@ -92,7 +162,7 @@ func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 	}
 
 	// ScrapingAnt usage endpoint
-	url := fmt.Sprintf("https://api.scrapingant.com/v2/usage?x-api-key=%s", c.cfg.ScrapingAntToken)
+	url := fmt.Sprintf("%s/v2/usage?x-api-key=%s", c.scrapingAntAPIBase(), c.cfg.ScrapingAntToken)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -160,8 +230,9 @@ func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 }
 
 // CheckScraperAPI checks the quota for ScraperAPI.
-// ScraperAPI free tier usage is dashboard-only; we assume availability if configured.
-func (c *Checker) CheckScraperAPI() Info {
+// It attempts the /account endpoint first. If the plan does not support it
+// (HTTP 400 or 403), we fall back to assuming the provider is available.
+func (c *Checker) CheckScraperAPI(ctx context.Context) Info {
 	if !c.cfg.HasScraperAPI() {
 		return Info{
 			Provider:  "scraperapi",
@@ -170,16 +241,94 @@ func (c *Checker) CheckScraperAPI() Info {
 		}
 	}
 
+	url := fmt.Sprintf("%s/account?api_key=%s", c.scraperAPIBase(), c.cfg.ScraperAPIToken)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Info{
+			Provider:  "scraperapi",
+			Available: true,
+			Error:     fmt.Sprintf("failed to create request (assuming available): %v", err),
+		}
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return Info{
+			Provider:  "scraperapi",
+			Available: true,
+			Error:     fmt.Sprintf("request failed (assuming available): %v", err),
+		}
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
+
+	// Authentication errors mean the token is bad — provider not available.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return Info{
+			Provider:  "scraperapi",
+			Available: false,
+			Error:     fmt.Sprintf("authentication failed (status %d) — check SCRAPERAPI_TOKEN", resp.StatusCode),
+		}
+	}
+
+	// The /account endpoint is not available on some plans (returns 400 with a
+	// text message). Fall back to assuming available when configured.
+	if resp.StatusCode != http.StatusOK {
+		return Info{
+			Provider:  "scraperapi",
+			Available: true,
+			Error:     "ScraperAPI /account endpoint not available on current plan; quota assumed available",
+		}
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Info{
+			Provider:  "scraperapi",
+			Available: true,
+			Error:     fmt.Sprintf("failed to read response (assuming available): %v", err),
+		}
+	}
+
+	var acct ScraperAPIAccountResponse
+	if err := json.Unmarshal(body, &acct); err != nil {
+		return Info{
+			Provider:  "scraperapi",
+			Available: true,
+			Error:     fmt.Sprintf("failed to parse /account response (assuming available): %v", err),
+		}
+	}
+
+	remaining := acct.RequestLimit - acct.RequestCount
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	available := remaining > 0 || acct.RequestLimit == 0 // limit==0 could mean unlimited
+
 	return Info{
-		Provider:  "scraperapi",
-		Available: true,
-		Error:     "ScraperAPI usage API not integrated; quota assumed available",
+		Provider:        "scraperapi",
+		Available:       available,
+		RemainingCredit: remaining,
+		TotalCredits:    acct.RequestLimit,
+		PlanName:        acct.PlanName,
 	}
 }
 
-// CheckApify checks the quota for Apify by calling the account info endpoint.
-// It maps the USD usage/limit values to a credit-like integer (cents) for
-// a consistent Info representation across providers.
+// CheckApify checks the quota for Apify by calling the /v2/users/me/limits
+// endpoint, which returns both plan limits and actual current usage.
+//
+// The older /v2/users/me endpoint only exposes plan metadata
+// (plan.monthlyUsageCreditsUsd is the plan *allowance*, NOT consumption),
+// so it cannot be used for quota checks.
+//
+// Availability requires two conditions:
+//  1. USD budget: current.monthlyUsageUsd < limits.maxMonthlyUsageUsd
+//  2. Memory: current.actorMemoryGbytes + requested < limits.maxActorMemoryGbytes
+//     (Apify returns HTTP 402 "actor-memory-limit-exceeded" when the total
+//     memory of running Actors would exceed the plan cap.)
 func (c *Checker) CheckApify(ctx context.Context) Info {
 	if !c.cfg.HasApify() {
 		return Info{
@@ -189,7 +338,7 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		}
 	}
 
-	url := fmt.Sprintf("https://api.apify.com/v2/users/me?token=%s", c.cfg.ApifyToken)
+	url := fmt.Sprintf("%s/v2/users/me/limits?token=%s", c.apifyAPIBase(), c.cfg.ApifyToken)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -237,8 +386,8 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		}
 	}
 
-	var userResp ApifyUserResponse
-	if err := json.Unmarshal(body, &userResp); err != nil {
+	var limitsResp ApifyLimitsResponse
+	if err := json.Unmarshal(body, &limitsResp); err != nil {
 		return Info{
 			Provider:  "apify",
 			Available: false,
@@ -246,8 +395,8 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		}
 	}
 
-	usedUSD := userResp.Data.Plan.MonthlyUsageCreditsUSD
-	maxUSD := userResp.Data.Plan.MaxMonthlyUsageUSD
+	usedUSD := limitsResp.Data.Current.MonthlyUsageUSD
+	maxUSD := limitsResp.Data.Limits.MaxMonthlyUsageUSD
 
 	// Convert USD values to integer cents for the shared Info representation.
 	usedCents := int(usedUSD * 100)
@@ -257,16 +406,34 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		remainingCents = 0
 	}
 
-	// Consider available if the account has any remaining budget.
-	// Each Actor run costs at minimum a fraction of a cent, so any positive
-	// remaining balance means we can still run tasks.
-	available := remainingCents > 0 || maxCents == 0 // maxCents==0 means unlimited/pay-as-you-go
+	// Check whether there is enough USD budget.
+	budgetAvailable := remainingCents > 0 || maxCents == 0 // maxCents==0 means unlimited/pay-as-you-go
+
+	// Check whether an Actor run of the configured size can be launched.
+	// Apify enforces a global memory cap across all concurrent runs; if
+	// current allocation + requested >= max, the run will be rejected with
+	// HTTP 402 "actor-memory-limit-exceeded".
+	requestedMemGB := float64(c.cfg.ApifyMemoryMB) / 1024.0
+	memMax := limitsResp.Data.Limits.MaxActorMemoryGbytes
+	memUsed := limitsResp.Data.Current.ActorMemoryGbytes
+	memAvailable := (memUsed + requestedMemGB) <= memMax
+
+	available := budgetAvailable && memAvailable
+
+	var errMsg string
+	if !budgetAvailable {
+		errMsg = fmt.Sprintf("USD budget exhausted ($%.2f/$%.2f used)", usedUSD, maxUSD)
+	} else if !memAvailable {
+		errMsg = fmt.Sprintf("memory limit reached (%.1f/%.1f GB in use, need %.1f GB for next run; %d active jobs)",
+			memUsed, memMax, requestedMemGB, limitsResp.Data.Current.ActiveActorJobCount)
+	}
 
 	return Info{
 		Provider:        "apify",
 		Available:       available,
 		RemainingCredit: remainingCents,
 		TotalCredits:    maxCents,
+		Error:           errMsg,
 	}
 }
 
@@ -304,11 +471,16 @@ func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 }
 
 // GetBestProvider returns the provider with the most remaining credits.
-// Priority order: ScrapingAnt (if credits remain) -> ScraperAPI ->
-// Apify (if credits remain) ->
+// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func (c *Checker) GetBestProvider(ctx context.Context) string {
 	quotas := c.CheckAll(ctx)
+
+	// Local headless is free — prefer it when enabled.
+	if local, ok := quotas["local"]; ok && local.Available {
+		return "local"
+	}
 
 	// Prefer ScrapingAnt if it has credits.
 	if sa, ok := quotas["scrapingant"]; ok && sa.Available && sa.RemainingCredit > 0 {
