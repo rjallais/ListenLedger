@@ -11,6 +11,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// main parses command-line flags, opens the SQLite source database, and creates a timestamped hot backup
+// file in the specified output directory using `VACUUM INTO`.
+//
+// It logs progress and exits with a fatal error if opening the database or performing the backup fails.
+// When shutting down, it attempts to close the database and logs a warning if close returns an error.
 func main() {
 	dbPath := flag.String("db", "pb_data/data.db", "Path to source database")
 	backupDir := flag.String("out", "backups", "Output directory for backups")

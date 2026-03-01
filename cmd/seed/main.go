@@ -58,6 +58,11 @@ func runSeed(app *pocketbase.PocketBase, dryRun bool, sheet1Path, sheet2Path str
 	return nil
 }
 
+// seedAlbums reads Sheet1 CSV at sheet1Path and creates album records in the "albums" collection.
+// It skips the header row and any rows missing title or artist, parses collection and total song counts,
+// determines album status, and either logs the intended creations when dryRun is true or saves records.
+// Returns an error if the CSV file cannot be opened or read, or if the albums collection cannot be located.
+// Individual record save failures are logged and do not abort processing.
 func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
 	file, err := os.Open(sheet1Path)
 	if err != nil {
@@ -121,6 +126,11 @@ func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) erro
 	return nil
 }
 
+// seedArtistsFromSheet1 reads artists from the given Sheet1 CSV and creates artist records for two genre groups ("rock_metal" and "everything_else").
+// 
+// It extracts fields (name, spotify_id, monthly_listeners, collection_songs, total_songs) from two separate column ranges per row, deduplicates by spotify_id, and either logs the would-be actions when dryRun is true or saves new records to the "artists" collection.
+// 
+// Returns an error if the CSV file cannot be opened or read, or if the "artists" collection cannot be located.
 func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
 	file, err := os.Open(sheet1Path)
 	if err != nil {
