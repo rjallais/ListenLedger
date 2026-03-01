@@ -151,7 +151,8 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 	r.GET("/api/quota", h.handleQuota)
 	r.GET("/api/queue", h.handleQueue)
 	r.POST("/api/queue/retry", h.handleQueueRetry)
-	r.GET("/api/health", h.handleHealth)
+	// PocketBase already provides GET /api/health. Keep app-specific health data on a dedicated path.
+	r.GET("/api/listenledger/health", h.handleAppHealth)
 
 	log.Println("[handlers] Routes registered")
 }
@@ -2220,8 +2221,8 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	return h.handleQueue(e)
 }
 
-// handleHealth returns a lightweight JSON health check with app name and uptime.
-func (h *Handler) handleHealth(e *core.RequestEvent) error {
+// handleAppHealth returns a lightweight JSON health check with app name and uptime.
+func (h *Handler) handleAppHealth(e *core.RequestEvent) error {
 	uptime := time.Since(h.startedAt)
 	return e.JSON(http.StatusOK, map[string]any{
 		"status":     "ok",
