@@ -1,0 +1,82 @@
+# =============================================================================
+# Crow CI pipeline for ListenLedger
+# Runs on push to main and on pull requests.
+# =============================================================================
+
+when:
+  - event: [push, pull_request, manual]
+    branch: main
+  - event: pull_request
+
+# ---------------------------------------------------------------------------
+# CI steps: format check → lint → build → test
+# ---------------------------------------------------------------------------
+
+steps:
+  # --[ Format ]--------------------------------------------------------------
+  - name: format
+    image: golang:1.26
+    environment:
+      GOEXPERIMENT: jsonv2
+    commands:
+      - go tool templ fmt templates
+      - |
+        if [ -n "$(git diff --name-only)" ]; then
+          echo "::error::templ fmt produced diffs — run 'go tool templ fmt templates' locally"
+          git diff --name-only
+          exit 1
+        fi
+      - test -z "$(gofmt -l .)" || { echo "::error::gofmt produced diffs:"; gofmt -l .; exit 1; }
+
+  # --[ Lint ]----------------------------------------------------------------
+  - name: lint
+    image: golangci/golangci-lint:v2.2
+    environment:
+      GOEXPERIMENT: jsonv2
+    commands:
+      - golangci-lint run --timeout 5m ./...
+    failure: ignore
+
+  # --[ Build ]---------------------------------------------------------------
+  - name: build
+    image: golang:1.26
+    environment:
+      GOEXPERIMENT: jsonv2
+    commands:
+      - go build -o /dev/null .
+
+  # --[ Test ]----------------------------------------------------------------
+  - name: test
+    image: golang:1.26
+    environment:
+      GOEXPERIMENT: jsonv2
+    commands:
+      - go test ./...
+    depends_on: [build]
+
+---
+
+# =============================================================================
+# Renovate — runs on a cron schedule configured in the Crow UI.
+# Create a cron job named "renovate" in the repository settings.
+# =============================================================================
+
+when:
+  - event: cron
+    cron: renovate
+
+steps:
+  - name: renovate
+    image: renovate/renovate:latest
+    environment:
+      RENOVATE_PLATFORM: forgejo
+      RENOVATE_ENDPOINT:
+        from_secret: renovate_endpoint
+      RENOVATE_TOKEN:
+        from_secret: renovate_token
+      RENOVATE_AUTODISCOVER: "false"
+      RENOVATE_REPOSITORIES:
+        from_secret: renovate_repos
+      LOG_LEVEL: info
+    commands:
+      - renovate
