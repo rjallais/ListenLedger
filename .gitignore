@@ -15,12 +15,7 @@
 # vendor/
 
 # Project specific ignores
-artist_stats.json
-*.bak.txt
-main_go_bck
-main_original.go
 .mise.local.toml
-spotify_scraper/artist_stats.json
 
 # Build artifacts and temp files
 bin/
