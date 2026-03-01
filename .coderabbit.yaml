@@ -25,7 +25,7 @@ reviews:
       instructions: >
         Go files in this project require the goexperiment.jsonv2 build tag.
         Verify every .go file starts with `//go:build goexperiment.jsonv2`.
-        Imports must be ordered: local (ListenLedger/...), stdlib, third-party,
+        Imports must be ordered: stdlib, third-party, local (ListenLedger/...),
         separated by blank lines. Errors should be wrapped with fmt.Errorf and %w.
         Context must be the first parameter for I/O functions.
     - path: "**/*.templ"
