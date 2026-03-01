@@ -2609,7 +2609,9 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 	return nil
 }
 
-// renderArtistRowFragment renders a single artist row for SSE updates.
+// currentGenreFromRequest infers the genre from the request Referer URL's "genre" query parameter.
+// It returns "everything_else" when that parameter equals "everything_else"; otherwise it returns "rock_metal".
+// If the Referer header is missing or cannot be parsed, "rock_metal" is returned.
 func currentGenreFromRequest(r *http.Request) string {
 	const defaultGenre = "rock_metal"
 
