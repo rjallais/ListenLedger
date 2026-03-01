@@ -76,7 +76,13 @@ type Config struct {
 	ScrapeInProgressInterval time.Duration
 }
 
-// DefaultConfig returns a configuration with sensible defaults
+// DefaultConfig returns a Config populated with sensible defaults for external providers,
+// local headless scraping, and JetStream worker tuning.
+//
+// The defaults include preconfigured endpoints and concurrency/memory settings for
+// Browserless, ScrapingAnt, ScraperAPI, and Apify, sensible HTTP and retry timeouts,
+// and JetStream backoff/delivery settings. LocalHeadlessEnabled defaults to true
+// except when running under WSL, where it is disabled.
 func DefaultConfig() *Config {
 	return &Config{
 		// Browserless defaults

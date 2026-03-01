@@ -92,7 +92,7 @@ type responseData struct {
 	} `json:"data"`
 }
 
-// NewClient creates a new Spotify client with optimized HTTP settings and provider selection.
+// for Apify). The local headless browser is initialized before returning.
 func NewClient(cfg *config.Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
