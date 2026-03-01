@@ -35,7 +35,6 @@ steps:
       GOEXPERIMENT: jsonv2
     commands:
       - golangci-lint run --timeout 5m ./...
-    failure: ignore
 
   # --[ Build ]---------------------------------------------------------------
   - name: build
