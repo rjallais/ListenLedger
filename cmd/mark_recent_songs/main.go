@@ -3,8 +3,6 @@
 package main
 
 import (
-	"ListenLedger/internal/appdir"
-
 	"bufio"
 	"flag"
 	"fmt"
@@ -14,6 +12,8 @@ import (
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"ListenLedger/internal/appdir"
 )
 
 type targetSong struct {

@@ -4,12 +4,6 @@
 package handlers
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/correlation"
-	"ListenLedger/internal/messaging"
-	"ListenLedger/internal/priority"
-	"ListenLedger/internal/quota"
-	"ListenLedger/templates"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +25,13 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/starfederation/datastar-go/datastar"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/priority"
+	"ListenLedger/internal/quota"
+	"ListenLedger/templates"
 )
 
 // sseOpts is used for short-lived SSE responses (batch POST, refresh POST, etc.)

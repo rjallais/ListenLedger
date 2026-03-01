@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"ListenLedger/internal/appdir"
-
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"ListenLedger/internal/appdir"
 )
 
 func main() {
@@ -127,9 +127,9 @@ func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) erro
 }
 
 // seedArtistsFromSheet1 reads artists from the given Sheet1 CSV and creates artist records for two genre groups ("rock_metal" and "everything_else").
-// 
+//
 // It extracts fields (name, spotify_id, monthly_listeners, collection_songs, total_songs) from two separate column ranges per row, deduplicates by spotify_id, and either logs the would-be actions when dryRun is true or saves new records to the "artists" collection.
-// 
+//
 // Returns an error if the CSV file cannot be opened or read, or if the "artists" collection cannot be located.
 func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
 	file, err := os.Open(sheet1Path)
