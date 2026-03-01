@@ -240,7 +240,7 @@ func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) 
 	if err != nil {
 		return fmt.Errorf("failed to open Sheet2: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()

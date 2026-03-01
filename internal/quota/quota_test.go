@@ -197,7 +197,7 @@ func TestCheckScrapingAnt_NotConfigured(t *testing.T) {
 func TestCheckScraperAPI_HasCredits(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"requestCount": 100,
 			"requestLimit": 5000,
 			"concurrencyLimit": 5,
@@ -233,7 +233,7 @@ func TestCheckScraperAPI_HasCredits(t *testing.T) {
 func TestCheckScraperAPI_LimitReached(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"requestCount": 5000,
 			"requestLimit": 5000,
 			"concurrencyLimit": 5,
@@ -264,7 +264,7 @@ func TestCheckScraperAPI_AccountEndpointNotAvailable(t *testing.T) {
 	// Some free plans return 400 for /account — we should fall back to "assumed available".
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `Account endpoint not available on your plan`)
+		_, _ = fmt.Fprint(w, `Account endpoint not available on your plan`)
 	}))
 	defer srv.Close()
 
@@ -318,7 +318,7 @@ func TestCheckScraperAPI_NotConfigured(t *testing.T) {
 func TestCheckApify_BudgetAndMemoryAvailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"data": {
 				"limits": {
 					"maxMonthlyUsageUsd": 5.00,
@@ -361,7 +361,7 @@ func TestCheckApify_BudgetAndMemoryAvailable(t *testing.T) {
 func TestCheckApify_BudgetExhausted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"data": {
 				"limits": {
 					"maxMonthlyUsageUsd": 5.00,
@@ -403,7 +403,7 @@ func TestCheckApify_MemoryLimitReached(t *testing.T) {
 	// Budget is fine but actor memory is fully allocated.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"data": {
 				"limits": {
 					"maxMonthlyUsageUsd": 5.00,
@@ -461,7 +461,7 @@ func TestCheckApify_MemoryPartiallyUsed(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -494,7 +494,7 @@ func TestCheckApify_MemoryPartiallyUsed(t *testing.T) {
 func TestCheckApify_AuthFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid token"}`)
+		_, _ = fmt.Fprint(w, `{"error":"invalid token"}`)
 	}))
 	defer srv.Close()
 
@@ -518,7 +518,7 @@ func TestCheckApify_AuthFailure(t *testing.T) {
 func TestCheckApify_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `internal server error`)
+		_, _ = fmt.Fprint(w, `internal server error`)
 	}))
 	defer srv.Close()
 
@@ -539,7 +539,7 @@ func TestCheckApify_ServerError(t *testing.T) {
 func TestCheckApify_MalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{not valid json`)
+		_, _ = fmt.Fprint(w, `{not valid json`)
 	}))
 	defer srv.Close()
 
@@ -575,7 +575,7 @@ func TestCheckApify_UnlimitedPlan(t *testing.T) {
 	// maxMonthlyUsageUsd=0 indicates unlimited/pay-as-you-go.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"data": {
 				"limits": {
 					"maxMonthlyUsageUsd": 0,
@@ -611,7 +611,7 @@ func TestCheckApify_OverspentBudget(t *testing.T) {
 	// Edge case: current usage exceeds max (can happen with pay-per-use overshoot).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"data": {
 				"limits": {
 					"maxMonthlyUsageUsd": 5.00,
@@ -673,13 +673,13 @@ func TestCheckAll_OnlyConfiguredProviders(t *testing.T) {
 func TestCheckAll_MultipleProviders(t *testing.T) {
 	srvSA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"plan_name":"Free","plan_total_credits":10000,"remained_credits":9000}`)
+		_, _ = fmt.Fprint(w, `{"plan_name":"Free","plan_total_credits":10000,"remained_credits":9000}`)
 	}))
 	defer srvSA.Close()
 
 	srvApify := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":{"limits":{"maxMonthlyUsageUsd":5.0,"maxActorMemoryGbytes":8.0},"current":{"monthlyUsageUsd":0.5,"actorMemoryGbytes":0.0}}}`)
+		_, _ = fmt.Fprint(w, `{"data":{"limits":{"maxMonthlyUsageUsd":5.0,"maxActorMemoryGbytes":8.0},"current":{"monthlyUsageUsd":0.5,"actorMemoryGbytes":0.0}}}`)
 	}))
 	defer srvApify.Close()
 
@@ -792,7 +792,7 @@ func TestCheckScrapingAnt_UsesCorrectURL(t *testing.T) {
 		gotPath = r.URL.Path
 		gotKey = r.URL.Query().Get("x-api-key")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"plan_name":"Test","plan_total_credits":100,"remained_credits":50}`)
+		_, _ = fmt.Fprint(w, `{"plan_name":"Test","plan_total_credits":100,"remained_credits":50}`)
 	}))
 	defer srv.Close()
 
@@ -821,7 +821,7 @@ func TestCheckApify_UsesLimitsEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":{"limits":{"maxMonthlyUsageUsd":5.0,"maxActorMemoryGbytes":8.0},"current":{"monthlyUsageUsd":0.0,"actorMemoryGbytes":0.0}}}`)
+		_, _ = fmt.Fprint(w, `{"data":{"limits":{"maxMonthlyUsageUsd":5.0,"maxActorMemoryGbytes":8.0},"current":{"monthlyUsageUsd":0.0,"actorMemoryGbytes":0.0}}}`)
 	}))
 	defer srv.Close()
 
