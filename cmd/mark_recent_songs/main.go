@@ -126,7 +126,7 @@ func parseTargets(path string) ([]targetSong, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	targets := make([]targetSong, 0, 512)
 	scanner := bufio.NewScanner(file)

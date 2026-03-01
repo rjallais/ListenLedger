@@ -21,7 +21,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open DB: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("[safebackup] warning: db.Close: %v", err)
+		}
+	}()
 
 	// Generate backup filename with timestamp
 	timestamp := time.Now().Format("20060102_150405")

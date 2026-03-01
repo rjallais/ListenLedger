@@ -97,7 +97,7 @@ func TestCheckBrowserless_NotConfigured(t *testing.T) {
 func TestCheckScrapingAnt_HasCredits(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"plan_name": "Free",
 			"start_date": "2025-01-01",
 			"end_date": "2025-02-01",
@@ -132,7 +132,7 @@ func TestCheckScrapingAnt_HasCredits(t *testing.T) {
 func TestCheckScrapingAnt_NoCredits(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"plan_name": "Free",
 			"start_date": "2025-01-01",
 			"end_date": "2025-02-01",
@@ -159,7 +159,7 @@ func TestCheckScrapingAnt_NoCredits(t *testing.T) {
 func TestCheckScrapingAnt_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":"invalid key"}`)
+		_, _ = fmt.Fprint(w, `{"error":"invalid key"}`)
 	}))
 	defer srv.Close()
 

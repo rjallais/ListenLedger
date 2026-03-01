@@ -269,7 +269,7 @@ func TestApifyIntegration_RawResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpClient.Do() error after %s = %v", time.Since(start).Round(time.Millisecond), err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	elapsed := time.Since(start).Round(time.Millisecond)
 	t.Logf("HTTP %d after %s", resp.StatusCode, elapsed)

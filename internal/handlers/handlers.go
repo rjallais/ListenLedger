@@ -1379,7 +1379,7 @@ func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID st
 	if err != nil {
 		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify to infer artist name")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
 		return "", http.StatusBadRequest, fmt.Errorf("could not infer artist name: spotify artist not found")
@@ -2607,23 +2607,6 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 
 	<-ctx.Done()
 	return nil
-}
-
-// formatNumber formats an integer with comma separators.
-func formatNumber(n int) string {
-	s := strconv.Itoa(n)
-	if len(s) <= 3 {
-		return s
-	}
-
-	var result strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result.WriteByte(',')
-		}
-		result.WriteRune(c)
-	}
-	return result.String()
 }
 
 // renderArtistRowFragment renders a single artist row for SSE updates.

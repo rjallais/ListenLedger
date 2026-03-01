@@ -63,7 +63,7 @@ func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) erro
 	if err != nil {
 		return fmt.Errorf("failed to open Sheet1: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
@@ -126,7 +126,7 @@ func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path s
 	if err != nil {
 		return fmt.Errorf("failed to open Sheet1: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
