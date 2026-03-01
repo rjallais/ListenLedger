@@ -30,7 +30,7 @@ steps:
 
   # --[ Lint ]----------------------------------------------------------------
   - name: lint
-    image: golangci/golangci-lint:v2.2
+    image: golangci/golangci-lint:v2.10
     environment:
       GOEXPERIMENT: jsonv2
     commands:
@@ -54,7 +54,6 @@ steps:
     depends_on: [build]
 
 ---
-
 # =============================================================================
 # Renovate — runs on a cron schedule configured in the Crow UI.
 # Create a cron job named "renovate" in the repository settings.
