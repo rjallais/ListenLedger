@@ -16,8 +16,9 @@ import (
 // Config holds application configuration
 type Config struct {
 	// Browserless configuration
-	BrowserlessToken    string
-	BrowserlessEndpoint string
+	BrowserlessToken       string
+	BrowserlessEndpoint    string
+	BrowserlessConcurrency int
 
 	// ScrapingAnt configuration
 	ScrapingAntToken    string
@@ -79,7 +80,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		// Browserless defaults
-		BrowserlessEndpoint: "https://production-sfo.browserless.io/chromium/bql",
+		BrowserlessEndpoint:    "https://production-sfo.browserless.io/chromium/bql",
+		BrowserlessConcurrency: 2,
 
 		// ScrapingAnt defaults
 		ScrapingAntEndpoint: "https://api.scrapingant.com/v2/general",
@@ -103,11 +105,10 @@ func DefaultConfig() *Config {
 		// ~7 artists/min throughput on 8 GB. Memory peaks at ~1.8 GB for 5 concurrent
 		// tabs; the 8 GB allocation primarily provides 2 vCPUs rather than memory.
 		ApifyMemoryMB: 8192,
-		// 5 concurrent pages: matches the autoscaler's stable concurrency under
-		// normal load without overwhelming the 2 vCPUs the 8 GB allocation provides.
-		ApifyMaxConcurrency: 5,
-		// One batch = one "wave" of concurrent pages; all 5 URLs load in parallel.
-		ApifyBatchSize: 5,
+		// Apify supports up to 25 concurrent pages in a single actor run.
+		ApifyMaxConcurrency: 25,
+		// One batch = one "wave" of concurrent pages; all 25 URLs can load in parallel.
+		ApifyBatchSize: 25,
 
 		// Local headless defaults
 		// Disabled by default on WSL since Linux Chrome is typically not installed and Windows Chrome causes popup windows
@@ -115,7 +116,7 @@ func DefaultConfig() *Config {
 		LocalConcurrency:     8,
 
 		// Shared defaults
-		MaxConcurrency:       1, // Keep at 1 due to free plan limitations
+		MaxConcurrency:       1, // Shared external providers that still use MAX_CONCURRENCY.
 		MaxRetries:           2,
 		RequestTimeout:       15 * time.Second,
 		HTTPTimeout:          30 * time.Second,
@@ -142,6 +143,11 @@ func (c *Config) LoadFromEnv() error {
 	// Optional override for Browserless endpoint
 	if endpoint := os.Getenv("BROWSERLESS_ENDPOINT"); endpoint != "" {
 		c.BrowserlessEndpoint = endpoint
+	}
+	if concStr := os.Getenv("BROWSERLESS_CONCURRENCY"); concStr != "" {
+		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
+			c.BrowserlessConcurrency = conc
+		}
 	}
 
 	// ScrapingAnt token (optional; when set, ScrapingAnt can be used alongside Browserless)
@@ -223,7 +229,7 @@ func (c *Config) LoadFromEnv() error {
 		}
 	}
 
-	// Allow overriding concurrency via env var (to tune behavior across both providers)
+	// Allow overriding shared provider concurrency (used by ScrapingAnt).
 	if concStr := os.Getenv("MAX_CONCURRENCY"); concStr != "" {
 		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
 			c.MaxConcurrency = conc
@@ -319,6 +325,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxConcurrency <= 0 {
 		return errors.New("max concurrency must be positive")
+	}
+	if c.BrowserlessConcurrency <= 0 {
+		return errors.New("browserless concurrency must be positive")
 	}
 	if c.MaxRetries < 0 {
 		return errors.New("max retries cannot be negative")

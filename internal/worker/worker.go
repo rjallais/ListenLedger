@@ -142,7 +142,7 @@ func (w *Worker) providerSlots() []providerSlot {
 		slots = append(slots, providerSlot{provider: spotify.ProviderLocalHeadless, concurrency: conc})
 	}
 	if w.cfg.HasBrowserless() {
-		conc := w.cfg.MaxConcurrency
+		conc := w.cfg.BrowserlessConcurrency
 		if conc <= 0 {
 			conc = 1
 		}
@@ -163,11 +163,8 @@ func (w *Worker) providerSlots() []providerSlot {
 		slots = append(slots, providerSlot{provider: spotify.ProviderScraperAPI, concurrency: conc})
 	}
 	if w.cfg.HasApify() {
-		conc := w.cfg.MaxConcurrency
-		if conc <= 0 {
-			conc = 1
-		}
-		slots = append(slots, providerSlot{provider: spotify.ProviderApify, concurrency: conc})
+		// Keep Apify provider processing single-flight at the worker level.
+		slots = append(slots, providerSlot{provider: spotify.ProviderApify, concurrency: 1})
 	}
 
 	return slots
