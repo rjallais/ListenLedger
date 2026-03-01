@@ -27,6 +27,7 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/config"
+	"ListenLedger/internal/buildinfo"
 	"ListenLedger/internal/correlation"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/priority"
@@ -2227,7 +2228,7 @@ func (h *Handler) handleAppHealth(e *core.RequestEvent) error {
 	return e.JSON(http.StatusOK, map[string]any{
 		"status":     "ok",
 		"app":        "ListenLedger",
-		"version":    "0.1.0",
+		"version":    buildinfo.Version,
 		"uptime_s":   int(uptime.Seconds()),
 		"started_at": h.startedAt.UTC().Format(time.RFC3339),
 	})
