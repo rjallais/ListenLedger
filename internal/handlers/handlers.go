@@ -4,12 +4,6 @@
 package handlers
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/correlation"
-	"ListenLedger/internal/messaging"
-	"ListenLedger/internal/priority"
-	"ListenLedger/internal/quota"
-	"ListenLedger/templates"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +25,13 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/starfederation/datastar-go/datastar"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/priority"
+	"ListenLedger/internal/quota"
+	"ListenLedger/templates"
 )
 
 // sseOpts is used for short-lived SSE responses (batch POST, refresh POST, etc.)
@@ -1379,7 +1380,7 @@ func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID st
 	if err != nil {
 		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify to infer artist name")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
 		return "", http.StatusBadRequest, fmt.Errorf("could not infer artist name: spotify artist not found")
@@ -2609,24 +2610,9 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 	return nil
 }
 
-// formatNumber formats an integer with comma separators.
-func formatNumber(n int) string {
-	s := strconv.Itoa(n)
-	if len(s) <= 3 {
-		return s
-	}
-
-	var result strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result.WriteByte(',')
-		}
-		result.WriteRune(c)
-	}
-	return result.String()
-}
-
-// renderArtistRowFragment renders a single artist row for SSE updates.
+// currentGenreFromRequest infers the genre from the request Referer URL's "genre" query parameter.
+// It returns "everything_else" when that parameter equals "everything_else"; otherwise it returns "rock_metal".
+// If the Referer header is missing or cannot be parsed, "rock_metal" is returned.
 func currentGenreFromRequest(r *http.Request) string {
 	const defaultGenre = "rock_metal"
 

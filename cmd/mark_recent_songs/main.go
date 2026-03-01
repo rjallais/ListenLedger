@@ -3,8 +3,6 @@
 package main
 
 import (
-	"ListenLedger/internal/appdir"
-
 	"bufio"
 	"flag"
 	"fmt"
@@ -14,6 +12,8 @@ import (
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"ListenLedger/internal/appdir"
 )
 
 type targetSong struct {
@@ -121,12 +121,16 @@ func main() {
 	}
 }
 
+// parseTargets reads a file at path and parses each non-empty line into a targetSong.
+// Each line must contain a title and an artist separated by a tab or by a run of two or more spaces.
+// If an artist contains "..." the parsed target will set artistPrefix=true and the ellipsis are removed for matching.
+// It returns the slice of parsed targets or an error if the file cannot be opened, a line is malformed, or a read error occurs.
 func parseTargets(path string) ([]targetSong, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	targets := make([]targetSong, 0, 512)
 	scanner := bufio.NewScanner(file)

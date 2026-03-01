@@ -91,10 +91,11 @@ func (s *Service) FetchAll(ctx context.Context, artistIDs []string) (map[string]
 		})
 	}
 
+loop:
 	for _, id := range artistIDs {
 		select {
 		case <-ctx.Done():
-			break
+			break loop
 		case jobs <- id:
 		}
 	}
