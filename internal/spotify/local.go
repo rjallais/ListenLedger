@@ -8,17 +8,16 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"ListenLedger/config"
-	chromeutil "ListenLedger/internal/chrome"
-
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+
+	"ListenLedger/config"
+	chromeutil "ListenLedger/internal/chrome"
 )
 
 type localBrowser struct {
@@ -89,13 +88,17 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 
 func (lb *localBrowser) Close() {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
 	if lb.closed {
+		lb.mu.Unlock()
 		return
 	}
 	lb.closed = true
-	if lb.browser != nil {
-		_ = lb.browser.Close()
+	browser := lb.browser
+	lb.browser = nil
+	lb.mu.Unlock()
+
+	if browser != nil {
+		_ = browser.Close()
 	}
 }
 
@@ -127,11 +130,11 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 	artistURL := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 
-	// Respect caller cancellation/deadline while keeping a local fallback timeout.
-	// No hard timeout for local headless interception; allowing page navigation to take as long as necessary.
-	// We still inherit the parent worker context (which has a very large ceiling like 5 min)
-	// to prevent permanent zombie requests if the browser process crashes.
-	reqCtx, cancel := context.WithCancel(ctx)
+	// Enforce a bounded inner deadline so the local headless interception
+	// cannot block forever if the Pathfinder API response never arrives.
+	// boundedPhaseTimeout caps at 45 s but shrinks to the parent's remaining
+	// deadline when that is shorter, ensuring the inner timeout is always tighter.
+	reqCtx, cancel := context.WithTimeout(ctx, boundedPhaseTimeout(ctx, 45*time.Second))
 	defer cancel()
 
 	// Open an incognito context for isolation — each request gets clean cookies/storage.
@@ -189,10 +192,6 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 				var data map[string]any
 				if err := json.Unmarshal([]byte(res.Body), &data); err != nil {
 					return
-				}
-
-				if strings.Contains(artistURL, "0QHGCPmM4UgeNvrNPntSlu") {
-					os.WriteFile("cynthia_luz_pathfinder.json", []byte(res.Body), 0644)
 				}
 
 				listeners, ok := extractMonthlyListeners(data)
@@ -285,7 +284,9 @@ func (c *Client) initLocalHeadless() {
 	// Warm up the browser eagerly in a background goroutine so that
 	// Chromium is downloaded and ready before any worker request arrives.
 	go func() {
-		if _, err := c.getOrCreateBrowser(context.Background()); err != nil {
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer warmCancel()
+		if _, err := c.getOrCreateBrowser(warmCtx); err != nil {
 			log.Printf("[spotify] Local headless warm-up failed (will retry on first request): %v", err)
 		}
 	}()

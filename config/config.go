@@ -83,8 +83,7 @@ type Config struct {
 // The defaults include preconfigured endpoints and concurrency/memory settings for
 // Browserless, ScrapingAnt, ScraperAPI, and Apify, sensible HTTP and retry timeouts,
 // and JetStream backoff/delivery settings. LocalHeadlessEnabled defaults to true
-// DefaultConfig returns a Config populated with sensible defaults for external providers, local headless scraping, and JetStream tuning.
-// The defaults include provider endpoints and concurrency/memory settings for Browserless, ScrapingAnt, ScraperAPI, and Apify; shared timeouts, retries, and connection pooling; JetStream retry/backoff/ack-wait/in-progress settings; and local headless enabled by default except when running under WSL.
+// except when running under WSL, where it is disabled.
 func DefaultConfig() *Config {
 	return &Config{
 		// Browserless defaults
