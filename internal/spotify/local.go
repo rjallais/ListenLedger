@@ -122,6 +122,17 @@ func (lb *localBrowser) isAlive() bool {
 	return err == nil
 }
 
+// snapshot returns the current *rod.Browser pointer under lb.mu, or nil if the
+// browser has been closed. Callers must not access lb.browser directly.
+func (lb *localBrowser) snapshot() *rod.Browser {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if lb.closed {
+		return nil
+	}
+	return lb.browser
+}
+
 func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (int, error) {
 	lb, err := c.getOrCreateBrowser(ctx)
 	if err != nil {
@@ -137,9 +148,16 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 	reqCtx, cancel := context.WithTimeout(ctx, boundedPhaseTimeout(ctx, 45*time.Second))
 	defer cancel()
 
+	// Snapshot the browser pointer under the lock so we never race with Close()
+	// which nils lb.browser. If the browser has already been closed, bail out.
+	b := lb.snapshot()
+	if b == nil {
+		return 0, fmt.Errorf("local headless: browser was closed before request started")
+	}
+
 	// Open an incognito context for isolation — each request gets clean cookies/storage.
 	// We MUST context-wrap the browser to prevent indefinite CDP deadlocks if the socket hangs.
-	browserCtx := lb.browser.Context(reqCtx)
+	browserCtx := b.Context(reqCtx)
 	incognito, err := browserCtx.Incognito()
 	if err != nil {
 		c.evictDeadBrowser(lb)
