@@ -120,6 +120,8 @@ func (e *providerHTTPError) Unwrap() error {
 	return e.err
 }
 
+// redactSecretQueryParams replaces the values of query parameters that match
+// secretQueryParamPattern with the literal "REDACTED" and returns the sanitized string.
 func redactSecretQueryParams(raw string) string {
 	return secretQueryParamPattern.ReplaceAllString(raw, "$1=REDACTED")
 }
@@ -145,7 +147,8 @@ func (e *RateLimitError) Unwrap() error {
 	return ErrRateLimited
 }
 
-// RetryAfter extracts a retry delay from a RateLimitError.
+// RetryAfter reports the Retry-After duration from a RateLimitError, if present.
+// It returns the duration and true when err is a *RateLimitError with a positive RetryAfter; otherwise it returns zero and false.
 func RetryAfter(err error) (time.Duration, bool) {
 	var rateLimitErr *RateLimitError
 	if !errors.As(err, &rateLimitErr) {
@@ -157,7 +160,13 @@ func RetryAfter(err error) (time.Duration, bool) {
 	return rateLimitErr.RetryAfter, true
 }
 
-// for Apify). The local headless browser is initialized before returning.
+// NewClient creates a Spotify listener-fetching Client configured from cfg.
+// It validates cfg and returns an error on validation failure. The client is
+// initialized with a shared HTTP transport and three HTTP clients tuned for
+// general, ScraperAPI (timeout >= 180s), and Apify (340s) use; provider
+// concurrency semaphores and enabled-provider flags are derived from cfg. The
+// local headless browser (if enabled) is initialized before the Client is
+// returned.
 func NewClient(cfg *config.Config) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -372,6 +381,9 @@ func (c *Client) markScraperAPISuccess() {
 	}
 }
 
+// parseRetryAfterHeader parses an HTTP `Retry-After` header value and returns the remaining duration until a retry should be attempted.
+// It accepts either an integer number of seconds or an HTTP-date. If the header is empty, invalid, non-positive, or represents a time
+// that is not after `now`, the function returns 0.
 func parseRetryAfterHeader(raw string, now time.Time) time.Duration {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -392,6 +404,9 @@ func parseRetryAfterHeader(raw string, now time.Time) time.Duration {
 	return when.Sub(now)
 }
 
+// jitterDuration returns base plus a random jitter in the range [0, maxJitter].
+// If either base or maxJitter is less than or equal to zero, it returns base unchanged.
+// The jitter value is chosen with nanosecond granularity using the package-level math/rand source.
 func jitterDuration(base, maxJitter time.Duration) time.Duration {
 	if base <= 0 || maxJitter <= 0 {
 		return base
@@ -785,6 +800,9 @@ func (c *Client) scraperAPIProfiles() []scraperAPIRequestProfile {
 	return profiles
 }
 
+// isTransientScraperAPIStatus reports whether the HTTP status code represents a transient
+// server-side error for ScraperAPI requests (for example 500, 502, 503, or 504) that may
+// succeed if retried.
 func isTransientScraperAPIStatus(code int) bool {
 	switch code {
 	case http.StatusInternalServerError,
@@ -798,7 +816,11 @@ func isTransientScraperAPIStatus(code int) bool {
 }
 
 // parseHTMLMonthlyListeners parses a rendered Spotify artist page HTML body
-// and extracts the "X monthly listeners" number.
+// parseHTMLMonthlyListeners parses Spotify HTML or embedded JSON and extracts the "monthly listeners" count.
+// It returns the numeric listener count parsed from either an embedded `"monthlyListeners":<number>` JSON blob
+// or from visible text like "2.4M monthly listeners" (supports M/K multipliers and comma/decimal formatting).
+// If the page contains `"artistUnion"` but no numeric value, it returns 0; otherwise it returns an error when a numeric
+// listeners value cannot be located or parsed.
 func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 	html := string(body)
 

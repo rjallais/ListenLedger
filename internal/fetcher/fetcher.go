@@ -163,6 +163,9 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 	return 0, fmt.Errorf("after %d attempt(s): %w", attemptsRun, lastErr)
 }
 
+// retryBackoffWithJitter returns an exponential backoff duration for the given attempt with a small random jitter.
+// The base backoff starts at 1s and doubles for each attempt up to five doublings (maximum base 32s), then adds
+// up to 250ms of random jitter to avoid synchronized retries.
 func retryBackoffWithJitter(attempt int) time.Duration {
 	base := time.Second
 	for i := 0; i < attempt-1 && i < 5; i++ {
@@ -174,6 +177,8 @@ func retryBackoffWithJitter(attempt int) time.Duration {
 	return base + jitter
 }
 
+// shouldStopRetryOnTimeout reports whether retries should cease when the provided error is a timeout for the given provider.
+// It returns true if err is recognized as a timeout and provider is ProviderLocalHeadless or ProviderScraperAPI.
 func shouldStopRetryOnTimeout(provider spotify.Provider, err error) bool {
 	if !isTimeoutError(err) {
 		return false
@@ -182,6 +187,11 @@ func shouldStopRetryOnTimeout(provider spotify.Provider, err error) bool {
 	return provider == spotify.ProviderLocalHeadless || provider == spotify.ProviderScraperAPI
 }
 
+// isTimeoutError reports whether err represents a timeout or deadline cancellation.
+// It returns true for context.DeadlineExceeded or context.Canceled, for errors
+// that implement net.Error with Timeout() == true, or when the error message
+// contains common timeout phrases such as "deadline exceeded", "timeout", or
+// "context canceled".
 func isTimeoutError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
