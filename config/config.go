@@ -54,7 +54,7 @@ type Config struct {
 	// processed concurrently (one "wave"), which is the most efficient option.
 	ApifyBatchSize int
 
-	// Local headless (chromedp) configuration
+	// Local headless (go-rod) configuration
 	LocalHeadlessEnabled bool
 	LocalChromePath      string
 	LocalConcurrency     int
@@ -94,9 +94,9 @@ func DefaultConfig() *Config {
 
 		// ScraperAPI defaults
 		ScraperAPIEndpoint: "https://api.scraperapi.com",
-		// ScraperAPI supports up to 5 concurrent threads on compatible plans.
-		ScraperAPIConcurrency:     5,
-		ScraperAPIWaitForSelector: "span",
+		// Start conservatively to reduce burst 429s; runtime cooldown handles spikes.
+		ScraperAPIConcurrency:     4,
+		ScraperAPIWaitForSelector: "",
 
 		// Apify defaults
 		ApifyEndpoint: "https://api.apify.com/v2/acts",
@@ -119,7 +119,7 @@ func DefaultConfig() *Config {
 		// Local headless defaults
 		// Disabled by default on WSL since Linux Chrome is typically not installed and Windows Chrome causes popup windows
 		LocalHeadlessEnabled: !chrome.IsWSL(),
-		LocalConcurrency:     8,
+		LocalConcurrency:     10,
 
 		// Shared defaults
 		MaxConcurrency:       1, // Shared external providers that still use MAX_CONCURRENCY.
@@ -180,7 +180,7 @@ func (c *Config) LoadFromEnv() error {
 			c.ScraperAPIConcurrency = conc
 		}
 	}
-	if selector := os.Getenv("SCRAPERAPI_WAIT_FOR_SELECTOR"); selector != "" {
+	if selector, ok := os.LookupEnv("SCRAPERAPI_WAIT_FOR_SELECTOR"); ok {
 		c.ScraperAPIWaitForSelector = selector
 	}
 

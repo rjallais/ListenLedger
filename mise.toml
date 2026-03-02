@@ -1,0 +1,104 @@
+# Mise configuration for ListenLedger (shared, check this file into source control)
+# Local secrets such as API keys belong in .mise.local.toml and are not committed.
+
+[tools]
+go = "1.26.0"
+
+[settings]
+# Use Nushell as the default shell for all inline tasks (cross-platform)
+unix_default_inline_shell_args = "nu -c"
+windows_default_inline_shell_args = "nu -c"
+
+[env]
+# Go experiment flag for jsonv2 support
+GOEXPERIMENT = "jsonv2"
+# Static files output directory
+STATIC_DIR = "static"
+# Local Air overrides (Linux defaults; update to *.exe when developing on Windows)
+AIR_BUILD_CMD = "go build -o ./tmp/main ."
+AIR_BIN_PATH = "./tmp/main"
+
+# Spotify scraping tokens are sensitive; provide them via .mise.local.toml
+#APIFY_TOKEN = "<set in .mise.local.toml>"
+#BROWSERLESS_TOKEN = "<set in .mise.local.toml>"
+#SCRAPERAPI_TOKEN = "<set in .mise.local.toml>"
+#SCRAPINGANT_TOKEN = "<set in .mise.local.toml>"
+
+# Optional configuration
+# MAX_CONCURRENCY = "1"
+# MAX_RETRIES = "2"
+# LOG_SUCCESSFUL_FETCHES = "false"
+
+# =============================================================================
+# BUILD TASKS - Used for production builds
+# =============================================================================
+
+[tasks."build:templ"]
+description = "Generate Go code from Templ templates"
+run = "go tool templ fmt templates; go tool templ generate"
+sources = ["**/*.templ"]
+outputs = ["**/*_templ.go"]
+
+[tasks."build:css"]
+description = "Build Tailwind CSS for production"
+run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' --minify"
+sources = ["./templates/**/*.{templ,go}", "./input.css"]
+outputs = ["static/styles.css"]
+
+[tasks.build]
+description = "Build the application for production"
+run = "go build -o bin/ListenLedger ."
+depends = ["build:templ", "build:css"]
+
+# =============================================================================
+# LIVE TASKS - Used for development with hot-reloading
+# =============================================================================
+
+[tasks."live:templ"]
+description = "Watch and regenerate Templ templates"
+run = "go tool templ generate -watch"
+
+[tasks."live:css"]
+description = "Watch and rebuild CSS on changes"
+run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' -w"
+
+[tasks."live:server"]
+description = "Run the server with Air hot-reloading (configured via .air.toml)"
+run = "go tool air"
+
+[tasks.dev]
+description = "Start all development watchers (CSS, Templ, Server)"
+run = "echo 'Run these in separate terminals: mise run live:css, mise run live:templ, mise run live:server'"
+
+# =============================================================================
+# UTILITY TASKS
+# =============================================================================
+
+[tasks.tidy]
+description = "Download and sync Go module dependencies"
+run = "go mod tidy"
+
+[tasks.run]
+description = "Build and run the application"
+run = "go run . serve --http=localhost:8090"
+depends = ["build"]
+
+[tasks.admin]
+description = "Create a superuser account"
+run = "go run . superuser upsert admin@example.com changeme123"
+
+[tasks.quota]
+description = "Check quota status for scraping providers"
+run = "curl -s http://localhost:8090/api/quota | from json | to yaml"
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "rm -rf bin tmp"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.tools]
+description = "Download and install Go tools defined in go.mod"
+run = "go mod tidy; go tool -n"

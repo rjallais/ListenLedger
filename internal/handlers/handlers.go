@@ -189,7 +189,7 @@ func (h *Handler) ensureBatchProgressSubscriber() {
 }
 
 func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
-	if artistID == "" || fetchStatus == "pending" {
+	if artistID == "" || fetchStatus != "idle" {
 		return
 	}
 

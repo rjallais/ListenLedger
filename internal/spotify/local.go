@@ -1,160 +1,178 @@
 //go:build goexperiment.jsonv2
 
-// Package spotify provides local headless scraping via chromedp.
+// Package spotify provides local headless scraping via go-rod.
 package spotify
 
 import (
-	"ListenLedger/config"
-	chromeutil "ListenLedger/internal/chrome"
 	"context"
 	"encoding/json/v2"
 	"fmt"
 	"log"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/chromedp"
+	"ListenLedger/config"
+	chromeutil "ListenLedger/internal/chrome"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 type localBrowser struct {
-	allocCtx      context.Context
-	cancelAlloc   context.CancelFunc
-	browserCtx    context.Context
-	cancelBrowser context.CancelFunc
+	browser *rod.Browser
+	mu      sync.Mutex // guards Close to prevent double-close
+	closed  bool
 }
 
 func newLocalBrowser(cfg *config.Config) (*localBrowser, error) {
-	execPath := resolveChromePath(cfg)
-	if execPath == "" {
-		return nil, fmt.Errorf("no runnable local Chrome/Chromium executable found (set LOCAL_CHROME_PATH to a Linux binary if needed)")
-	}
-	// On Linux (often WSL), CHROME_PATH/GOOGLE_CHROME_BIN may point to a Windows .exe.
-	// That will launch a visible Windows Chrome window; default to disabling unless opted in.
-	if runtime.GOOS != "windows" && strings.HasSuffix(strings.ToLower(execPath), ".exe") && os.Getenv("ALLOW_WINDOWS_CHROME") != "1" {
-		return nil, fmt.Errorf("refusing to use Windows Chrome executable for local headless (%s); install Linux chromium/chrome and set LOCAL_CHROME_PATH, or set ALLOW_WINDOWS_CHROME=1", execPath)
-	}
-	log.Printf("[spotify] Local headless using executable: %s", execPath)
+	// Resolve the Chromium executable path.
+	// When LocalChromePath is set, use it directly.
+	// Otherwise, go-rod's launcher downloads a pinned compatible Chromium revision.
+	l := launcher.New()
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-		chromedp.ExecPath(execPath),
-		chromedp.ModifyCmdFunc(modifyChromeCmd),
-	)
+	if p := strings.TrimSpace(cfg.LocalChromePath); p != "" {
+		l = l.Bin(p)
+	}
+
+	l = l.Headless(true).
+		Set("disable-gpu").
+		Set("disable-dev-shm-usage").
+		Set("disable-extensions").
+		Set("disable-sync").
+		Set("disable-component-update").
+		Set("disable-default-apps").
+		Set("disable-translate").
+		Set("mute-audio").
+		Set("hide-scrollbars").
+		Set("window-size", "1920,1080").
+		Set("disable-crashpad").
+		Set("metrics-recording-only").
+		Set("safebrowsing-disable-auto-update").
+		Set("force-color-profile", "srgb").
+		Set("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
 	if chromeutil.NeedsNoSandbox() {
-		opts = append(opts, chromedp.Flag("no-sandbox", true))
+		l = l.Set("no-sandbox")
 	}
 
-	opts = append(opts,
-		// Force headless explicitly. Note that DefaultExecAllocatorOptions already
-		// includes chromedp.Headless, but we keep these here to avoid regressions.
-		//
-		// Also force-disable anything that could pop visible UI (DevTools / automation banners).
-		chromedp.Flag("headless", true),
-		chromedp.Flag("headless=new", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-crashpad", true),
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-infobars", true),
-		chromedp.Flag("no-first-run", true),
-		chromedp.Flag("no-default-browser-check", true),
-		// Prevent Chrome windows and UI from appearing on Windows
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-component-update", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("metrics-recording-only", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("disable-translate", true),
-		chromedp.Flag("hide-scrollbars", true),
-		chromedp.Flag("mute-audio", true),
-		chromedp.Flag("window-size", "1920,1080"),
-	)
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctxOpts := []chromedp.ContextOption{}
-	if os.Getenv("CHROMEDP_DEBUG") == "1" {
-		ctxOpts = append(ctxOpts, chromedp.WithDebugf(log.Printf))
+	controlURL, err := l.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("local headless: failed to launch browser: %w", err)
 	}
-	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx, ctxOpts...)
 
-	return &localBrowser{
-		allocCtx:      allocCtx,
-		cancelAlloc:   cancelAlloc,
-		browserCtx:    browserCtx,
-		cancelBrowser: cancelBrowser,
-	}, nil
+	browser := rod.New().ControlURL(controlURL)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("local headless: failed to connect to browser: %w", err)
+	}
+
+	// Ignore certificate errors for smoother navigation in constrained envs.
+	_ = browser.IgnoreCertErrors(true)
+
+	log.Printf("[spotify] Local headless browser connected (go-rod)")
+	return &localBrowser{browser: browser}, nil
 }
 
 func (lb *localBrowser) Close() {
-	if lb.cancelBrowser != nil {
-		lb.cancelBrowser()
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if lb.closed {
+		return
 	}
-	if lb.cancelAlloc != nil {
-		lb.cancelAlloc()
+	lb.closed = true
+	if lb.browser != nil {
+		_ = lb.browser.Close()
 	}
 }
 
-func resolveChromePath(cfg *config.Config) string {
-	return chromeutil.ResolvePath(cfg.LocalChromePath)
+// isAlive reports whether the browser process is still reachable.
+func (lb *localBrowser) isAlive() bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if lb.closed || lb.browser == nil {
+		return false
+	}
+	// Lightweight CDP call to check liveness.
+	_, err := lb.browser.Version()
+	return err == nil
 }
 
 func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (int, error) {
-	if err := c.ensureLocalHeadless(); err != nil {
+	lb, err := c.getOrCreateBrowser()
+	if err != nil {
 		return 0, err
 	}
 
-	url := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
+	artistURL := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 
-	tabCtx, cancelTab := chromedp.NewContext(c.local.browserCtx)
-	defer cancelTab()
-
-	// Ensure a per-request timeout even if the caller didn't set one.
-	reqCtx, cancel := context.WithTimeout(tabCtx, c.config.RequestTimeout)
+	// Respect caller cancellation/deadline while keeping a local fallback timeout.
+	// No hard timeout for local headless interception; allowing page navigation to take as long as necessary.
+	// We still inherit the parent worker context (which has a very large ceiling like 5 min)
+	// to prevent permanent zombie requests if the browser process crashes.
+	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Enable network for this tab and block media/font downloads.
-	if err := chromedp.Run(reqCtx,
-		network.Enable(),
-		network.SetBlockedURLs(blockedURLPatterns()),
-	); err != nil {
+	// Open an incognito context for isolation — each request gets clean cookies/storage.
+	// We MUST context-wrap the browser to prevent indefinite CDP deadlocks if the socket hangs.
+	browserCtx := lb.browser.Context(reqCtx)
+	incognito, err := browserCtx.Incognito()
+	if err != nil {
+		c.evictDeadBrowser(lb)
+		return 0, fmt.Errorf("local headless: failed to create incognito context: %w", err)
+	}
+	defer incognito.Close()
+
+	page, err := incognito.Context(reqCtx).Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		c.evictDeadBrowser(lb)
+		return 0, fmt.Errorf("local headless: failed to create page: %w", err)
+	}
+	defer page.Close()
+
+	// Enable CDP network domain for this page.
+	if err := (proto.NetworkEnable{}).Call(page); err != nil {
+		c.evictDeadBrowser(lb)
 		return 0, fmt.Errorf("local headless: network enable failed: %w", err)
 	}
 
+	// Block resource-heavy URLs (images, fonts, media) to speed up page loads.
+	if err := (proto.NetworkSetBlockedURLs{Urls: blockedURLPatterns()}).Call(page); err != nil {
+		log.Printf("[spotify] Warning: failed to set blocked URLs: %v", err)
+	}
+
+	// Set up CDP event listener to capture pathfinder API responses.
 	resultChan := make(chan int, 1)
 	var once sync.Once
+	var targetReqs sync.Map
 
-	chromedp.ListenTarget(reqCtx, func(ev any) {
-		switch e := ev.(type) {
-		case *network.EventResponseReceived:
-			if !strings.Contains(e.Response.URL, "pathfinder/v2/query") {
+	go page.EachEvent(
+		func(e *proto.NetworkResponseReceived) {
+			if strings.Contains(e.Response.URL, "pathfinder/v2/query") {
+				targetReqs.Store(e.RequestID, struct{}{})
+			}
+		},
+		func(e *proto.NetworkLoadingFinished) {
+			if _, ok := targetReqs.Load(e.RequestID); !ok {
 				return
 			}
+			targetReqs.Delete(e.RequestID)
 
-			go func(reqID network.RequestID) {
-				// Small delay to allow response body to be available.
-				select {
-				case <-time.After(300 * time.Millisecond):
-					// Continue processing
-				case <-reqCtx.Done():
-					return // Context cancelled, exit early
-				}
-
-				var body []byte
-				if err := chromedp.Run(reqCtx, chromedp.ActionFunc(func(cctx context.Context) error {
-					var err error
-					body, err = network.GetResponseBody(reqID).Do(cctx)
-					return err
-				})); err != nil {
+			go func(reqID proto.NetworkRequestID) {
+				res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
+				if err != nil {
+					// Likely a CORS preflight OPTIONS request with no body.
 					return
 				}
 
 				var data map[string]any
-				if err := json.Unmarshal(body, &data); err != nil {
+				if err := json.Unmarshal([]byte(res.Body), &data); err != nil {
 					return
+				}
+
+				if strings.Contains(artistURL, "0QHGCPmM4UgeNvrNPntSlu") {
+					os.WriteFile("cynthia_luz_pathfinder.json", []byte(res.Body), 0644)
 				}
 
 				listeners, ok := extractMonthlyListeners(data)
@@ -169,21 +187,103 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 					}
 				})
 			}(e.RequestID)
-		}
-	})
+		},
+	)()
 
-	if err := chromedp.Run(reqCtx,
-		chromedp.Navigate(url),
-	); err != nil {
-		return 0, fmt.Errorf("local headless: navigation failed: %w", err)
+	// Navigate to the raw Spotify web player HTML renderer.
+	if err := page.Navigate(artistURL); err != nil {
+		c.evictDeadBrowser(lb)
+		return 0, fmt.Errorf("local headless: failed to navigate: %w", err)
 	}
 
+	// Wait for the pathfinder response or for the parent context to cancel (e.g., worker's absolute max ceiling).
 	select {
 	case val := <-resultChan:
 		return val, nil
 	case <-reqCtx.Done():
-		return 0, fmt.Errorf("local headless: timeout waiting for listeners")
+		return 0, fmt.Errorf("local headless: waiting for listeners: %w", reqCtx.Err())
 	}
+}
+
+// getOrCreateBrowser returns the shared browser singleton, creating it if
+// necessary (first call, or after a crash eviction via evictDeadBrowser).
+func (c *Client) getOrCreateBrowser() (*localBrowser, error) {
+	// Fast path: singleton is alive.
+	c.localMu.Lock()
+	lb := c.local
+	c.localMu.Unlock()
+	if lb != nil && lb.isAlive() {
+		return lb, nil
+	}
+
+	// Slow path: create or recreate the browser under the write lock.
+	c.localMu.Lock()
+	defer c.localMu.Unlock()
+
+	if c.local != nil && c.local.isAlive() {
+		return c.local, nil
+	}
+
+	// Close any zombie singleton before creating a fresh one.
+	if c.local != nil {
+		c.local.Close()
+		c.local = nil
+	}
+
+	lb, err := newLocalBrowser(c.config)
+	if err != nil {
+		// Return the error but do NOT flip useLocal to false. A transient
+		// launch failure must not permanently disable the provider.
+		return nil, fmt.Errorf("local headless unavailable: %w", err)
+	}
+	c.local = lb
+	return lb, nil
+}
+
+// evictDeadBrowser atomically clears the singleton if it is the same instance
+// that encountered the error, ensuring concurrent goroutines on a healthy
+// browser are not disrupted.
+func (c *Client) evictDeadBrowser(lb *localBrowser) {
+	if lb == nil || lb.isAlive() {
+		return
+	}
+	c.localMu.Lock()
+	defer c.localMu.Unlock()
+	if c.local == lb {
+		lb.Close()
+		c.local = nil
+		log.Printf("[spotify] Local headless: browser process died, will recreate on next request")
+	}
+}
+
+func (c *Client) initLocalHeadless() {
+	if !c.config.HasLocalHeadless() {
+		return
+	}
+	c.useLocal.Store(true)
+
+	// Warm up the browser eagerly in a background goroutine so that
+	// Chromium is downloaded and ready before any worker request arrives.
+	go func() {
+		if _, err := c.getOrCreateBrowser(); err != nil {
+			log.Printf("[spotify] Local headless warm-up failed (will retry on first request): %v", err)
+		}
+	}()
+}
+
+func boundedPhaseTimeout(parent context.Context, fallback time.Duration) time.Duration {
+	if fallback <= 0 {
+		return time.Second
+	}
+	deadline, ok := parent.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Second
+	}
+	return min(remaining, fallback)
 }
 
 func extractMonthlyListeners(data map[string]any) (int, bool) {
@@ -197,11 +297,13 @@ func extractMonthlyListeners(data map[string]any) (int, bool) {
 	}
 	stats, ok := artistUnion["stats"].(map[string]any)
 	if !ok {
-		return 0, false
+		// Valid artist overview payload, but no stats section = 0 listeners.
+		return 0, true
 	}
 	val, ok := stats["monthlyListeners"]
-	if !ok {
-		return 0, false
+	if !ok || val == nil {
+		// Valid stats payload, but missing or null listeners = 0 listeners.
+		return 0, true
 	}
 
 	switch v := val.(type) {
@@ -211,41 +313,8 @@ func extractMonthlyListeners(data map[string]any) (int, bool) {
 		return v, true
 	}
 
-	return 0, false
-}
-
-func (c *Client) initLocalHeadless() {
-	if !c.config.HasLocalHeadless() {
-		return
-	}
-	// Do not start Chrome at server startup; initialize lazily on first request.
-	c.useLocal.Store(true)
-}
-
-func (c *Client) ensureLocalHeadless() error {
-	if c.local != nil {
-		return nil
-	}
-	if !c.config.HasLocalHeadless() {
-		return fmt.Errorf("local headless not configured")
-	}
-
-	c.localMu.Lock()
-	defer c.localMu.Unlock()
-
-	if c.local != nil {
-		return nil
-	}
-
-	local, err := newLocalBrowser(c.config)
-	if err != nil {
-		c.useLocal.Store(false)
-		return fmt.Errorf("local headless unavailable: %w", err)
-	}
-
-	c.local = local
-	c.useLocal.Store(true)
-	return nil
+	// Unexpected type but valid payload
+	return 0, true
 }
 
 func blockedURLPatterns() []string {

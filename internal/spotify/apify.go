@@ -480,25 +480,42 @@ async function pageFunction(context) {
     // live DOM at all — no React hydration required.
     // ------------------------------------------------------------------
     const fromJson = await page.evaluate(() => {
-        function extractListeners(text) {
-            const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
-            return m ? parseInt(m[1], 10) : 0;
+        const extractListeners = (text) => {
+        const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
+        if (m) {
+            return parseInt(m[1], 10);
         }
+
+        const match = text.match(/([\d,\.]+)\s*([mMkK]?)\s+monthly listeners/i);
+        if (match) {
+            let num = parseFloat(match[1].replace(/,/g, ''));
+            let suffix = match[2].toUpperCase();
+            if (suffix === 'M') { num *= 1000000; }
+            else if (suffix === 'K') { num *= 1000; }
+            return Math.floor(num);
+        }
+
+        if (text.includes('"artistUnion"')) {
+            return 0;
+        }
+
+        return null;
+    };
         // Check __NEXT_DATA__ first (cheapest).
         const nextEl = document.getElementById('__NEXT_DATA__');
         if (nextEl) {
             const v = extractListeners(nextEl.textContent || '');
-            if (v > 0) return v;
+            if (v !== null) return v;
         }
         // Walk all other <script> tags.
         for (const s of document.querySelectorAll('script')) {
             const v = extractListeners(s.textContent || '');
-            if (v > 0) return v;
+            if (v !== null) return v;
         }
-        return 0;
+        return null;
     });
 
-    if (fromJson > 0) {
+    if (fromJson !== null) {
         log.info('Got monthlyListeners from embedded JSON: ' + fromJson);
         return { url: request.url, monthlyListeners: fromJson };
     }
@@ -512,7 +529,7 @@ async function pageFunction(context) {
     try {
         await page.waitForFunction(
             () => Array.from(document.querySelectorAll('span'))
-                       .some(el => /[\d,]+\s+monthly listeners/i.test(el.textContent)),
+                       .some(el => /[\d,\.]+\s*[mMkK]?\s*monthly listeners/i.test(el.textContent)),
             { timeout: 25000 }
         );
     } catch (e) {
@@ -533,7 +550,7 @@ async function pageFunction(context) {
 
         // Fall back to a regex scan of the entire rendered page text.
         const bodyText = (document.body && document.body.innerText) || '';
-        const m = bodyText.match(/([\d,]+\s+monthly listeners)/i);
+        const m = bodyText.match(/([\d,\.]+\s*[mMkK]?\s*monthly listeners)/i);
         return m ? m[1] : '';
     });
 

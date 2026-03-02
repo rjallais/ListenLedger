@@ -81,7 +81,7 @@ func platformInstallCandidates() []string {
 		// IMPORTANT:
 		// When running on Linux (including WSL), auto-detecting Windows-mounted
 		// *.exe Chrome/Edge binaries can cause a visible Windows Chrome window to
-		// pop up even when chromedp requests headless mode.
+		// pop up even when go-rod requests headless mode.
 		//
 		// To avoid that, do NOT include Windows .exe candidates by default.
 		// If you really want to use a Windows Chrome from WSL, set CHROME_PATH or

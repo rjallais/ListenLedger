@@ -5,13 +5,6 @@
 package main
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/appdir"
-	"ListenLedger/internal/correlation"
-	"ListenLedger/internal/handlers"
-	"ListenLedger/internal/messaging"
-	"ListenLedger/internal/worker"
-	_ "ListenLedger/migrations"
 	"context"
 	"fmt"
 	"log"
@@ -19,6 +12,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/handlers"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/worker"
+	_ "ListenLedger/migrations"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"

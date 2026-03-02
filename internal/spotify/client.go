@@ -4,7 +4,6 @@
 package spotify
 
 import (
-	"ListenLedger/config"
 	"bytes"
 	"context"
 	"encoding/json/v2"
@@ -12,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"regexp"
@@ -20,11 +20,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ListenLedger/config"
 )
 
 // ErrQuotaExhausted is returned when a provider's quota or billing limit has
 // been reached. Callers should not retry the request against the same provider.
 var ErrQuotaExhausted = errors.New("provider quota exhausted")
+
+// ErrRateLimited is returned when a provider enforces a temporary throttle.
+var ErrRateLimited = errors.New("provider rate limited")
+
+var secretQueryParamPattern = regexp.MustCompile(`(?i)(api_key|x-api-key|token)=([^&\s"]+)`)
 
 // Provider defines the service used to fetch listener data.
 type Provider int
@@ -32,7 +39,7 @@ type Provider int
 const (
 	// ProviderAny tries Local headless first, then Browserless, ScrapingAnt, ScraperAPI, and Apify.
 	ProviderAny Provider = iota
-	// ProviderLocalHeadless uses local chromedp.
+	// ProviderLocalHeadless uses local go-rod.
 	ProviderLocalHeadless
 	// ProviderBrowserless uses only Browserless.
 	ProviderBrowserless
@@ -81,6 +88,9 @@ type Client struct {
 
 	local   *localBrowser
 	localMu sync.Mutex
+
+	scraperAPIRateLimitStreak atomic.Int64
+	scraperAPICooldownUntil   atomic.Int64
 }
 
 // responseData represents the Browserless/BQL API response structure
@@ -90,6 +100,61 @@ type responseData struct {
 			Value string `json:"value"`
 		} `json:"getListeners"`
 	} `json:"data"`
+}
+
+type scraperAPIRequestProfile struct {
+	render          bool
+	waitForSelector string
+}
+
+type providerHTTPError struct {
+	provider string
+	err      error
+}
+
+func (e *providerHTTPError) Error() string {
+	return fmt.Sprintf("%s http request failed: %s", e.provider, redactSecretQueryParams(e.err.Error()))
+}
+
+func (e *providerHTTPError) Unwrap() error {
+	return e.err
+}
+
+func redactSecretQueryParams(raw string) string {
+	return secretQueryParamPattern.ReplaceAllString(raw, "$1=REDACTED")
+}
+
+// RateLimitError carries provider throttle details including optional retry delay.
+type RateLimitError struct {
+	Provider   string
+	StatusCode int
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e == nil {
+		return "rate limited"
+	}
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("%s rate limited (status %d), retry after %s", e.Provider, e.StatusCode, e.RetryAfter.Round(time.Millisecond))
+	}
+	return fmt.Sprintf("%s rate limited (status %d)", e.Provider, e.StatusCode)
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return ErrRateLimited
+}
+
+// RetryAfter extracts a retry delay from a RateLimitError.
+func RetryAfter(err error) (time.Duration, bool) {
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		return 0, false
+	}
+	if rateLimitErr.RetryAfter <= 0 {
+		return 0, false
+	}
+	return rateLimitErr.RetryAfter, true
 }
 
 // for Apify). The local headless browser is initialized before returning.
@@ -113,8 +178,8 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 
 	scraperAPITimeout := cfg.HTTPTimeout
-	if scraperAPITimeout < 120*time.Second {
-		scraperAPITimeout = 120 * time.Second
+	if scraperAPITimeout < 180*time.Second {
+		scraperAPITimeout = 180 * time.Second
 	}
 	httpClientScraperAPI := &http.Client{
 		Transport: transport,
@@ -259,31 +324,7 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 }
 
 func (c *Client) fetchWithProvider(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
-	timeout := c.config.RequestTimeout
-	if providerName == "scrapingant" || providerName == "scraperapi" {
-		if timeout < 60*time.Second {
-			timeout = 60 * time.Second
-		}
-	}
-	// Apify runs the Actor synchronously; the Actor itself is given 90 s to
-	// complete (see the timeout= query param in fetchViaApify). Add 30 s of
-	// overhead for container startup and network round-trips.
-	if providerName == "apify" {
-		if timeout < 120*time.Second {
-			timeout = 120 * time.Second
-		}
-	}
-
-	var requestCtx context.Context
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		requestCtx, cancel = context.WithTimeout(ctx, timeout)
-	} else {
-		requestCtx, cancel = context.WithCancel(ctx)
-	}
-	defer cancel()
-
-	return c.fetchWithSemaphore(requestCtx, artistID, sem, fetchFunc, providerName)
+	return c.fetchWithSemaphore(ctx, artistID, sem, fetchFunc, providerName)
 }
 
 // fetchWithSemaphore executes a fetch function while respecting the given semaphore.
@@ -302,6 +343,101 @@ func (c *Client) fetchWithSemaphore(ctx context.Context, artistID string, sem ch
 	return count, err
 }
 
+func (c *Client) scraperAPICooldownRemaining(now time.Time) time.Duration {
+	untilNanos := c.scraperAPICooldownUntil.Load()
+	if untilNanos <= 0 {
+		return 0
+	}
+	until := time.Unix(0, untilNanos)
+	if !until.After(now) {
+		return 0
+	}
+	return until.Sub(now)
+}
+
+func (c *Client) clearScraperAPICooldown(now time.Time) {
+	c.scraperAPICooldownUntil.Store(now.UnixNano())
+}
+
+func (c *Client) markScraperAPISuccess() {
+	c.clearScraperAPICooldown(time.Now())
+	for {
+		streak := c.scraperAPIRateLimitStreak.Load()
+		if streak <= 0 {
+			return
+		}
+		if c.scraperAPIRateLimitStreak.CompareAndSwap(streak, streak-1) {
+			return
+		}
+	}
+}
+
+func parseRetryAfterHeader(raw string, now time.Time) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+
+	if secs, err := strconv.Atoi(raw); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+
+	when, err := http.ParseTime(raw)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
+}
+
+func jitterDuration(base, maxJitter time.Duration) time.Duration {
+	if base <= 0 || maxJitter <= 0 {
+		return base
+	}
+	jitter := time.Duration(rand.Int63n(int64(maxJitter + time.Nanosecond)))
+	return base + jitter
+}
+
+func (c *Client) markScraperAPIRateLimited(retryAfterHeader string) time.Duration {
+	now := time.Now()
+
+	serverDelay := parseRetryAfterHeader(retryAfterHeader, now)
+	streak := c.scraperAPIRateLimitStreak.Add(1)
+	if streak > 8 {
+		streak = 8
+		c.scraperAPIRateLimitStreak.Store(streak)
+	}
+
+	base := 2 * time.Second
+	for i := int64(0); i < streak-1 && i < 5; i++ {
+		base *= 2
+	}
+	if base > time.Minute {
+		base = time.Minute
+	}
+
+	cooldown := max(base, serverDelay)
+	cooldown = jitterDuration(cooldown, min(2*time.Second, cooldown/4))
+	if cooldown <= 0 {
+		cooldown = 2 * time.Second
+	}
+
+	candidate := now.Add(cooldown).UnixNano()
+	for {
+		current := c.scraperAPICooldownUntil.Load()
+		if candidate <= current {
+			break
+		}
+		if c.scraperAPICooldownUntil.CompareAndSwap(current, candidate) {
+			break
+		}
+	}
+
+	return c.scraperAPICooldownRemaining(now)
+}
+
 func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int, error) {
 	req, err := c.buildBrowserlessRequest(ctx, artistID)
 	if err != nil {
@@ -310,7 +446,7 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 
 	resp, err := c.httpClientScraperAPI.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("browserless http request failed: %w", err)
+		return 0, &providerHTTPError{provider: "browserless", err: err}
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -380,7 +516,8 @@ func (c *Client) buildBQLQuery(artistID string) string {
 					Array.from(document.querySelectorAll('span'))
 					  .map(e => e.textContent && e.textContent.trim())
 					  .filter(Boolean)
-					  .find(t => /monthly listeners/i.test(t)) || ""
+					  .find(t => /([\d,\.]+)\s*([mMkK]?)\s*monthly listeners/i.test(t)) || 
+					(document.documentElement.innerHTML.includes('"artistUnion"') ? "0 monthly listeners" : "")
 				)
 			  """,
 			  timeout: 4000
@@ -409,18 +546,38 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 		return 0, fmt.Errorf("browserless: 'monthly listeners' text not found in %q", raw)
 	}
 
-	// Format is expected to be "<number> monthly listeners"
-	before, _, ok := strings.Cut(raw, " ")
-	if !ok {
+	// Format could be "10,000 monthly listeners", "2.4M monthly listeners", "44K monthly listeners"
+	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly`)
+	m := re.FindStringSubmatch(raw)
+	if len(m) == 0 {
 		return 0, fmt.Errorf("browserless: unexpected format %q", raw)
 	}
-	numberStr := before
+
+	numberStr := m[1]
+	multiplierStr := strings.ToUpper(m[2])
 	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
-	count, err := strconv.Atoi(numberStr)
-	if err != nil {
-		return 0, fmt.Errorf("browserless: failed to parse number %q: %w", numberStr, err)
+	var count int
+	if multiplierStr == "M" {
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("browserless: failed to parse M float %q: %w", numberStr, err)
+		}
+		count = int(val * 1000000)
+	} else if multiplierStr == "K" {
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("browserless: failed to parse K float %q: %w", numberStr, err)
+		}
+		count = int(val * 1000)
+	} else {
+		val, err := strconv.ParseFloat(numberStr, 64) // Parse float safely to throw away any stray decimals
+		if err != nil {
+			return 0, fmt.Errorf("browserless: failed to parse number %q: %w", numberStr, err)
+		}
+		count = int(val)
 	}
+
 	return count, nil
 }
 
@@ -449,9 +606,9 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 	req.Header.Set("User-Agent", "ListenLedger/1.0")
 	req.Header.Set("Connection", "keep-alive")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClientScraperAPI.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("scrapingant http request failed: %w", err)
+		return 0, &providerHTTPError{provider: "scrapingant", err: err}
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -491,26 +648,53 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 		return 0, fmt.Errorf("scraperapi not configured")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.ScraperAPIEndpoint, nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create ScraperAPI request: %w", err)
+	if remaining := c.scraperAPICooldownRemaining(time.Now()); remaining > 0 {
+		return 0, &RateLimitError{
+			Provider:   "scraperapi",
+			StatusCode: http.StatusTooManyRequests,
+			RetryAfter: remaining,
+		}
 	}
 
-	q := req.URL.Query()
-	q.Set("api_key", c.config.ScraperAPIToken)
-	q.Set("url", fmt.Sprintf("https://open.spotify.com/artist/%s", artistID))
-	q.Set("render", "true")
-	if selector := strings.TrimSpace(c.config.ScraperAPIWaitForSelector); selector != "" {
-		q.Set("wait_for_selector", selector)
+	profiles := c.scraperAPIProfiles()
+	var lastErr error
+
+	for idx, profile := range profiles {
+		count, transientErr, err := c.fetchViaScraperAPIProfile(ctx, artistID, profile)
+		if err == nil {
+			c.markScraperAPISuccess()
+			return count, nil
+		}
+		lastErr = err
+
+		if !transientErr || idx == len(profiles)-1 {
+			return 0, err
+		}
+
+		log.Printf(
+			"[spotify] scraperapi transient failure for artist=%s (render=%t wait_for_selector=%q): %v; retrying with alternate request profile",
+			artistID,
+			profile.render,
+			profile.waitForSelector,
+			err,
+		)
 	}
-	req.URL.RawQuery = q.Encode()
 
-	req.Header.Set("User-Agent", "ListenLedger/1.0")
-	req.Header.Set("Connection", "keep-alive")
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, fmt.Errorf("scraperapi request failed with no retryable profile remaining")
+}
 
-	resp, err := c.httpClient.Do(req)
+func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string, profile scraperAPIRequestProfile) (int, bool, error) {
+	req, err := c.buildScraperAPIRequest(ctx, artistID, profile)
 	if err != nil {
-		return 0, fmt.Errorf("scraperapi http request failed: %w", err)
+		return 0, false, fmt.Errorf("failed to create ScraperAPI request: %w", err)
+	}
+
+	resp, err := c.httpClientScraperAPI.Do(req)
+	if err != nil {
+		return 0, false, &providerHTTPError{provider: "scraperapi", err: err}
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -519,7 +703,15 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired {
-		return 0, fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+		return 0, false, fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := c.markScraperAPIRateLimited(resp.Header.Get("Retry-After"))
+		return 0, false, &RateLimitError{
+			Provider:   "scraperapi",
+			StatusCode: http.StatusTooManyRequests,
+			RetryAfter: retryAfter,
+		}
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -528,17 +720,81 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 			if len(snippet) > 400 {
 				snippet = snippet[:400] + "..."
 			}
-			return 0, fmt.Errorf("scraperapi unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
+			err = fmt.Errorf("scraperapi unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
+		} else {
+			err = fmt.Errorf("scraperapi unexpected status code: %d", resp.StatusCode)
 		}
-		return 0, fmt.Errorf("scraperapi unexpected status code: %d", resp.StatusCode)
+		return 0, isTransientScraperAPIStatus(resp.StatusCode), err
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("scraperapi failed to read response body: %w", err)
+		return 0, false, fmt.Errorf("scraperapi failed to read response body: %w", err)
 	}
 
-	return parseHTMLMonthlyListeners(body, "scraperapi")
+	count, err := parseHTMLMonthlyListeners(body, "scraperapi")
+	if err != nil {
+		return 0, true, err
+	}
+	return count, false, nil
+}
+
+func (c *Client) buildScraperAPIRequest(ctx context.Context, artistID string, profile scraperAPIRequestProfile) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.ScraperAPIEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	q.Set("api_key", c.config.ScraperAPIToken)
+	q.Set("url", fmt.Sprintf("https://open.spotify.com/artist/%s", artistID))
+	if profile.render {
+		q.Set("render", "true")
+		if selector := strings.TrimSpace(profile.waitForSelector); selector != "" {
+			q.Set("wait_for_selector", selector)
+		}
+	} else {
+		q.Set("render", "false")
+	}
+	req.URL.RawQuery = q.Encode()
+
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	return req, nil
+}
+
+func (c *Client) scraperAPIProfiles() []scraperAPIRequestProfile {
+	selector := strings.TrimSpace(c.config.ScraperAPIWaitForSelector)
+
+	profiles := []scraperAPIRequestProfile{
+		{
+			render:          true,
+			waitForSelector: selector,
+		},
+	}
+	if selector != "" {
+		profiles = append(profiles, scraperAPIRequestProfile{
+			render: true,
+		})
+	}
+	profiles = append(profiles, scraperAPIRequestProfile{
+		render: false,
+	})
+
+	return profiles
+}
+
+func isTransientScraperAPIStatus(code int) bool {
+	switch code {
+	case http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseHTMLMonthlyListeners parses a rendered Spotify artist page HTML body
@@ -550,46 +806,47 @@ func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 	jsonMatch := regexp.MustCompile(`"monthlyListeners"\s*:\s*(\d+)`).FindStringSubmatch(html)
 	if len(jsonMatch) == 2 {
 		count, err := strconv.Atoi(jsonMatch[1])
-		if err == nil && count > 0 {
+		if err == nil && count >= 0 {
 			return count, nil
 		}
 	}
 
 	// Look for the "monthly listeners" phrase and backtrack to extract the number.
-	idx := strings.Index(strings.ToLower(html), "monthly listeners")
-	if idx == -1 {
-		return 0, fmt.Errorf("%s: 'monthly listeners' text not found", source)
-	}
-
-	// Scan backwards from idx to find a reasonable boundary for the number.
-	start := max(idx-80, 0)
-	segment := html[start:idx]
-
-	// Find the last sequence of digits/commas in the segment.
-	endNum := -1
-	startNum := -1
-	for i := len(segment) - 1; i >= 0; i-- {
-		ch := segment[i]
-		if (ch >= '0' && ch <= '9') || ch == ',' {
-			if endNum == -1 {
-				endNum = i + 1
-			}
-			startNum = i
-		} else if endNum != -1 {
-			break
+	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
+	matches := re.FindAllStringSubmatch(html, -1)
+	if len(matches) == 0 {
+		if strings.Contains(html, `"artistUnion"`) {
+			return 0, nil
 		}
-	}
-
-	if startNum == -1 || endNum == -1 || startNum >= endNum {
 		return 0, fmt.Errorf("%s: could not locate numeric listeners value", source)
 	}
 
-	numberStr := segment[startNum:endNum]
+	// Get the last matched number sequence before the end of the document
+	lastMatch := matches[len(matches)-1]
+	numberStr := lastMatch[1]
+	multiplierStr := strings.ToUpper(lastMatch[2])
+
 	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
-	count, err := strconv.Atoi(strings.TrimSpace(numberStr))
-	if err != nil {
-		return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)
+	var count int
+	if multiplierStr == "M" {
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: failed to parse M float %q: %w", source, numberStr, err)
+		}
+		count = int(val * 1000000)
+	} else if multiplierStr == "K" {
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s: failed to parse K float %q: %w", source, numberStr, err)
+		}
+		count = int(val * 1000)
+	} else {
+		val, err := strconv.ParseFloat(numberStr, 64) // parse as float just in case it contains a dot safely
+		if err != nil {
+			return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)
+		}
+		count = int(val)
 	}
 
 	return count, nil
@@ -597,8 +854,12 @@ func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 
 // Close closes the HTTP client and releases resources.
 func (c *Client) Close() error {
-	if c.local != nil {
-		c.local.Close()
+	c.localMu.Lock()
+	lb := c.local
+	c.local = nil
+	c.localMu.Unlock()
+	if lb != nil {
+		lb.Close()
 	}
 	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
