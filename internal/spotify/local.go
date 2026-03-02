@@ -108,10 +108,9 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 	// Enforce a bounded inner deadline so the local headless interception
 	// cannot block forever if the Pathfinder API response never arrives.
-	// The parent worker context provides the outer ceiling; this fallback
-	// provides a tighter inner bound to allow timely failover.
-	const fallbackTimeout = 30 * time.Second
-	reqCtx, cancel := context.WithTimeout(ctx, fallbackTimeout)
+	// boundedPhaseTimeout caps at 45 s but shrinks to the parent's remaining
+	// deadline when that is shorter, ensuring the inner timeout is always tighter.
+	reqCtx, cancel := context.WithTimeout(ctx, boundedPhaseTimeout(ctx, 45*time.Second))
 	defer cancel()
 
 	// Open an incognito context for isolation — each request gets clean cookies/storage.
