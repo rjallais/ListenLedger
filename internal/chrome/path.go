@@ -66,6 +66,15 @@ func ResolvePath(explicit string) string {
 	return ""
 }
 
+// platformInstallCandidates returns a list of filesystem paths that are common
+// installation locations for Chrome/Chromium/Edge on the current platform.
+//
+// On Windows it returns Windows-specific candidates, on macOS it returns known
+// app bundle binary paths under /Applications, and on other systems it returns
+// common Linux locations. When running under WSL, Windows-mounted .exe candidates
+// are included only if the environment variable ALLOW_WINDOWS_CHROME is set to "1".
+//
+// The returned slice contains unique paths in the order they are considered.
 func platformInstallCandidates() []string {
 	switch runtime.GOOS {
 	case "windows":

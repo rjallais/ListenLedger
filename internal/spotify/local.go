@@ -26,6 +26,10 @@ type localBrowser struct {
 	closed  bool
 }
 
+// newLocalBrowser creates and returns a configured local headless Chrome instance controlled via go-rod.
+// If cfg.LocalChromePath is provided that binary is used; otherwise a compatible Chromium is launched.
+// The browser is started in headless mode with resource- and stability-focused flags and is configured to ignore certificate errors.
+// Returns a wrapped localBrowser on success or an error if launching or connecting to the browser fails.
 func newLocalBrowser(cfg *config.Config) (*localBrowser, error) {
 	// Resolve the Chromium executable path.
 	// When LocalChromePath is set, use it directly.
@@ -267,6 +271,12 @@ func (c *Client) initLocalHeadless() {
 	}()
 }
 
+// boundedPhaseTimeout computes a timeout duration bounded by the parent context's remaining
+// deadline and a provided fallback duration.
+//
+// If fallback is less than or equal to zero, it returns 1 second. If the parent context has
+// no deadline, it returns the fallback. If the parent's deadline has already passed, it
+// returns 1 second. Otherwise it returns the lesser of the parent's remaining time and the fallback.
 func boundedPhaseTimeout(parent context.Context, fallback time.Duration) time.Duration {
 	if fallback <= 0 {
 		return time.Second
@@ -282,6 +292,10 @@ func boundedPhaseTimeout(parent context.Context, fallback time.Duration) time.Du
 	return min(remaining, fallback)
 }
 
+// extractMonthlyListeners extracts the `monthlyListeners` value from a nested Pathfinder-style payload.
+// It returns the listener count and a boolean that is true when the payload is a valid artist payload
+// (missing or null `monthlyListeners` is treated as 0). The boolean is false when the expected payload
+// structure (`data.artistUnion.stats`) is not present.
 func extractMonthlyListeners(data map[string]any) (int, bool) {
 	dataNode, ok := data["data"].(map[string]any)
 	if !ok {
@@ -313,6 +327,8 @@ func extractMonthlyListeners(data map[string]any) (int, bool) {
 	return 0, true
 }
 
+// blockedURLPatterns returns URL match patterns for static resources to block when loading pages.
+// These patterns cover common image, media, and font file types to reduce network load and speed navigation.
 func blockedURLPatterns() []string {
 	return []string{
 		"*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.svg",

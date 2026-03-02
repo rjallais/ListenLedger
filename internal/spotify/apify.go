@@ -449,7 +449,14 @@ func parseListenersFromRawText(raw string) (int, error) {
 //
 // On failure the function returns an item with an `error` field containing the
 // page title, which surfaces whether Spotify served a real artist page or a
-// bot-detection / error page.
+// buildApifyPageFunction returns a JavaScript pageFunction used by the Apify actor to extract a Spotify artist's monthly listeners.
+//
+// The generated pageFunction navigates back to the requested artist URL if the page was silently redirected, then attempts extraction using three strategies:
+// 1) read embedded JSON script state, 2) wait briefly for a span containing the listeners text, and 3) scan the rendered page text.
+// It parses numeric formats with commas, optional decimals and optional "M"/"K" suffixes, producing an integer listener count.
+//
+// The returned JavaScript string resolves to an object with at least the source `url`. On success it includes `monthlyListeners` (integer);
+// when available it also includes `monthlyListenersRaw` (the original matched text). If no listener data is found the object contains an `error` message.
 func buildApifyPageFunction() string {
 	return `
 async function pageFunction(context) {
