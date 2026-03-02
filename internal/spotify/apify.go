@@ -496,7 +496,7 @@ async function pageFunction(context) {
         }
 
         if (text.includes('"artistUnion"')) {
-            return 0;
+            return null;
         }
 
         return null;
@@ -563,16 +563,21 @@ async function pageFunction(context) {
         };
     }
 
-    // Parse the leading number (may contain locale-formatted commas).
-    const match = raw.match(/^([\d,]+)/);
+    // Parse the leading number, supporting decimals, commas, and M/K suffixes
+    // (e.g. "2.4M monthly listeners", "800K monthly listeners").
+    const match = raw.match(/^([\.\d,]+)\s*([mMkK]?)/);
     if (!match) {
         return { url: request.url, monthlyListenersRaw: raw, monthlyListeners: 0 };
     }
 
-    const count = parseInt(match[1].replace(/,/g, ''), 10);
+    let count = parseFloat(match[1].replace(/,/g, ''));
+    const suffix = match[2].toUpperCase();
+    if (suffix === 'M') { count *= 1000000; }
+    else if (suffix === 'K') { count *= 1000; }
+    const monthlyListeners = isNaN(count) ? 0 : Math.floor(count);
     return {
         url: request.url,
-        monthlyListeners: isNaN(count) ? 0 : count,
+        monthlyListeners,
         monthlyListenersRaw: raw,
     };
 }

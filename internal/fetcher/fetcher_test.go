@@ -3,12 +3,12 @@
 package fetcher
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/spotify"
-
 	"context"
 	"errors"
 	"testing"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/spotify"
 )
 
 type stubListenerFetcher struct {

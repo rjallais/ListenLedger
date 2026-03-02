@@ -3,8 +3,6 @@
 package spotify
 
 import (
-	"ListenLedger/config"
-
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"ListenLedger/config"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

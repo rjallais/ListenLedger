@@ -13,6 +13,12 @@ import (
 	"strconv"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
+
 	"ListenLedger/config"
 	"ListenLedger/internal/appdir"
 	"ListenLedger/internal/correlation"
@@ -20,12 +26,6 @@ import (
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/worker"
 	_ "ListenLedger/migrations"
-
-	natsserver "github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-	"github.com/pocketbase/pocketbase"
-	"github.com/pocketbase/pocketbase/core"
 )
 
 func main() {
