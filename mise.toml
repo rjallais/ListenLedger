@@ -31,6 +31,7 @@ AIR_BIN_PATH = "./tmp/main"
 # LOCAL_HEADLESS_ENABLED = "<true|false>"
 # LOCAL_CHROME_PATH = "<path to chromium executable>"
 # LOCAL_CONCURRENCY = "<number>"
+# LOCAL_IGNORE_CERT_ERRORS = "<true|false>"
 
 # =============================================================================
 # BUILD TASKS - Used for production builds
@@ -70,7 +71,7 @@ description = "Run the server with Air hot-reloading (configured via .air.toml)"
 run = "go tool air"
 
 [tasks.dev]
-description = "Start all development watchers (CSS, Templ, Server)"
+description = "Print instructions to run development watchers in separate terminals"
 run = "echo 'Run these in separate terminals: mise run live:css, mise run live:templ, mise run live:server'"
 
 # =============================================================================
@@ -87,8 +88,8 @@ run = "go run . serve --http=localhost:8090"
 depends = ["build"]
 
 [tasks.admin]
-description = "Create a superuser account (supply ADMIN_EMAIL and ADMIN_PASSWORD env vars)"
-run = "go run . superuser upsert $env.ADMIN_EMAIL $env.ADMIN_PASSWORD"
+description = "Create a superuser account"
+run = "go run . superuser upsert admin@example.com changeme123"
 
 [tasks.quota]
 description = "Check quota status for scraping providers"
@@ -104,4 +105,4 @@ run = "go test ./..."
 
 [tasks.tools]
 description = "Download and install Go tools defined in go.mod"
-run = "go mod tidy; go install tool"
+run = "go mod tidy; go tool -n"

@@ -55,9 +55,10 @@ type Config struct {
 	ApifyBatchSize int
 
 	// Local headless (go-rod) configuration
-	LocalHeadlessEnabled bool
-	LocalChromePath      string
-	LocalConcurrency     int
+	LocalHeadlessEnabled  bool
+	LocalChromePath       string
+	LocalConcurrency      int
+	LocalIgnoreCertErrors bool
 
 	// Shared behavior configuration
 	MaxConcurrency  int
@@ -233,6 +234,11 @@ func (c *Config) LoadFromEnv() error {
 	if concStr := os.Getenv("LOCAL_CONCURRENCY"); concStr != "" {
 		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
 			c.LocalConcurrency = conc
+		}
+	}
+	if ignoreCertStr := os.Getenv("LOCAL_IGNORE_CERT_ERRORS"); ignoreCertStr != "" {
+		if val, err := strconv.ParseBool(ignoreCertStr); err == nil {
+			c.LocalIgnoreCertErrors = val
 		}
 	}
 

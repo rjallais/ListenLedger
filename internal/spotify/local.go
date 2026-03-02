@@ -8,29 +8,28 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"ListenLedger/config"
+	chromeutil "ListenLedger/internal/chrome"
+
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
-
-	"ListenLedger/config"
-	chromeutil "ListenLedger/internal/chrome"
 )
 
 type localBrowser struct {
 	browser *rod.Browser
-	mu      sync.Mutex // guards Close to prevent double-close
+	mu      sync.Mutex // guards closed/browser fields
 	closed  bool
 }
 
-// newLocalBrowser creates and returns a configured local headless Chrome instance controlled via go-rod.
-// If cfg.LocalChromePath is provided that binary is used; otherwise a compatible Chromium is launched.
-// The browser is started in headless mode with resource- and stability-focused flags and is configured to ignore certificate errors.
-// Returns a wrapped localBrowser on success or an error if launching or connecting to the browser fails.
-func newLocalBrowser(cfg *config.Config) (*localBrowser, error) {
+// newLocalBrowser launches a headless Chromium instance and connects go-rod to
+// it. ctx is threaded into the connect call so startup is cancellable.
+func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, error) {
 	// Resolve the Chromium executable path.
 	// When LocalChromePath is set, use it directly.
 	// Otherwise, go-rod's launcher downloads a pinned compatible Chromium revision.
@@ -61,18 +60,28 @@ func newLocalBrowser(cfg *config.Config) (*localBrowser, error) {
 		l = l.Set("no-sandbox")
 	}
 
-	controlURL, err := l.Launch()
+	// Apply a startup deadline so a slow Chromium download/launch doesn't block
+	// indefinitely. Use a child context so the caller's deadline also applies.
+	startCtx, startCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer startCancel()
+
+	controlURL, err := l.Context(startCtx).Launch()
 	if err != nil {
 		return nil, fmt.Errorf("local headless: failed to launch browser: %w", err)
 	}
 
-	browser := rod.New().ControlURL(controlURL)
+	browser := rod.New().Context(ctx).ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
+		// Kill the spawned Chrome process so it is not left as a zombie.
+		l.Kill()
+		l.Cleanup()
 		return nil, fmt.Errorf("local headless: failed to connect to browser: %w", err)
 	}
 
-	// Ignore certificate errors for smoother navigation in constrained envs.
-	_ = browser.IgnoreCertErrors(true)
+	// Honour the config flag — strict TLS by default, opt-in relaxation only.
+	if cfg.LocalIgnoreCertErrors {
+		_ = browser.IgnoreCertErrors(true)
+	}
 
 	log.Printf("[spotify] Local headless browser connected (go-rod)")
 	return &localBrowser{browser: browser}, nil
@@ -91,30 +100,38 @@ func (lb *localBrowser) Close() {
 }
 
 // isAlive reports whether the browser process is still reachable.
+// The mutex is released before performing the CDP call to avoid blocking other
+// goroutines that hold lb.mu while isAlive is waiting on the network.
 func (lb *localBrowser) isAlive() bool {
 	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	if lb.closed || lb.browser == nil {
+	closed := lb.closed
+	b := lb.browser
+	lb.mu.Unlock()
+
+	if closed || b == nil {
 		return false
 	}
-	// Lightweight CDP call to check liveness.
-	_, err := lb.browser.Version()
+
+	// Short bounded context: we only need a quick ping, not a full timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := b.Context(ctx).Version()
 	return err == nil
 }
 
 func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (int, error) {
-	lb, err := c.getOrCreateBrowser()
+	lb, err := c.getOrCreateBrowser(ctx)
 	if err != nil {
 		return 0, err
 	}
 
 	artistURL := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 
-	// Enforce a bounded inner deadline so the local headless interception
-	// cannot block forever if the Pathfinder API response never arrives.
-	// boundedPhaseTimeout caps at 45 s but shrinks to the parent's remaining
-	// deadline when that is shorter, ensuring the inner timeout is always tighter.
-	reqCtx, cancel := context.WithTimeout(ctx, boundedPhaseTimeout(ctx, 45*time.Second))
+	// Respect caller cancellation/deadline while keeping a local fallback timeout.
+	// No hard timeout for local headless interception; allowing page navigation to take as long as necessary.
+	// We still inherit the parent worker context (which has a very large ceiling like 5 min)
+	// to prevent permanent zombie requests if the browser process crashes.
+	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Open an incognito context for isolation — each request gets clean cookies/storage.
@@ -174,6 +191,10 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 					return
 				}
 
+				if strings.Contains(artistURL, "0QHGCPmM4UgeNvrNPntSlu") {
+					os.WriteFile("cynthia_luz_pathfinder.json", []byte(res.Body), 0644)
+				}
+
 				listeners, ok := extractMonthlyListeners(data)
 				if !ok {
 					return
@@ -206,7 +227,7 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 // getOrCreateBrowser returns the shared browser singleton, creating it if
 // necessary (first call, or after a crash eviction via evictDeadBrowser).
-func (c *Client) getOrCreateBrowser() (*localBrowser, error) {
+func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) {
 	// Fast path: singleton is alive.
 	c.localMu.Lock()
 	lb := c.local
@@ -229,7 +250,7 @@ func (c *Client) getOrCreateBrowser() (*localBrowser, error) {
 		c.local = nil
 	}
 
-	lb, err := newLocalBrowser(c.config)
+	lb, err := newLocalBrowser(ctx, c.config)
 	if err != nil {
 		// Return the error but do NOT flip useLocal to false. A transient
 		// launch failure must not permanently disable the provider.
@@ -264,18 +285,12 @@ func (c *Client) initLocalHeadless() {
 	// Warm up the browser eagerly in a background goroutine so that
 	// Chromium is downloaded and ready before any worker request arrives.
 	go func() {
-		if _, err := c.getOrCreateBrowser(); err != nil {
+		if _, err := c.getOrCreateBrowser(context.Background()); err != nil {
 			log.Printf("[spotify] Local headless warm-up failed (will retry on first request): %v", err)
 		}
 	}()
 }
 
-// boundedPhaseTimeout computes a timeout duration bounded by the parent context's remaining
-// deadline and a provided fallback duration.
-//
-// If fallback is less than or equal to zero, it returns 1 second. If the parent context has
-// no deadline, it returns the fallback. If the parent's deadline has already passed, it
-// returns 1 second. Otherwise it returns the lesser of the parent's remaining time and the fallback.
 func boundedPhaseTimeout(parent context.Context, fallback time.Duration) time.Duration {
 	if fallback <= 0 {
 		return time.Second
@@ -291,10 +306,6 @@ func boundedPhaseTimeout(parent context.Context, fallback time.Duration) time.Du
 	return min(remaining, fallback)
 }
 
-// extractMonthlyListeners extracts the `monthlyListeners` value from a nested Pathfinder-style payload.
-// It returns the listener count and a boolean that is true when the payload is a valid artist payload
-// (missing or null `monthlyListeners` is treated as 0). The boolean is false when the expected payload
-// structure (`data.artistUnion.stats`) is not present.
 func extractMonthlyListeners(data map[string]any) (int, bool) {
 	dataNode, ok := data["data"].(map[string]any)
 	if !ok {
@@ -326,8 +337,6 @@ func extractMonthlyListeners(data map[string]any) (int, bool) {
 	return 0, true
 }
 
-// blockedURLPatterns returns URL match patterns for static resources to block when loading pages.
-// These patterns cover common image, media, and font file types to reduce network load and speed navigation.
 func blockedURLPatterns() []string {
 	return []string{
 		"*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.svg",
