@@ -4,9 +4,6 @@
 package fetcher
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/spotify"
-
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/spotify"
 )
 
 // Service handles the orchestration of fetching listener counts

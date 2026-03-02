@@ -84,8 +84,8 @@ run = "go run . serve --http=localhost:8090"
 depends = ["build"]
 
 [tasks.admin]
-description = "Create a superuser account"
-run = "go run . superuser upsert admin@example.com changeme123"
+description = "Create a superuser account (supply ADMIN_EMAIL and ADMIN_PASSWORD env vars)"
+run = "go run . superuser upsert $env.ADMIN_EMAIL $env.ADMIN_PASSWORD"
 
 [tasks.quota]
 description = "Check quota status for scraping providers"

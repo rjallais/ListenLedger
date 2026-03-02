@@ -5,5 +5,14 @@ package config
 import "testing"
 
 func TestLoadFromEnvAllowsEmptyScraperAPIWaitForSelector(t *testing.T) {
-	// Obsolete test: default selector is now intentionally empty.
+	const key = "SCRAPERAPI_WAIT_FOR_SELECTOR"
+	t.Setenv(key, "")
+
+	cfg := DefaultConfig()
+	if err := cfg.LoadFromEnv(); err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.ScraperAPIWaitForSelector != "" {
+		t.Fatalf("ScraperAPIWaitForSelector = %q, want empty string", cfg.ScraperAPIWaitForSelector)
+	}
 }
