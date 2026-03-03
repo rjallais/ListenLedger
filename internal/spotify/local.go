@@ -105,7 +105,9 @@ func (lb *localBrowser) Close() {
 // isAlive reports whether the browser process is still reachable.
 // The mutex is released before performing the CDP call to avoid blocking other
 // goroutines that hold lb.mu while isAlive is waiting on the network.
-func (lb *localBrowser) isAlive() bool {
+// ctx is used only to derive a short inner deadline; a 3 s child timeout is
+// always applied so the ping never blocks longer than that.
+func (lb *localBrowser) isAlive(ctx context.Context) bool {
 	lb.mu.Lock()
 	closed := lb.closed
 	b := lb.browser
@@ -116,9 +118,9 @@ func (lb *localBrowser) isAlive() bool {
 	}
 
 	// Short bounded context: we only need a quick ping, not a full timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	_, err := b.Context(ctx).Version()
+	_, err := b.Context(pingCtx).Version()
 	return err == nil
 }
 
@@ -160,21 +162,21 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 	browserCtx := b.Context(reqCtx)
 	incognito, err := browserCtx.Incognito()
 	if err != nil {
-		c.evictDeadBrowser(lb)
+		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: failed to create incognito context: %w", err)
 	}
 	defer incognito.Close()
 
 	page, err := incognito.Context(reqCtx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
-		c.evictDeadBrowser(lb)
+		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: failed to create page: %w", err)
 	}
 	defer page.Close()
 
 	// Enable CDP network domain for this page.
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
-		c.evictDeadBrowser(lb)
+		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: network enable failed: %w", err)
 	}
 
@@ -229,7 +231,7 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 	// Navigate to the raw Spotify web player HTML renderer.
 	if err := page.Navigate(artistURL); err != nil {
-		c.evictDeadBrowser(lb)
+		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: failed to navigate: %w", err)
 	}
 
@@ -249,22 +251,29 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 	c.localMu.Lock()
 	lb := c.local
 	c.localMu.Unlock()
-	if lb != nil && lb.isAlive() {
+	if lb != nil && lb.isAlive(ctx) {
 		return lb, nil
 	}
 
 	// Slow path: create or recreate the browser under the write lock.
 	c.localMu.Lock()
-	defer c.localMu.Unlock()
 
-	if c.local != nil && c.local.isAlive() {
+	if c.local != nil && c.local.isAlive(ctx) {
+		c.localMu.Unlock()
 		return c.local, nil
 	}
 
-	// Close any zombie singleton before creating a fresh one.
+	// Detach any zombie singleton under the lock, then close it outside so
+	// localBrowser.Close() never runs while c.localMu is held.
+	var zombie *localBrowser
 	if c.local != nil {
-		c.local.Close()
+		zombie = c.local
 		c.local = nil
+	}
+	c.localMu.Unlock()
+
+	if zombie != nil {
+		zombie.Close()
 	}
 
 	lb, err := newLocalBrowser(ctx, c.config)
@@ -273,22 +282,31 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 		// launch failure must not permanently disable the provider.
 		return nil, fmt.Errorf("local headless unavailable: %w", err)
 	}
+
+	c.localMu.Lock()
 	c.local = lb
+	c.localMu.Unlock()
 	return lb, nil
 }
 
 // evictDeadBrowser atomically clears the singleton if it is the same instance
 // that encountered the error, ensuring concurrent goroutines on a healthy
 // browser are not disrupted.
-func (c *Client) evictDeadBrowser(lb *localBrowser) {
-	if lb == nil || lb.isAlive() {
+func (c *Client) evictDeadBrowser(ctx context.Context, lb *localBrowser) {
+	if lb == nil || lb.isAlive(ctx) {
 		return
 	}
+	// Detach under lock, close outside so Close() doesn't run while c.localMu is held.
 	c.localMu.Lock()
-	defer c.localMu.Unlock()
+	var toClose *localBrowser
 	if c.local == lb {
-		lb.Close()
+		toClose = lb
 		c.local = nil
+	}
+	c.localMu.Unlock()
+
+	if toClose != nil {
+		toClose.Close()
 		log.Printf("[spotify] Local headless: browser process died, will recreate on next request")
 	}
 }
