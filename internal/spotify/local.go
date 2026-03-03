@@ -266,13 +266,12 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 					c.localMu.Unlock()
 					return candidate, nil
 				}
-				// c.local changed under us — restart the loop to re-evaluate.
-				// c.localMu is still held; continue re-locks at top of loop.
+				// c.local changed under us — release and restart the loop.
+				c.localMu.Unlock()
 				continue
 			}
-			// Browser is dead — re-acquire and restart so the sentinel/launcher
-			// path can run with an accurate view of c.local.
-			c.localMu.Lock()
+			// Browser is dead — restart so the sentinel/launcher path can
+			// run with an accurate view of c.local.
 			continue
 		}
 
