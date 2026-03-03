@@ -105,8 +105,8 @@ func (lb *localBrowser) Close() {
 // isAlive reports whether the browser process is still reachable.
 // The mutex is released before performing the CDP call to avoid blocking other
 // goroutines that hold lb.mu while isAlive is waiting on the network.
-// ctx is used only to derive a short inner deadline; a 3 s child timeout is
-// always applied so the ping never blocks longer than that.
+// A standalone 3 s background context is used for the ping so that a
+// nearly-expired caller deadline cannot cause a false negative.
 func (lb *localBrowser) isAlive(ctx context.Context) bool {
 	lb.mu.Lock()
 	closed := lb.closed
@@ -117,8 +117,9 @@ func (lb *localBrowser) isAlive(ctx context.Context) bool {
 		return false
 	}
 
-	// Short bounded context: we only need a quick ping, not a full timeout.
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Use a fresh background context so the caller's deadline doesn't
+	// shorten the ping window and produce a false "browser is dead" result.
+	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := b.Context(pingCtx).Version()
 	return err == nil
@@ -251,11 +252,25 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 	for {
 		c.localMu.Lock()
 
-		// Happy path: healthy singleton already exists.
-		if c.local != nil && c.local.isAlive(ctx) {
-			lb := c.local
+		// Happy path: snapshot the candidate, release the lock, then
+		// probe liveness outside the lock (isAlive does a 3 s CDP ping).
+		// If alive, re-acquire to confirm c.local hasn't been replaced
+		// concurrently before returning it.
+		if c.local != nil {
+			candidate := c.local
 			c.localMu.Unlock()
-			return lb, nil
+			if candidate.isAlive(ctx) {
+				// Verify the singleton hasn't been swapped while we were probing.
+				c.localMu.Lock()
+				if c.local == candidate {
+					c.localMu.Unlock()
+					return candidate, nil
+				}
+				// c.local changed under us — fall through to re-evaluate.
+				// (c.localMu is still held; the outer loop will handle it.)
+			} else {
+				c.localMu.Lock()
+			}
 		}
 
 		// Another goroutine is already launching; wait for it to finish.
