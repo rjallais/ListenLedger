@@ -246,47 +246,65 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 // getOrCreateBrowser returns the shared browser singleton, creating it if
 // necessary (first call, or after a crash eviction via evictDeadBrowser).
+// Only one goroutine performs the launch at a time; others wait on c.localInit.
 func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) {
-	// Fast path: singleton is alive.
-	c.localMu.Lock()
-	lb := c.local
-	c.localMu.Unlock()
-	if lb != nil && lb.isAlive(ctx) {
+	for {
+		c.localMu.Lock()
+
+		// Happy path: healthy singleton already exists.
+		if c.local != nil && c.local.isAlive(ctx) {
+			lb := c.local
+			c.localMu.Unlock()
+			return lb, nil
+		}
+
+		// Another goroutine is already launching; wait for it to finish.
+		if c.localInit != nil {
+			initCh := c.localInit
+			c.localMu.Unlock()
+			select {
+			case <-initCh:
+				// Launcher finished — loop and re-read c.local.
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
+			}
+		}
+
+		// We are the launcher. Detach any zombie and install the sentinel.
+		var zombie *localBrowser
+		if c.local != nil {
+			zombie = c.local
+			c.local = nil
+		}
+		initCh := make(chan struct{})
+		c.localInit = initCh
+		c.localMu.Unlock()
+
+		// Close the zombie outside the lock.
+		if zombie != nil {
+			zombie.Close()
+		}
+
+		// Launch the new browser. On success or failure, clear the sentinel
+		// and wake all waiters by closing the channel.
+		lb, err := newLocalBrowser(ctx, c.config)
+
+		c.localMu.Lock()
+		c.localInit = nil
+		if err == nil {
+			c.local = lb
+		}
+		c.localMu.Unlock()
+		close(initCh) // wake all waiters
+
+		if err != nil {
+			// Return the error but do NOT flip useLocal to false. A transient
+			// launch failure must not permanently disable the provider.
+			return nil, fmt.Errorf("local headless unavailable: %w", err)
+		}
 		return lb, nil
 	}
-
-	// Slow path: create or recreate the browser under the write lock.
-	c.localMu.Lock()
-
-	if c.local != nil && c.local.isAlive(ctx) {
-		c.localMu.Unlock()
-		return c.local, nil
-	}
-
-	// Detach any zombie singleton under the lock, then close it outside so
-	// localBrowser.Close() never runs while c.localMu is held.
-	var zombie *localBrowser
-	if c.local != nil {
-		zombie = c.local
-		c.local = nil
-	}
-	c.localMu.Unlock()
-
-	if zombie != nil {
-		zombie.Close()
-	}
-
-	lb, err := newLocalBrowser(ctx, c.config)
-	if err != nil {
-		// Return the error but do NOT flip useLocal to false. A transient
-		// launch failure must not permanently disable the provider.
-		return nil, fmt.Errorf("local headless unavailable: %w", err)
-	}
-
-	c.localMu.Lock()
-	c.local = lb
-	c.localMu.Unlock()
-	return lb, nil
 }
 
 // evictDeadBrowser atomically clears the singleton if it is the same instance

@@ -88,6 +88,9 @@ type Client struct {
 
 	local   *localBrowser
 	localMu sync.Mutex
+	// localInit is non-nil while a browser launch is in progress.
+	// Other goroutines wait on it then re-read c.local.
+	localInit chan struct{}
 
 	scraperAPIRateLimitStreak atomic.Int64
 	scraperAPICooldownUntil   atomic.Int64
