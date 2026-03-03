@@ -270,8 +270,18 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 				c.localMu.Unlock()
 				continue
 			}
-			// Browser is dead — restart so the sentinel/launcher path can
-			// run with an accurate view of c.local.
+			// Browser is dead — detach it under the lock so the launcher path
+			// sees c.local == nil, then close outside the lock and restart.
+			c.localMu.Lock()
+			var dead *localBrowser
+			if c.local == candidate {
+				dead = c.local
+				c.local = nil
+			}
+			c.localMu.Unlock()
+			if dead != nil {
+				dead.Close()
+			}
 			continue
 		}
 
