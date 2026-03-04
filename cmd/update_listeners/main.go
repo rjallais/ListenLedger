@@ -245,13 +245,13 @@ func extractListeners(browser *rod.Browser, artistID string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("incognito context failed: %w", err)
 	}
-	defer incognito.Close()
+	defer func() { _ = incognito.Close() }()
 
 	page, err := incognito.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
 		return 0, fmt.Errorf("page creation failed: %w", err)
 	}
-	defer page.Close()
+	defer func() { _ = page.Close() }()
 
 	// Enable network domain and block heavy resources.
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {

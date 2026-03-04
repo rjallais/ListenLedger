@@ -83,7 +83,7 @@ func main() {
 	if err := browser.Connect(); err != nil {
 		log.Fatal(err)
 	}
-	defer browser.Close()
+	defer func() { _ = browser.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -92,7 +92,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer page.Close()
+	defer func() { _ = page.Close() }()
 
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
 		log.Fatal(err)
