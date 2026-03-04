@@ -302,20 +302,10 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 			}
 		}
 
-		// We are the launcher. Detach any zombie and install the sentinel.
-		var zombie *localBrowser
-		if c.local != nil {
-			zombie = c.local
-			c.local = nil
-		}
+		// We are the launcher. Install the sentinel.
 		initCh := make(chan struct{})
 		c.localInit = initCh
 		c.localMu.Unlock()
-
-		// Close the zombie outside the lock.
-		if zombie != nil {
-			zombie.Close()
-		}
 
 		// Launch the new browser. On success or failure, clear the sentinel
 		// and wake all waiters by closing the channel.
