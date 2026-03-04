@@ -204,6 +204,10 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 			targetReqs.Delete(e.RequestID)
 
 			go func(reqID proto.NetworkRequestID) {
+				if reqCtx.Err() != nil {
+					return
+				}
+
 				res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
 				if err != nil {
 					// Likely a CORS preflight OPTIONS request with no body.
