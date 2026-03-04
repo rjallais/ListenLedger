@@ -365,7 +365,7 @@ func (c *Client) initLocalHeadless() {
 	// Warm up the browser eagerly in a background goroutine so that
 	// Chromium is downloaded and ready before any worker request arrives.
 	go func() {
-		warmCtx, warmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer warmCancel()
 		if _, err := c.getOrCreateBrowser(warmCtx); err != nil {
 			log.Printf("[spotify] Local headless warm-up failed (will retry on first request): %v", err)
