@@ -24,8 +24,8 @@ pb_data/
 static/styles.css
 node_modules/
 .air.toml
-ListenLedger
-update_listeners
+/ListenLedger
+/update_listeners
 /seed
 backups/
 server.log
