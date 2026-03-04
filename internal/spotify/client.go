@@ -576,19 +576,20 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
 	var count int
-	if multiplierStr == "M" {
+	switch multiplierStr {
+	case "M":
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("browserless: failed to parse M float %q: %w", numberStr, err)
 		}
 		count = int(val * 1000000)
-	} else if multiplierStr == "K" {
+	case "K":
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("browserless: failed to parse K float %q: %w", numberStr, err)
 		}
 		count = int(val * 1000)
-	} else {
+	default:
 		val, err := strconv.ParseFloat(numberStr, 64) // Parse float safely to throw away any stray decimals
 		if err != nil {
 			return 0, fmt.Errorf("browserless: failed to parse number %q: %w", numberStr, err)
@@ -854,19 +855,20 @@ func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 	numberStr = strings.ReplaceAll(numberStr, ",", "")
 
 	var count int
-	if multiplierStr == "M" {
+	switch multiplierStr {
+	case "M":
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("%s: failed to parse M float %q: %w", source, numberStr, err)
 		}
 		count = int(val * 1000000)
-	} else if multiplierStr == "K" {
+	case "K":
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("%s: failed to parse K float %q: %w", source, numberStr, err)
 		}
 		count = int(val * 1000)
-	} else {
+	default:
 		val, err := strconv.ParseFloat(numberStr, 64) // parse as float just in case it contains a dot safely
 		if err != nil {
 			return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)

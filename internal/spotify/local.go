@@ -166,14 +166,14 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: failed to create incognito context: %w", err)
 	}
-	defer incognito.Close()
+	defer func() { _ = incognito.Close() }()
 
 	page, err := incognito.Context(reqCtx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
 		c.evictDeadBrowser(ctx, lb)
 		return 0, fmt.Errorf("local headless: failed to create page: %w", err)
 	}
-	defer page.Close()
+	defer func() { _ = page.Close() }()
 
 	// Enable CDP network domain for this page.
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
