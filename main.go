@@ -5,13 +5,6 @@
 package main
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/appdir"
-	"ListenLedger/internal/correlation"
-	"ListenLedger/internal/handlers"
-	"ListenLedger/internal/messaging"
-	"ListenLedger/internal/worker"
-	_ "ListenLedger/migrations"
 	"context"
 	"fmt"
 	"log"
@@ -25,8 +18,19 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/handlers"
+	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/worker"
+	_ "ListenLedger/migrations"
 )
 
+// main initializes and starts the PocketBase application, running migrations, bootstrapping an embedded NATS server with JetStream, ensuring required streams, registering record hooks and HTTP routes, starting background workers, and wiring graceful shutdown. 
+//
+// The function performs application startup orchestration: it runs app-defined migrations before serving; loads configuration from the environment; starts an embedded NATS server and connects a client; initializes JetStream and ensures durable streams for scrape requests, a dead-letter queue, and events; registers an artist update fanout to publish events from PocketBase record hooks; starts the background scrape worker; registers HTTP handlers; and binds cleanup logic to terminate the worker and stop NATS on application shutdown.
 func main() {
 	dataDir := appdir.ResolveDataDir()
 	app := pocketbase.NewWithConfig(pocketbase.Config{

@@ -4,16 +4,19 @@
 package fetcher
 
 import (
-	"ListenLedger/config"
-	"ListenLedger/internal/spotify"
-
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
+	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"ListenLedger/config"
+	"ListenLedger/internal/spotify"
 )
 
 // Service handles the orchestration of fetching listener counts
@@ -117,10 +120,11 @@ func (s *Service) FetchOne(ctx context.Context, artistID string, provider spotif
 func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider spotify.Provider) (int, error) {
 	var lastErr error
 
+	var attemptsRun int
 	for attempt := 0; attempt < s.config.MaxRetries+1; attempt++ {
+		attemptsRun = attempt + 1
 		if attempt > 0 {
-			// Exponential backoff
-			backoff := time.Duration(attempt) * time.Second
+			backoff := retryBackoffWithJitter(attempt)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -140,6 +144,15 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 		if errors.Is(err, spotify.ErrQuotaExhausted) {
 			break
 		}
+		// Don't retry immediately when provider reported rate limiting.
+		if errors.Is(err, spotify.ErrRateLimited) {
+			break
+		}
+		// Local and ScraperAPI timeout failures are high-cost and usually repeat;
+		// fail over to another provider via JetStream redelivery quickly.
+		if shouldStopRetryOnTimeout(provider, err) {
+			break
+		}
 
 		// Don't retry on context cancellation
 		if ctx.Err() != nil {
@@ -147,7 +160,55 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 		}
 	}
 
-	return 0, fmt.Errorf("after %d attempts: %w", s.config.MaxRetries+1, lastErr)
+	return 0, fmt.Errorf("after %d attempt(s): %w", attemptsRun, lastErr)
+}
+
+// retryBackoffWithJitter returns an exponential backoff duration for the given attempt with a small random jitter.
+// The base backoff starts at 1s and doubles for each attempt up to five doublings (maximum base 32s), then adds
+// up to 250ms of random jitter to avoid synchronized retries.
+func retryBackoffWithJitter(attempt int) time.Duration {
+	base := time.Second
+	for i := 0; i < attempt-1 && i < 5; i++ {
+		base *= 2
+	}
+
+	// Add up to 250ms jitter to avoid synchronized retries across workers.
+	jitter := time.Duration(rand.Int63n(int64(250*time.Millisecond + time.Nanosecond)))
+	return base + jitter
+}
+
+// shouldStopRetryOnTimeout reports whether retries should cease when the provided error is a timeout for the given provider.
+// It returns true if err is recognized as a timeout and provider is ProviderLocalHeadless or ProviderScraperAPI.
+func shouldStopRetryOnTimeout(provider spotify.Provider, err error) bool {
+	if !isTimeoutError(err) {
+		return false
+	}
+
+	return provider == spotify.ProviderLocalHeadless || provider == spotify.ProviderScraperAPI
+}
+
+// isTimeoutError reports whether err represents a timeout or deadline cancellation.
+// It returns true for context.DeadlineExceeded or context.Canceled, for errors
+// that implement net.Error with Timeout() == true, or when the error message
+// contains common timeout phrases such as "deadline exceeded", "timeout", or
+// "context canceled".
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "context canceled")
 }
 
 // fetchAllBatch processes all artist IDs via the BatchFetcher (Apify) path.

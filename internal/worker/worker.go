@@ -25,6 +25,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,9 +61,30 @@ type providerGroup struct {
 // inflightMsg wraps a JetStream message with its parsed request and metadata
 // so provider goroutines don't need to re-parse.
 type inflightMsg struct {
-	msg  jetstream.Msg
-	meta *jetstream.MsgMetadata
-	req  messaging.ScrapeRequested
+	msg jetstream.Msg
+	// dispatchProgress keeps ack heartbeats alive while the message waits in
+	// the shared work channel for an available provider slot.
+	dispatchProgress *progressHandle
+	meta             *jetstream.MsgMetadata
+	req              messaging.ScrapeRequested
+}
+
+type progressHandle struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newProgressHandle() *progressHandle {
+	return &progressHandle{done: make(chan struct{})}
+}
+
+func (h *progressHandle) Stop() {
+	if h == nil {
+		return
+	}
+	h.once.Do(func() {
+		close(h.done)
+	})
 }
 
 // msgResult is the outcome of handleMsg so providerLoop can react.
@@ -70,6 +94,53 @@ const (
 	msgOK           msgResult = iota // processed (ack/nak already sent)
 	msgQuotaExpired                  // quota exhaustion detected — caller should exit
 )
+
+const requestSuccessCacheTTL = 30 * time.Minute
+const localPoolFailureThreshold = 12
+
+var errRequestAlreadySucceeded = errors.New("request already succeeded")
+var errTerminalFailure = errors.New("terminal failure")
+
+type providerMetrics struct {
+	Attempts        int64
+	FirstDeliveries int64
+	Redeliveries    int64
+
+	Succeeded      int64
+	DedupSkipped   int64
+	RetryableError int64
+	TimeoutError   int64
+	RateLimited    int64
+	QuotaExhausted int64
+	DLQ            int64
+	AckErrors      int64
+	TerminalFailed int64
+
+	LatencyNanos int64
+}
+
+type providerMetricsSnapshot struct {
+	Attempts        int64
+	FirstDeliveries int64
+	Redeliveries    int64
+	Succeeded       int64
+	DedupSkipped    int64
+	RetryableError  int64
+	TimeoutError    int64
+	RateLimited     int64
+	QuotaExhausted  int64
+	DLQ             int64
+	AckErrors       int64
+	TerminalFailed  int64
+	LatencyNanos    int64
+}
+
+type workerMetricsSnapshot struct {
+	StartedAt time.Time
+	Duration  time.Duration
+	Totals    providerMetricsSnapshot
+	Providers map[string]providerMetricsSnapshot
+}
 
 // Worker handles background scraping jobs via NATS.
 type Worker struct {
@@ -112,6 +183,14 @@ type Worker struct {
 	recalcMu      sync.Mutex
 	recalcTimer   *time.Timer
 	recalcPending map[string]struct{}
+
+	succeededMu       sync.Mutex
+	succeededRequests map[string]time.Time
+
+	metricsMu       sync.Mutex
+	metricsStarted  time.Time
+	metricsProvider map[string]*providerMetrics
+	providerCount   int
 }
 
 // New creates a new worker instance.
@@ -119,14 +198,16 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Worker{
-		app:           app,
-		nc:            nc,
-		js:            js,
-		cfg:           cfg,
-		quota:         quota.NewChecker(cfg),
-		ctx:           ctx,
-		cancel:        cancel,
-		recalcPending: make(map[string]struct{}),
+		app:               app,
+		nc:                nc,
+		js:                js,
+		cfg:               cfg,
+		quota:             quota.NewChecker(cfg),
+		ctx:               ctx,
+		cancel:            cancel,
+		recalcPending:     make(map[string]struct{}),
+		succeededRequests: make(map[string]time.Time),
+		metricsProvider:   make(map[string]*providerMetrics),
 	}
 }
 
@@ -184,6 +265,8 @@ func (w *Worker) totalConcurrency() int {
 
 // Start begins listening for scrape requests on NATS.
 func (w *Worker) Start() {
+	w.initMetrics()
+
 	// Initialize the Spotify client and fetcher.
 	client, err := spotify.NewClient(w.cfg)
 	if err != nil {
@@ -300,6 +383,7 @@ func (w *Worker) Start() {
 
 	// Spawn per-provider goroutine pools.
 	slots := w.providerSlots()
+	w.providerCount = max(1, len(slots))
 	if len(slots) == 0 {
 		// No providers configured — run a single goroutine that will report
 		// fetcher-unavailable for every message.
@@ -325,6 +409,8 @@ func (w *Worker) Start() {
 	// buffered with no one to process them.
 	w.allGroupsDead = make(chan struct{})
 	go w.watchAllGroups()
+	w.wg.Add(1)
+	go w.metricsReporter()
 
 	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
 }
@@ -414,6 +500,225 @@ func (w *Worker) Stop() {
 			log.Printf("[worker] Warning: Failed to close fetcher: %v", err)
 		}
 	}
+
+	w.logMetricsSummary("stop")
+}
+
+func (w *Worker) initMetrics() {
+	w.metricsMu.Lock()
+	w.metricsStarted = time.Now()
+	w.metricsProvider = make(map[string]*providerMetrics)
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) metricsReporter() {
+	defer w.wg.Done()
+
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-ticker.C:
+			w.logMetricsSummary("interval")
+		}
+	}
+}
+
+func (w *Worker) getProviderMetricsLocked(label string) *providerMetrics {
+	metrics := w.metricsProvider[label]
+	if metrics == nil {
+		metrics = &providerMetrics{}
+		w.metricsProvider[label] = metrics
+	}
+	return metrics
+}
+
+func (w *Worker) recordAttempt(label string, delivered uint64) {
+	w.metricsMu.Lock()
+	metrics := w.getProviderMetricsLocked(label)
+	metrics.Attempts++
+	if delivered <= 1 {
+		metrics.FirstDeliveries++
+	} else {
+		metrics.Redeliveries++
+	}
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordSucceeded(label string, duration time.Duration) {
+	w.metricsMu.Lock()
+	metrics := w.getProviderMetricsLocked(label)
+	metrics.Succeeded++
+	metrics.LatencyNanos += duration.Nanoseconds()
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordDedupSkipped(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).DedupSkipped++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordRetryableError(label string, err error) {
+	w.metricsMu.Lock()
+	metrics := w.getProviderMetricsLocked(label)
+	metrics.RetryableError++
+	if isTimeoutErr(err) {
+		metrics.TimeoutError++
+	}
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordRateLimited(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).RateLimited++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordQuotaExhausted(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).QuotaExhausted++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordDLQ(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).DLQ++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordAckError(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).AckErrors++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) recordTerminalFailure(label string) {
+	w.metricsMu.Lock()
+	w.getProviderMetricsLocked(label).TerminalFailed++
+	w.metricsMu.Unlock()
+}
+
+func (w *Worker) shouldParkLocalPool(label string) (bool, int64, int64) {
+	if w.providerCount <= 1 {
+		return false, 0, 0
+	}
+
+	w.metricsMu.Lock()
+	defer w.metricsMu.Unlock()
+
+	metrics := w.metricsProvider[label]
+	if metrics == nil {
+		return false, 0, 0
+	}
+
+	shouldPark := metrics.Attempts >= localPoolFailureThreshold &&
+		metrics.Succeeded == 0 &&
+		metrics.RetryableError >= localPoolFailureThreshold
+
+	return shouldPark, metrics.Attempts, metrics.RetryableError
+}
+
+func (w *Worker) snapshotMetrics() workerMetricsSnapshot {
+	w.metricsMu.Lock()
+	defer w.metricsMu.Unlock()
+
+	now := time.Now()
+	snapshot := workerMetricsSnapshot{
+		StartedAt: w.metricsStarted,
+		Duration:  now.Sub(w.metricsStarted),
+		Providers: make(map[string]providerMetricsSnapshot, len(w.metricsProvider)),
+	}
+
+	var totals providerMetricsSnapshot
+	for label, metrics := range w.metricsProvider {
+		item := providerMetricsSnapshot{
+			Attempts:        metrics.Attempts,
+			FirstDeliveries: metrics.FirstDeliveries,
+			Redeliveries:    metrics.Redeliveries,
+			Succeeded:       metrics.Succeeded,
+			DedupSkipped:    metrics.DedupSkipped,
+			RetryableError:  metrics.RetryableError,
+			TimeoutError:    metrics.TimeoutError,
+			RateLimited:     metrics.RateLimited,
+			QuotaExhausted:  metrics.QuotaExhausted,
+			DLQ:             metrics.DLQ,
+			AckErrors:       metrics.AckErrors,
+			TerminalFailed:  metrics.TerminalFailed,
+			LatencyNanos:    metrics.LatencyNanos,
+		}
+		snapshot.Providers[label] = item
+		totals.Attempts += item.Attempts
+		totals.FirstDeliveries += item.FirstDeliveries
+		totals.Redeliveries += item.Redeliveries
+		totals.Succeeded += item.Succeeded
+		totals.DedupSkipped += item.DedupSkipped
+		totals.RetryableError += item.RetryableError
+		totals.TimeoutError += item.TimeoutError
+		totals.RateLimited += item.RateLimited
+		totals.QuotaExhausted += item.QuotaExhausted
+		totals.DLQ += item.DLQ
+		totals.AckErrors += item.AckErrors
+		totals.TerminalFailed += item.TerminalFailed
+		totals.LatencyNanos += item.LatencyNanos
+	}
+	snapshot.Totals = totals
+	return snapshot
+}
+
+func formatMetricsSummary(snapshot providerMetricsSnapshot) string {
+	avgLatency := "-"
+	if snapshot.Succeeded > 0 {
+		avgLatency = (time.Duration(snapshot.LatencyNanos / snapshot.Succeeded)).Round(time.Millisecond).String()
+	}
+	return strings.Join([]string{
+		"attempts=" + strconv.FormatInt(snapshot.Attempts, 10),
+		"first_delivery=" + strconv.FormatInt(snapshot.FirstDeliveries, 10),
+		"redelivered=" + strconv.FormatInt(snapshot.Redeliveries, 10),
+		"succeeded=" + strconv.FormatInt(snapshot.Succeeded, 10),
+		"dedup_skipped=" + strconv.FormatInt(snapshot.DedupSkipped, 10),
+		"retryable=" + strconv.FormatInt(snapshot.RetryableError, 10),
+		"timeouts=" + strconv.FormatInt(snapshot.TimeoutError, 10),
+		"rate_limited=" + strconv.FormatInt(snapshot.RateLimited, 10),
+		"quota_exhausted=" + strconv.FormatInt(snapshot.QuotaExhausted, 10),
+		"dlq=" + strconv.FormatInt(snapshot.DLQ, 10),
+		"ack_errors=" + strconv.FormatInt(snapshot.AckErrors, 10),
+		"terminal_failed=" + strconv.FormatInt(snapshot.TerminalFailed, 10),
+		"avg_latency=" + avgLatency,
+	}, " ")
+}
+
+func (w *Worker) logMetricsSummary(reason string) {
+	snapshot := w.snapshotMetrics()
+	if snapshot.StartedAt.IsZero() {
+		return
+	}
+	log.Printf("[worker][metrics] reason=%s runtime=%s total %s", reason, snapshot.Duration.Round(time.Second), formatMetricsSummary(snapshot.Totals))
+
+	labels := make([]string, 0, len(snapshot.Providers))
+	for label := range snapshot.Providers {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		log.Printf("[worker][metrics] reason=%s provider=%s %s", reason, label, formatMetricsSummary(snapshot.Providers[label]))
+	}
+}
+
+func isTimeoutErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "context canceled")
 }
 
 // dispatchToChannel is the NATS Consume callback. It parses the message and
@@ -431,26 +736,23 @@ func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 		return
 	}
 
-	// Start an InProgress heartbeat immediately so NATS doesn't redeliver
-	// while the message is queued in the Go channel waiting for a provider.
-	done := make(chan struct{})
-	go w.inProgressLoop(msg, done)
+	// Keep heartbeats running while the message is queued in the channel.
+	progress := newProgressHandle()
+	go w.inProgressLoop(msg, progress.done)
 
 	select {
-	case w.work <- inflightMsg{msg: msg, meta: meta, req: req}:
-		// Queued — stop the dispatch-side heartbeat; the provider goroutine
-		// will start its own.  The gap is effectively instant since the
-		// goroutine is blocked on the channel receive.
-		close(done)
+	case w.work <- inflightMsg{msg: msg, dispatchProgress: progress, meta: meta, req: req}:
+		// The provider goroutine will stop this heartbeat once it starts
+		// processing the message.
 	case <-w.allGroupsDead:
-		close(done)
+		progress.Stop()
 		// Every provider group is dead (quota exhaustion everywhere).
 		// NAK so NATS can redeliver after a restart.
 		if nakErr := msg.Nak(); nakErr != nil {
 			log.Printf("[worker] Failed to NAK message (all providers exhausted): %v", nakErr)
 		}
 	case <-w.ctx.Done():
-		close(done)
+		progress.Stop()
 		// Worker shutting down — NAK so NATS redelivers.
 		if nakErr := msg.Nak(); nakErr != nil {
 			log.Printf("[worker] Failed to NAK message on shutdown: %v", nakErr)
@@ -504,6 +806,37 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	msg := item.msg
 	meta := item.meta
 	req := item.req
+	delivered := uint64(0)
+	if meta != nil {
+		delivered = meta.NumDelivered
+	}
+	w.recordAttempt(label, delivered)
+
+	item.dispatchProgress.Stop()
+
+	if w.isRequestAlreadySucceeded(req.RequestID) {
+		w.recordDedupSkipped(label)
+		log.Printf("[worker] Skipping already-succeeded request_id=%s (provider=%s)", req.RequestID, label)
+		if err := w.ackMsg(msg); err != nil {
+			w.recordAckError(label)
+			log.Printf("[worker] Failed to ack deduplicated message: %v", err)
+		}
+		return msgOK
+	}
+
+	if provider == spotify.ProviderLocalHeadless {
+		if park, attempts, retryable := w.shouldParkLocalPool(label); park {
+			log.Printf(
+				"[worker] Local provider unhealthy (attempts=%d retryable=%d succeeded=0) — parking local provider pool for this run",
+				attempts,
+				retryable,
+			)
+			if nakErr := msg.NakWithDelay(3 * time.Second); nakErr != nil {
+				log.Printf("[worker] Failed to NAK message while parking local provider pool: %v", nakErr)
+			}
+			return msgQuotaExpired
+		}
+	}
 
 	// --- Pre-flight quota guard for Apify ---
 	// Check the Apify /limits endpoint before launching an expensive Actor run.
@@ -516,6 +849,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 		checkCancel()
 		if !info.Available {
 			log.Printf("[worker] Apify pre-flight check failed for %s: %s — NAK-ing message", req.ArtistID, info.Error)
+			w.recordQuotaExhausted(label)
 			if nakErr := msg.Nak(); nakErr != nil {
 				log.Printf("[worker] Failed to NAK message on Apify pre-flight: %v", nakErr)
 			}
@@ -524,22 +858,33 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	}
 
 	// Start an InProgress heartbeat for this provider's processing time.
-	done := make(chan struct{})
-	go w.inProgressLoop(msg, done)
-	stopProgress := func() {
-		select {
-		case <-done:
-		default:
-			close(done)
-		}
-	}
-	defer stopProgress()
+	progress := newProgressHandle()
+	go w.inProgressLoop(msg, progress.done)
+	defer progress.Stop()
 
 	if err := w.processRequest(req, meta, provider, label); err != nil {
-		stopProgress()
+		progress.Stop()
+
+		if errors.Is(err, errRequestAlreadySucceeded) {
+			w.recordDedupSkipped(label)
+			if ackErr := w.ackMsg(msg); ackErr != nil {
+				w.recordAckError(label)
+				log.Printf("[worker] Failed to ack deduplicated message: %v", ackErr)
+			}
+			return msgOK
+		}
+		if errors.Is(err, errTerminalFailure) {
+			w.recordTerminalFailure(label)
+			if ackErr := w.ackMsg(msg); ackErr != nil {
+				w.recordAckError(label)
+				log.Printf("[worker] Failed to ack terminal-failed message: %v", ackErr)
+			}
+			return msgOK
+		}
 
 		// --- Quota exhaustion: NAK and signal the caller to stop. ---
 		if errors.Is(err, spotify.ErrQuotaExhausted) {
+			w.recordQuotaExhausted(label)
 			log.Printf("[worker] Quota exhausted for provider %s while processing %s: %v", label, req.ArtistID, err)
 			// NAK without delay so the message is immediately available for
 			// another provider's goroutine.
@@ -549,10 +894,26 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 			return msgQuotaExpired
 		}
 
+		if errors.Is(err, spotify.ErrRateLimited) {
+			w.recordRateLimited(label)
+			delay := w.retryDelay(meta)
+			if retryAfter, ok := spotify.RetryAfter(err); ok && retryAfter > delay {
+				delay = retryAfter
+			}
+			delay = withJitter(delay, min(2*time.Second, delay/4))
+			log.Printf("[worker] Provider %s rate-limited for %s; delaying redelivery by %s", label, req.ArtistID, delay.Round(time.Millisecond))
+			if nakErr := msg.NakWithDelay(delay); nakErr != nil {
+				log.Printf("[worker] Failed to NAK message on rate limit: %v", nakErr)
+			}
+			return msgOK
+		}
+
+		w.recordRetryableError(label, err)
 		log.Printf("[worker] Retryable error processing %s (provider=%s): %v", req.ArtistID, label, err)
 
 		// If we've exhausted retries, dead-letter the message.
 		if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
+			w.recordDLQ(label)
 			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
 			w.publishScrapeDLQ(msg, meta, &req, "retry_exhausted: "+err.Error())
 			if termErr := msg.Term(); termErr != nil {
@@ -567,11 +928,10 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 		return msgOK
 	}
 
-	stopProgress()
-	ackCtx, cancel := context.WithTimeout(w.ctx, 2*time.Second)
-	defer cancel()
-	if err := msg.DoubleAck(ackCtx); err != nil {
-		log.Printf("[worker] Failed to DoubleAck message: %v", err)
+	progress.Stop()
+	if err := w.ackMsg(msg); err != nil {
+		w.recordAckError(label)
+		log.Printf("[worker] Failed to ack message: %v", err)
 	}
 	return msgOK
 }
@@ -601,20 +961,30 @@ func providerLabel(provider spotify.Provider) string {
 func (w *Worker) fetchTimeout(provider spotify.Provider) time.Duration {
 	switch provider {
 	case spotify.ProviderApify:
-		if w.cfg.RequestTimeout > 2*time.Minute {
+		if w.cfg.RequestTimeout > 350*time.Second {
 			return w.cfg.RequestTimeout
 		}
-		return 2 * time.Minute
-	case spotify.ProviderScrapingAnt, spotify.ProviderScraperAPI:
-		if w.cfg.RequestTimeout > 60*time.Second {
+		return 350 * time.Second
+	case spotify.ProviderScrapingAnt:
+		if w.cfg.RequestTimeout > 180*time.Second {
 			return w.cfg.RequestTimeout
 		}
-		return 60 * time.Second
-	case spotify.ProviderBrowserless, spotify.ProviderLocalHeadless:
+		return 180 * time.Second
+	case spotify.ProviderScraperAPI:
+		if w.cfg.RequestTimeout > 180*time.Second {
+			return w.cfg.RequestTimeout
+		}
+		return 180 * time.Second
+	case spotify.ProviderBrowserless:
 		if w.cfg.RequestTimeout > 30*time.Second {
 			return w.cfg.RequestTimeout
 		}
 		return 30 * time.Second
+	case spotify.ProviderLocalHeadless:
+		if w.cfg.RequestTimeout > 300*time.Second {
+			return w.cfg.RequestTimeout
+		}
+		return 300 * time.Second
 	}
 
 	// ProviderAny fallback.
@@ -663,12 +1033,27 @@ func (w *Worker) retryDelay(meta *jetstream.MsgMetadata) time.Duration {
 	return w.backoff[idx]
 }
 
+func withJitter(base, maxJitter time.Duration) time.Duration {
+	if base <= 0 || maxJitter <= 0 {
+		return base
+	}
+	jitter := time.Duration(rand.Int63n(int64(maxJitter + time.Nanosecond)))
+	return base + jitter
+}
+
 func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 	if w.progress <= 0 {
 		return
 	}
+
+	if err := msg.InProgress(); err != nil {
+		log.Printf("[worker] Warning: initial InProgress failed: %v", err)
+	}
+
 	t := time.NewTicker(w.progress)
 	defer t.Stop()
+
+	allGroupsDead := w.allGroupsDead
 
 	for {
 		select {
@@ -676,12 +1061,45 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 			return
 		case <-w.ctx.Done():
 			return
+		case <-allGroupsDead:
+			return
 		case <-t.C:
 			if err := msg.InProgress(); err != nil {
 				log.Printf("[worker] Warning: InProgress failed: %v", err)
 			}
 		}
 	}
+}
+
+func (w *Worker) ackMsg(msg jetstream.Msg) error {
+	var lastErr error
+	for attempt := range 3 {
+		ackCtx, cancel := context.WithTimeout(w.ctx, 3*time.Second)
+		err := msg.DoubleAck(ackCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		if attempt == 2 {
+			break
+		}
+
+		delay := time.Duration(attempt+1) * 100 * time.Millisecond
+		select {
+		case <-time.After(delay):
+		case <-w.ctx.Done():
+			return w.ctx.Err()
+		}
+	}
+
+	if err := msg.Ack(); err == nil {
+		return nil
+	} else if lastErr != nil {
+		return errors.Join(lastErr, err)
+	}
+	return lastErr
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +1144,13 @@ func (w *Worker) publishScrapeDLQ(msg jetstream.Msg, meta *jetstream.MsgMetadata
 // ---------------------------------------------------------------------------
 
 func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.MsgMetadata, provider spotify.Provider, label string) error {
+	startedAt := time.Now()
+
+	if w.isRequestAlreadySucceeded(req.RequestID) {
+		log.Printf("[worker] Ignoring stale redelivery for already-succeeded request_id=%s", req.RequestID)
+		return errRequestAlreadySucceeded
+	}
+
 	numDelivered := uint64(0)
 	streamSeq := uint64(0)
 	if meta != nil {
@@ -756,7 +1181,7 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 			return fmt.Errorf("set failed: %w", err)
 		}
 		w.setScrapeJobFinished(req.RequestID, "failed", "fetcher_unavailable")
-		return nil
+		return errTerminalFailure
 	}
 
 	// Fetch the listener count using the specific provider assigned to this goroutine.
@@ -767,11 +1192,16 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 	if err != nil {
 		log.Printf("[worker] Failed to fetch listeners for %s via %s: %v", req.SpotifyID, label, err)
 
-		// On quota exhaustion the message will be NAK-ed and retried by
+		// On quota exhaustion or rate limiting the message will be NAK-ed and retried by
 		// another provider, so keep the artist as "pending" and the scrape
 		// job as "processing" — don't mark anything as permanently failed.
-		if errors.Is(err, spotify.ErrQuotaExhausted) {
+		if errors.Is(err, spotify.ErrQuotaExhausted) || errors.Is(err, spotify.ErrRateLimited) {
 			return fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, label, err)
+		}
+
+		if w.isRequestAlreadySucceeded(req.RequestID) {
+			log.Printf("[worker] Ignoring stale fetch error for already-succeeded request_id=%s", req.RequestID)
+			return errRequestAlreadySucceeded
 		}
 
 		if statusErr := w.updateArtistStatus(req.ArtistID, "failed"); statusErr != nil {
@@ -781,6 +1211,11 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 		return fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, label, err)
 	}
 
+	if w.isRequestAlreadySucceeded(req.RequestID) {
+		log.Printf("[worker] Ignoring stale duplicate completion for request_id=%s", req.RequestID)
+		return errRequestAlreadySucceeded
+	}
+
 	// Update the artist record with new listener count.
 	if err := w.updateArtistListeners(req.ArtistID, listeners); err != nil {
 		return fmt.Errorf("update listeners: %w", err)
@@ -788,6 +1223,8 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 
 	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", req.ArtistName, listeners, label)
 	w.setScrapeJobFinished(req.RequestID, "succeeded", "")
+	w.markRequestSucceeded(req.RequestID)
+	w.recordSucceeded(label, time.Since(startedAt))
 	w.queueTotalSongsRecalc(req.ArtistID)
 	w.clearFailedJobsForArtist(req.ArtistID, req.RequestID)
 	return nil
@@ -842,6 +1279,58 @@ func (w *Worker) setScrapeJobFinished(requestID, status, errMsg string) {
 	job.Set("error", errMsg)
 	if err := w.app.Save(job); err != nil {
 		log.Printf("[worker] Warning: failed to update scrape job to %s: %v", status, err)
+	}
+}
+
+func (w *Worker) isRequestAlreadySucceeded(requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+
+	now := time.Now()
+	w.succeededMu.Lock()
+	w.pruneSucceededLocked(now)
+	if _, ok := w.succeededRequests[requestID]; ok {
+		w.succeededMu.Unlock()
+		return true
+	}
+	w.succeededMu.Unlock()
+
+	job, err := w.scrapeJobByRequestID(requestID)
+	if err != nil {
+		log.Printf("[worker] Warning: dedupe check failed for request_id=%s: %v", requestID, err)
+		return false
+	}
+	if job == nil || job.GetString("status") != "succeeded" {
+		return false
+	}
+
+	w.succeededMu.Lock()
+	w.pruneSucceededLocked(now)
+	w.succeededRequests[requestID] = now
+	w.succeededMu.Unlock()
+	return true
+}
+
+func (w *Worker) markRequestSucceeded(requestID string) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+
+	now := time.Now()
+	w.succeededMu.Lock()
+	w.pruneSucceededLocked(now)
+	w.succeededRequests[requestID] = now
+	w.succeededMu.Unlock()
+}
+
+func (w *Worker) pruneSucceededLocked(now time.Time) {
+	for requestID, seenAt := range w.succeededRequests {
+		if now.Sub(seenAt) > requestSuccessCacheTTL {
+			delete(w.succeededRequests, requestID)
+		}
 	}
 }
 

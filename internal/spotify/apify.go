@@ -449,7 +449,14 @@ func parseListenersFromRawText(raw string) (int, error) {
 //
 // On failure the function returns an item with an `error` field containing the
 // page title, which surfaces whether Spotify served a real artist page or a
-// bot-detection / error page.
+// buildApifyPageFunction returns a JavaScript pageFunction used by the Apify actor to extract a Spotify artist's monthly listeners.
+//
+// The generated pageFunction navigates back to the requested artist URL if the page was silently redirected, then attempts extraction using three strategies:
+// 1) read embedded JSON script state, 2) wait briefly for a span containing the listeners text, and 3) scan the rendered page text.
+// It parses numeric formats with commas, optional decimals and optional "M"/"K" suffixes, producing an integer listener count.
+//
+// The returned JavaScript string resolves to an object with at least the source `url`. On success it includes `monthlyListeners` (integer);
+// when available it also includes `monthlyListenersRaw` (the original matched text). If no listener data is found the object contains an `error` message.
 func buildApifyPageFunction() string {
 	return `
 async function pageFunction(context) {
@@ -480,25 +487,42 @@ async function pageFunction(context) {
     // live DOM at all — no React hydration required.
     // ------------------------------------------------------------------
     const fromJson = await page.evaluate(() => {
-        function extractListeners(text) {
-            const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
-            return m ? parseInt(m[1], 10) : 0;
+        const extractListeners = (text) => {
+        const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
+        if (m) {
+            return parseInt(m[1], 10);
         }
+
+        const match = text.match(/([\d,\.]+)\s*([mMkK]?)\s+monthly listeners/i);
+        if (match) {
+            let num = parseFloat(match[1].replace(/,/g, ''));
+            let suffix = match[2].toUpperCase();
+            if (suffix === 'M') { num *= 1000000; }
+            else if (suffix === 'K') { num *= 1000; }
+            return Math.floor(num);
+        }
+
+        if (text.includes('"artistUnion"')) {
+            return null;
+        }
+
+        return null;
+    };
         // Check __NEXT_DATA__ first (cheapest).
         const nextEl = document.getElementById('__NEXT_DATA__');
         if (nextEl) {
             const v = extractListeners(nextEl.textContent || '');
-            if (v > 0) return v;
+            if (v !== null) return v;
         }
         // Walk all other <script> tags.
         for (const s of document.querySelectorAll('script')) {
             const v = extractListeners(s.textContent || '');
-            if (v > 0) return v;
+            if (v !== null) return v;
         }
-        return 0;
+        return null;
     });
 
-    if (fromJson > 0) {
+    if (fromJson !== null) {
         log.info('Got monthlyListeners from embedded JSON: ' + fromJson);
         return { url: request.url, monthlyListeners: fromJson };
     }
@@ -512,7 +536,7 @@ async function pageFunction(context) {
     try {
         await page.waitForFunction(
             () => Array.from(document.querySelectorAll('span'))
-                       .some(el => /[\d,]+\s+monthly listeners/i.test(el.textContent)),
+                       .some(el => /[\d,\.]+\s*[mMkK]?\s*monthly listeners/i.test(el.textContent)),
             { timeout: 25000 }
         );
     } catch (e) {
@@ -533,7 +557,7 @@ async function pageFunction(context) {
 
         // Fall back to a regex scan of the entire rendered page text.
         const bodyText = (document.body && document.body.innerText) || '';
-        const m = bodyText.match(/([\d,]+\s+monthly listeners)/i);
+        const m = bodyText.match(/([\d,\.]+\s*[mMkK]?\s*monthly listeners)/i);
         return m ? m[1] : '';
     });
 
@@ -546,16 +570,21 @@ async function pageFunction(context) {
         };
     }
 
-    // Parse the leading number (may contain locale-formatted commas).
-    const match = raw.match(/^([\d,]+)/);
+    // Parse the leading number, supporting decimals, commas, and M/K suffixes
+    // (e.g. "2.4M monthly listeners", "800K monthly listeners").
+    const match = raw.match(/^([\.\d,]+)\s*([mMkK]?)/);
     if (!match) {
         return { url: request.url, monthlyListenersRaw: raw, monthlyListeners: 0 };
     }
 
-    const count = parseInt(match[1].replace(/,/g, ''), 10);
+    let count = parseFloat(match[1].replace(/,/g, ''));
+    const suffix = match[2].toUpperCase();
+    if (suffix === 'M') { count *= 1000000; }
+    else if (suffix === 'K') { count *= 1000; }
+    const monthlyListeners = isNaN(count) ? 0 : Math.floor(count);
     return {
         url: request.url,
-        monthlyListeners: isNaN(count) ? 0 : count,
+        monthlyListeners,
         monthlyListenersRaw: raw,
     };
 }

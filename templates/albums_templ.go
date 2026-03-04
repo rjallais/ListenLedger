@@ -5,10 +5,12 @@ package templates
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import "github.com/a-h/templ"
-import templruntime "github.com/a-h/templ/runtime"
+import (
+	"fmt"
 
-import "fmt"
+	"github.com/a-h/templ"
+	templruntime "github.com/a-h/templ/runtime"
+)
 
 // AlbumsPage renders the albums collection page with lazy-loaded sections
 func AlbumsPage(fullCount, processedCount, waitingCount int) templ.Component {
