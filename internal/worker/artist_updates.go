@@ -11,22 +11,22 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+const totalSongsRecalcDebounce = 3 * time.Second
+
 func (w *Worker) queueTotalSongsRecalc(artistID string) {
 	if strings.TrimSpace(artistID) == "" {
 		return
 	}
-
-	const debounce = 3 * time.Second
 
 	w.recalcMu.Lock()
 	defer w.recalcMu.Unlock()
 
 	w.recalcPending[artistID] = struct{}{}
 	if w.recalcTimer == nil {
-		w.recalcTimer = time.AfterFunc(debounce, w.flushTotalSongsRecalc)
+		w.recalcTimer = time.AfterFunc(totalSongsRecalcDebounce, w.flushTotalSongsRecalc)
 		return
 	}
-	w.recalcTimer.Reset(debounce)
+	w.recalcTimer.Reset(totalSongsRecalcDebounce)
 }
 
 func (w *Worker) flushTotalSongsRecalc() {
@@ -45,6 +45,17 @@ func (w *Worker) flushTotalSongsRecalc() {
 
 	if err := w.recalculateTotalSongsForArtists(pending); err != nil {
 		log.Printf("[worker] Warning: failed to recalculate total_songs ranks: %v", err)
+
+		w.recalcMu.Lock()
+		for artistID := range pending {
+			w.recalcPending[artistID] = struct{}{}
+		}
+		if w.recalcTimer == nil {
+			w.recalcTimer = time.AfterFunc(totalSongsRecalcDebounce, w.flushTotalSongsRecalc)
+		} else {
+			w.recalcTimer.Reset(totalSongsRecalcDebounce)
+		}
+		w.recalcMu.Unlock()
 	}
 }
 
