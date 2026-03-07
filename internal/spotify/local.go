@@ -23,7 +23,8 @@ import (
 type localBrowser struct {
 	browser *rod.Browser
 	mu      sync.Mutex // guards closed/browser fields
-	closed  bool
+
+	closed bool
 }
 
 // newLocalBrowser launches a headless Chromium instance and connects go-rod to

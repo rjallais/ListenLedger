@@ -52,32 +52,35 @@ type NavItem struct {
 	Href   string
 	Icon   string
 	Label  string
-	Active bool
 	Target string // "_blank" for external links
+	Active bool
 }
 
 // Album represents an album for display
 type Album struct {
-	ID              string
-	Title           string
-	ArtistName      string
+	ID         string
+	Title      string
+	ArtistName string
+	Status     string
+
 	CollectionSongs int
 	TotalSongs      int
-	Status          string
 }
 
 // Artist represents an artist for display
 type Artist struct {
-	ID               string
-	Name             string
-	SpotifyID        string
+	ID        string
+	Name      string
+	SpotifyID string
+
+	GenreGroup  string
+	ListStatus  string
+	FetchStatus string
+	LastUpdated string
+
 	MonthlyListeners int
-	GenreGroup       string
-	ListStatus       string
-	FetchStatus      string
 	CollectionSongs  int
 	TotalSongs       int
-	LastUpdated      string
 }
 
 // Song represents a song for display
@@ -88,18 +91,19 @@ type Song struct {
 	ReleaseDate string
 	ReleaseType string // "album", "ep", "single"
 	Album       string
-	IsRecent    bool
-	BatchSeq    int
-	BatchPos    int
+
+	BatchSeq int
+	BatchPos int
+	IsRecent bool
 }
 
 // Pagination holds pagination state
 type Pagination struct {
+	Genre       string
 	CurrentPage int
 	TotalPages  int
 	Limit       int
 	TotalCount  int
-	Genre       string
 }
 
 // FormatNumber formats an integer with thousand separators

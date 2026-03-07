@@ -15,19 +15,21 @@ import (
 )
 
 type Handler struct {
-	app       *pocketbase.PocketBase
-	nc        *nats.Conn
-	js        jetstream.JetStream
-	cfg       *config.Config
-	staticDir string
 	startedAt time.Time
 
-	batchMu      sync.RWMutex
-	batchSubMu   sync.Mutex
+	batchMu sync.RWMutex
+
+	js        jetstream.JetStream
+	staticDir string
+
+	app          *pocketbase.PocketBase
+	nc           *nats.Conn
+	cfg          *config.Config
 	batches      map[string]*batchProgress
 	artistBatch  map[string]string
 	latestBatch  string
 	batchUpdates *nats.Subscription
+	batchSubMu   sync.Mutex
 }
 
 // New creates a new Handler instance.

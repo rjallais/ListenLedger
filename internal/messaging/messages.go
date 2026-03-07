@@ -51,13 +51,14 @@ type ScrapeRequested struct {
 
 // ArtistUpdated is the event payload emitted after an artist update attempt.
 type ArtistUpdated struct {
-	Version          string `json:"version"`
-	RequestID        string `json:"request_id,omitzero"`
-	ArtistID         string `json:"artist_id"`
-	Name             string `json:"name"`
-	MonthlyListeners int    `json:"monthly_listeners"`
-	FetchStatus      string `json:"fetch_status"`
-	UpdatedAt        string `json:"updated_at"`
+	Version     string `json:"version"`
+	RequestID   string `json:"request_id,omitzero"`
+	ArtistID    string `json:"artist_id"`
+	Name        string `json:"name"`
+	FetchStatus string `json:"fetch_status"`
+	UpdatedAt   string `json:"updated_at"`
+
+	MonthlyListeners int `json:"monthly_listeners"`
 }
 
 // NewScrapeRequested constructs a versioned scrape request payload.

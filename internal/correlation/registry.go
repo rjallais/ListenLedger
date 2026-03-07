@@ -14,8 +14,8 @@ var (
 )
 
 type entry struct {
-	requestID string
 	expiresAt time.Time
+	requestID string
 }
 
 const ttl = 5 * time.Minute

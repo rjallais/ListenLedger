@@ -15,13 +15,14 @@ import (
 
 // Config holds application configuration
 type Config struct {
+	ScrapeBackOff []time.Duration
+
 	// Static assets configuration
 	StaticDir string
 
 	// Browserless configuration
-	BrowserlessToken       string
-	BrowserlessEndpoint    string
-	BrowserlessConcurrency int
+	BrowserlessToken    string
+	BrowserlessEndpoint string
 
 	// ScrapingAnt configuration
 	ScrapingAntToken    string
@@ -30,7 +31,6 @@ type Config struct {
 	// ScraperAPI configuration
 	ScraperAPIToken           string
 	ScraperAPIEndpoint        string
-	ScraperAPIConcurrency     int
 	ScraperAPIWaitForSelector string
 
 	// Apify configuration
@@ -58,10 +58,7 @@ type Config struct {
 	ApifyBatchSize int
 
 	// Local headless (go-rod) configuration
-	LocalHeadlessEnabled  bool
-	LocalChromePath       string
-	LocalConcurrency      int
-	LocalIgnoreCertErrors bool
+	LocalChromePath string
 
 	// Shared behavior configuration
 	MaxConcurrency  int
@@ -75,9 +72,15 @@ type Config struct {
 
 	// JetStream scrape worker tuning
 	ScrapeMaxDeliver         int
-	ScrapeBackOff            []time.Duration
 	ScrapeAckWait            time.Duration
 	ScrapeInProgressInterval time.Duration
+
+	BrowserlessConcurrency int
+	ScraperAPIConcurrency  int
+	LocalConcurrency       int
+
+	LocalHeadlessEnabled  bool
+	LocalIgnoreCertErrors bool
 }
 
 // DefaultConfig returns a Config populated with sensible defaults for external providers,

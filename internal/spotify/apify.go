@@ -20,21 +20,23 @@ import (
 
 // apifyRunInput is the payload sent to the Apify Actor run endpoint.
 type apifyRunInput struct {
-	StartURLs           []apifyURL `json:"startUrls"`
-	PageFunction        string     `json:"pageFunction"`
-	MaxRequestsPerCrawl int        `json:"maxRequestsPerCrawl"`
+	StartURLs []apifyURL `json:"startUrls"`
 	// MaxConcurrency controls how many browser pages the Actor opens at once.
 	// Note: the Crawlee v3 autoscaler always ramps from desiredConcurrency=1 and
 	// increases ~5% per 10 s interval regardless of maxConcurrency; empirically
 	// this limits throughput to ~7 requests/min on an 8 GB Actor regardless of
 	// how high maxConcurrency is set. minConcurrency is not exposed by
 	// apify~puppeteer-scraper and therefore cannot be used to lock concurrency.
-	MaxConcurrency int `json:"maxConcurrency,omitzero"`
+	WaitUntil []string `json:"waitUntil,omitzero"`
+
+	PageFunction string `json:"pageFunction"`
+
+	MaxRequestsPerCrawl int `json:"maxRequestsPerCrawl"`
+	MaxConcurrency      int `json:"maxConcurrency,omitzero"`
 	// WaitUntil maps to Puppeteer's page.goto() waitUntil option.
 	// "networkidle2" waits until there are ≤2 active network connections for
 	// 500 ms, giving React time to fetch and render dynamic content (e.g. the
 	// monthly listeners count) before pageFunction is called.
-	WaitUntil []string `json:"waitUntil,omitzero"`
 	// NavigationTimeoutSecs caps the time the actor waits for the page to reach
 	// the WaitUntil condition. Keep this generous when using networkidle2.
 	NavigationTimeoutSecs int `json:"navigationTimeoutSecs,omitzero"`
@@ -60,19 +62,19 @@ type apifyURL struct {
 // IsError=true and a #debug object containing errorMessages; we surface those
 // so the caller sees a meaningful error rather than "no listener data".
 type apifyDatasetItem struct {
-	URL              string `json:"url"`
-	MonthlyListeners int    `json:"monthlyListeners,omitzero"`
-	// Raw text fallback in case the actor returns a string value.
-	MonthlyListenersRaw string `json:"monthlyListenersRaw,omitzero"`
-	// Error is set by our own pageFunction when it cannot find listener text.
-	Error string `json:"error,omitzero"`
-	// IsError is the #error sentinel emitted by the Apify framework itself
-	// when the browser/navigation fails before the pageFunction even runs.
-	IsError bool `json:"#error,omitzero"`
-	// Debug carries the framework-level error messages from #debug.errorMessages.
 	Debug struct {
 		ErrorMessages []string `json:"errorMessages,omitzero"`
 	} `json:"#debug,omitzero"`
+
+	URL                 string `json:"url"`
+	MonthlyListenersRaw string `json:"monthlyListenersRaw,omitzero"`
+	// Raw text fallback in case the actor returns a string value.
+	// Error is set by our own pageFunction when it cannot find listener text.
+	Error            string `json:"error,omitzero"`
+	MonthlyListeners int    `json:"monthlyListeners,omitzero"`
+	// IsError is the #error sentinel emitted by the Apify framework itself
+	// when the browser/navigation fails before the pageFunction even runs.
+	IsError bool `json:"#error,omitzero"`
 }
 
 // apifyRunResponse is the response body from the synchronous run-sync-get-dataset-items endpoint.

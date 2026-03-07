@@ -73,11 +73,21 @@ type Client struct {
 	httpClientApify *http.Client
 
 	// Semaphores per provider to respect individual rate limits
-	semLocal       chan struct{}
 	semBrowserless chan struct{}
+	semLocal       chan struct{}
 	semScrapingAnt chan struct{}
 	semScraperAPI  chan struct{}
 	semApify       chan struct{}
+
+	local *localBrowser
+	// localInit is non-nil while a browser launch is in progress.
+	// Other goroutines wait on it then re-read c.local.
+	localInit chan struct{}
+
+	scraperAPIRateLimitStreak atomic.Int64
+	scraperAPICooldownUntil   atomic.Int64
+
+	localMu sync.Mutex
 
 	// Providers
 	useLocal       atomic.Bool
@@ -85,15 +95,6 @@ type Client struct {
 	useScrapingAnt bool
 	useScraperAPI  bool
 	useApify       bool
-
-	local   *localBrowser
-	localMu sync.Mutex
-	// localInit is non-nil while a browser launch is in progress.
-	// Other goroutines wait on it then re-read c.local.
-	localInit chan struct{}
-
-	scraperAPIRateLimitStreak atomic.Int64
-	scraperAPICooldownUntil   atomic.Int64
 }
 
 // responseData represents the Browserless/BQL API response structure
@@ -106,8 +107,8 @@ type responseData struct {
 }
 
 type scraperAPIRequestProfile struct {
-	render          bool
 	waitForSelector string
+	render          bool
 }
 
 type providerHTTPError struct {
@@ -131,9 +132,10 @@ func redactSecretQueryParams(raw string) string {
 
 // RateLimitError carries provider throttle details including optional retry delay.
 type RateLimitError struct {
-	Provider   string
-	StatusCode int
+	Provider string
+
 	RetryAfter time.Duration
+	StatusCode int
 }
 
 func (e *RateLimitError) Error() string {

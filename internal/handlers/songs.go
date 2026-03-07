@@ -265,8 +265,8 @@ type songListEntry struct {
 type songPageData struct {
 	CurrentPlaylist []templates.Song
 	WaitingRemoval  []templates.Song
-	NotRecentCount  int
 	PlaylistSort    string
+	NotRecentCount  int
 }
 
 func parseSongReleaseDate(stored string) time.Time {

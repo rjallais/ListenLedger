@@ -16,24 +16,25 @@ import (
 )
 
 type batchProgress struct {
-	ID        string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	ID string
+
+	Stats   map[string]int
+	Pending map[string]struct{}
 
 	Total     int
 	Completed int
 	Done      bool
-
-	Stats   map[string]int
-	Pending map[string]struct{}
 }
 
 type batchProgressSnapshot struct {
 	ID        string
+	Stats     map[string]int
 	Total     int
 	Completed int
 	Done      bool
-	Stats     map[string]int
 }
 
 func (h *Handler) ensureBatchProgressSubscriber() {

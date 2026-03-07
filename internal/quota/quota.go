@@ -34,12 +34,13 @@ type ApifyLimitsResponse struct {
 
 // Info represents the quota status for a provider.
 type Info struct {
-	Provider        string `json:"provider"`
-	Available       bool   `json:"available"`
-	RemainingCredit int    `json:"remaining_credits"`
-	TotalCredits    int    `json:"total_credits"`
-	PlanName        string `json:"plan_name,omitzero"`
-	Error           string `json:"error,omitzero"`
+	Provider string `json:"provider"`
+	PlanName string `json:"plan_name,omitzero"`
+	Error    string `json:"error,omitzero"`
+
+	RemainingCredit int  `json:"remaining_credits"`
+	TotalCredits    int  `json:"total_credits"`
+	Available       bool `json:"available"`
 }
 
 // ScrapingAntUsageResponse represents the ScrapingAnt usage API response.
@@ -63,15 +64,15 @@ type ScraperAPIAccountResponse struct {
 
 // Checker provides methods to check quota for scraping providers.
 type Checker struct {
-	cfg        *config.Config
-	httpClient *http.Client
-
 	// Overridable base URLs for quota API endpoints.
 	// When empty the production defaults are used.
 	// These exist primarily so unit tests can point at httptest servers.
 	ScrapingAntAPIBase string // default: "https://api.scrapingant.com"
 	ScraperAPIBase     string // default: "https://api.scraperapi.com"
 	ApifyAPIBase       string // default: "https://api.apify.com"
+
+	cfg        *config.Config
+	httpClient *http.Client
 }
 
 // NewChecker creates a new quota checker.

@@ -42,28 +42,31 @@ type providerSlot struct {
 // in the group calls shutdown() which cancels the shared context; every sibling
 // goroutine sees the cancellation and exits after NAK-ing any in-hand message.
 type providerGroup struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
+	ctx   context.Context
+	label string
+	alive sync.WaitGroup
+
+	cancel context.CancelFunc
+	dead   chan struct{} // closed once alive.Wait() returns
+
 	provider spotify.Provider
-	label    string
-	alive    sync.WaitGroup
-	dead     chan struct{} // closed once alive.Wait() returns
 }
 
 // inflightMsg wraps a JetStream message with its parsed request and metadata
 // so provider goroutines don't need to re-parse.
 type inflightMsg struct {
+	req messaging.ScrapeRequested
+
 	msg jetstream.Msg
 	// dispatchProgress keeps ack heartbeats alive while the message waits in
 	// the shared work channel for an available provider slot.
 	dispatchProgress *progressHandle
 	meta             *jetstream.MsgMetadata
-	req              messaging.ScrapeRequested
 }
 
 type progressHandle struct {
-	done chan struct{}
 	once sync.Once
+	done chan struct{}
 }
 
 func newProgressHandle() *progressHandle {
@@ -95,59 +98,56 @@ var errTerminalFailure = errors.New("terminal failure")
 
 // Worker handles background scraping jobs via NATS.
 type Worker struct {
-	app     *pocketbase.PocketBase
-	nc      *nats.Conn
+	backoff        []time.Duration
+	metricsStarted time.Time
+
 	js      jetstream.JetStream
-	cfg     *config.Config
-	fetcher *fetcher.Service
-	quota   *quota.Checker
-
-	// NATS consumer handle (for drain on shutdown).
 	consume jetstream.ConsumeContext
+	ctx     context.Context
 
-	// JetStream tuning (resolved at Start time).
-	maxDeliver int
-	ackWait    time.Duration
-	progress   time.Duration
-	backoff    []time.Duration
+	dispatching sync.WaitGroup
+	wg          sync.WaitGroup
 
 	// work is the shared channel that the single NATS consumer feeds.
 	// Provider goroutine pools pull from this channel.
 	work chan inflightMsg
+
+	app     *pocketbase.PocketBase
+	nc      *nats.Conn
+	cfg     *config.Config
+	fetcher *fetcher.Service
+	quota   *quota.Checker
+
+	// groups holds per-provider goroutine pool metadata. Used during shutdown to
+	// wait for each pool independently and to log which providers are still alive.
+	groups []*providerGroup
+
+	// allGroupsDead is closed when every provider group has exited (e.g. all
+	// providers hit quota). Triggers draining the NATS consumer so messages stop
+	// piling up in the work channel with nobody to process them.
+	allGroupsDead chan struct{}
+	cancel        context.CancelFunc
+	recalcTimer   *time.Timer
+
+	recalcPending     map[string]struct{}
+	succeededRequests map[string]time.Time
+	metricsProvider   map[string]*providerMetrics
+
+	maxDeliver    int
+	ackWait       time.Duration
+	progress      time.Duration
+	providerCount int
+
+	recalcMu    sync.Mutex
+	succeededMu sync.Mutex
+	metricsMu   sync.Mutex
+
 	// accepting gates whether dispatch callbacks may enqueue into work.
 	accepting atomic.Bool
 	// dispatching tracks in-flight dispatch callbacks so shutdown can safely
 	// drain and close the work queue without racing active sends.
-	dispatching   sync.WaitGroup
 	workCloseOnce sync.Once
-
-	// groups holds per-provider goroutine pool metadata.  Used during
-	// shutdown to wait for each pool independently and to log which
-	// providers are still alive.
-	groups []*providerGroup
-
-	// allGroupsDead is closed when every provider group has exited (e.g.
-	// all providers hit quota).  Triggers draining the NATS consumer so
-	// messages stop piling up in the work channel with nobody to process
-	// them.
-	allGroupsDead chan struct{}
 	drainOnce     sync.Once
-
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	recalcMu      sync.Mutex
-	recalcTimer   *time.Timer
-	recalcPending map[string]struct{}
-
-	succeededMu       sync.Mutex
-	succeededRequests map[string]time.Time
-
-	metricsMu       sync.Mutex
-	metricsStarted  time.Time
-	metricsProvider map[string]*providerMetrics
-	providerCount   int
 }
 
 // New creates a new worker instance.
