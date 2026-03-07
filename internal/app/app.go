@@ -20,7 +20,6 @@ import (
 
 // Run initializes and starts the PocketBase application and its background services.
 func Run(ctx context.Context) error {
-func Run(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("run: nil context")
 	}
