@@ -59,11 +59,19 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 	genreGroup := e.Request.FormValue("genre_group")
 	if genreGroup == "" {
 		genreGroup = "rock_metal" // Default
+	} else if !allowedGenreGroups[genreGroup] {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "genre_group must be rock_metal or everything_else",
+		})
 	}
 
 	listStatus := e.Request.FormValue("list_status")
 	if listStatus == "" {
 		listStatus = "recently_added" // Default for newly added artists
+	} else if !allowedListStatuses[listStatus] {
+		return e.JSON(http.StatusBadRequest, map[string]string{
+			"error": "list_status must be included, recently_added, not_added, or waiting",
+		})
 	}
 
 	// Parse optional numeric fields

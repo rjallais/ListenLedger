@@ -32,6 +32,18 @@ var sseOpts = []datastar.SSEOption{
 // ERR_INCOMPLETE_CHUNKED_ENCODING on the client.
 var sseStreamOpts []datastar.SSEOption
 
+var allowedGenreGroups = map[string]bool{
+	"rock_metal":      true,
+	"everything_else": true,
+}
+
+var allowedListStatuses = map[string]bool{
+	"included":       true,
+	"recently_added": true,
+	"not_added":      true,
+	"waiting":        true,
+}
+
 const (
 	songsCurrentPlaylistSize = 500
 	songsRecentBatchSize     = 13
@@ -78,11 +90,6 @@ func wantsJSONResponse(r *http.Request) bool {
 func currentGenreFromRequest(r *http.Request) string {
 	const defaultGenre = "rock_metal"
 
-	allowedGenres := map[string]bool{
-		"rock_metal":      true,
-		"everything_else": true,
-	}
-
 	ref := r.Referer()
 	if ref == "" {
 		return defaultGenre
@@ -94,7 +101,7 @@ func currentGenreFromRequest(r *http.Request) string {
 	}
 
 	genre := parsed.Query().Get("genre")
-	if genre != "" && allowedGenres[genre] {
+	if genre != "" && allowedGenreGroups[genre] {
 		return genre
 	}
 
