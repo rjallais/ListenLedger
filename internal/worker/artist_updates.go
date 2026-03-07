@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 )
 
 const totalSongsRecalcDebounce = 3 * time.Second
@@ -107,14 +108,12 @@ func (w *Worker) recalculateTotalSongsForArtists(ctx context.Context, artistIDs 
 			return fmt.Errorf("recalculate total_songs cancelled for genre %s: %w", genre, err)
 		}
 
-		records, err := w.app.FindRecordsByFilter(
-			"artists",
-			"genre_group = {:genre} && list_status != {:waiting}",
-			"-monthly_listeners,name",
-			0,
-			0,
-			dbx.Params{"genre": genre, "waiting": "waiting"},
-		)
+		records := make([]*core.Record, 0)
+		err := w.app.RecordQuery("artists").
+			WithContext(ctx).
+			AndWhere(dbx.NewExp("genre_group = {:genre} AND list_status != {:waiting}", dbx.Params{"genre": genre, "waiting": "waiting"})).
+			OrderBy("-monthly_listeners,name").
+			All(&records)
 		if err != nil {
 			return fmt.Errorf("list artists for %s: %w", genre, err)
 		}
