@@ -61,8 +61,8 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 	// avoiding a guaranteed HTTP 402.
 	if provider == spotify.ProviderApify {
 		checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer checkCancel()
 		info := w.quota.CheckApify(checkCtx)
-		checkCancel()
 		if !info.Available {
 			log.Printf("[worker] Apify pre-flight check failed for %s: %s — NAK-ing message", req.ArtistID, info.Error)
 			w.recordQuotaExhausted(label)
