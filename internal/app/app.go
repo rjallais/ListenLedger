@@ -48,7 +48,7 @@ func Run(ctx context.Context) error {
 
 		ns, nc, js, err := bootstrapNATS(ctx, dataDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("bootstrapNATS failed: %w", err)
 		}
 
 		registerArtistUpdateFanout(ctx, app, js)
@@ -70,5 +70,8 @@ func Run(ctx context.Context) error {
 		return se.Next()
 	})
 
-	return app.Start()
+	if err := app.Start(); err != nil {
+		return fmt.Errorf("app.Start failed: %w", err)
+	}
+	return nil
 }
