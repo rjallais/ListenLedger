@@ -337,7 +337,7 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 	}
 	if ack != nil && ack.Duplicate {
 		log.Printf("[handlers] Duplicate refresh request ignored for artist %s", record.Id)
-		if strings.Contains(e.Request.Header.Get("Accept"), "application/json") {
+		if wantsJSONResponse(e.Request) {
 			return e.JSON(http.StatusOK, map[string]string{"status": "already_queued"})
 		}
 		sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
@@ -353,7 +353,7 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 		log.Printf("[handlers] Warning: failed to update fetch_status: %v", err)
 	}
 
-	if strings.Contains(e.Request.Header.Get("Accept"), "application/json") {
+	if wantsJSONResponse(e.Request) {
 		return e.JSON(http.StatusOK, map[string]string{"status": "queued"})
 	}
 
