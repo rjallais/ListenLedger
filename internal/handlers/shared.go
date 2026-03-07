@@ -113,8 +113,17 @@ func formatUpdatedAt(raw string) string {
 		return ""
 	}
 
-	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-		return parsed.Local().Format("Jan 2, 2006 3:04 PM")
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.000Z",
+		"2006-01-02 15:04:05Z",
+	}
+
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed.Local().Format("Jan 2, 2006 3:04 PM")
+		}
 	}
 
 	return raw
