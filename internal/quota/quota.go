@@ -462,6 +462,11 @@ func (c *Checker) CheckBrowserless() Info {
 // HasAvailableQuota returns true if at least one provider has available quota.
 func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 	quotas := c.CheckAll(ctx)
+	return HasAvailableFrom(quotas)
+}
+
+// HasAvailableFrom returns true if at least one provider in quotas is available.
+func HasAvailableFrom(quotas map[string]Info) bool {
 	for _, q := range quotas {
 		if q.Available {
 			return true
@@ -476,7 +481,14 @@ func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 // Browserless (assumed available when configured, no usage API).
 func (c *Checker) GetBestProvider(ctx context.Context) string {
 	quotas := c.CheckAll(ctx)
+	return GetBestFrom(quotas)
+}
 
+// GetBestFrom returns the best available provider from a precomputed quota map.
+// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// ScraperAPI -> Apify (if credits remain) ->
+// Browserless (assumed available when configured, no usage API).
+func GetBestFrom(quotas map[string]Info) string {
 	// Local headless is free — prefer it when enabled.
 	if local, ok := quotas["local"]; ok && local.Available {
 		return "local"

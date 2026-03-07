@@ -737,6 +737,23 @@ func TestHasAvailableQuota_LocalEnabled(t *testing.T) {
 	}
 }
 
+func TestHasAvailableFrom(t *testing.T) {
+	quotas := map[string]Info{
+		"scrapingant": {
+			Provider:  "scrapingant",
+			Available: false,
+		},
+		"browserless": {
+			Provider:  "browserless",
+			Available: true,
+		},
+	}
+
+	if !HasAvailableFrom(quotas) {
+		t.Fatal("expected available quota when one provider is available")
+	}
+}
+
 // --------------------------------------------------------------------------
 // GetBestProvider
 // --------------------------------------------------------------------------
@@ -778,6 +795,25 @@ func TestGetBestProvider_EmptyWhenNoneConfigured(t *testing.T) {
 
 	if best != "" {
 		t.Errorf("GetBestProvider() = %q, want empty string when nothing configured", best)
+	}
+}
+
+func TestGetBestFrom(t *testing.T) {
+	quotas := map[string]Info{
+		"scrapingant": {
+			Provider:        "scrapingant",
+			Available:       true,
+			RemainingCredit: 100,
+		},
+		"browserless": {
+			Provider:  "browserless",
+			Available: true,
+		},
+	}
+
+	best := GetBestFrom(quotas)
+	if best != "scrapingant" {
+		t.Errorf("GetBestFrom() = %q, want %q", best, "scrapingant")
 	}
 }
 

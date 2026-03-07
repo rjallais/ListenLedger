@@ -19,8 +19,8 @@ func (h *Handler) handleQuota(e *core.RequestEvent) error {
 
 	return e.JSON(http.StatusOK, map[string]any{
 		"providers":     quotas,
-		"has_available": checker.HasAvailableQuota(e.Request.Context()),
-		"best_provider": checker.GetBestProvider(e.Request.Context()),
+		"has_available": quota.HasAvailableFrom(quotas),
+		"best_provider": quota.GetBestFrom(quotas),
 	})
 }
 
