@@ -18,7 +18,7 @@ import (
 	"ListenLedger/internal/spotify"
 )
 
-func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label string) msgResult {
+func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spotify.Provider, label string) msgResult {
 	msg := item.msg
 	meta := item.meta
 	req := item.req
@@ -33,7 +33,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	if w.isRequestAlreadySucceeded(req.RequestID) {
 		w.recordDedupSkipped(label)
 		log.Printf("[worker] Skipping already-succeeded request_id=%s (provider=%s)", req.RequestID, label)
-		if err := w.ackMsg(msg); err != nil {
+		if err := w.ackMsg(ctx, msg); err != nil {
 			w.recordAckError(label)
 			log.Printf("[worker] Failed to ack deduplicated message: %v", err)
 		}
@@ -60,7 +60,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	// another provider (or a future restart) can handle it, saving credits and
 	// avoiding a guaranteed HTTP 402.
 	if provider == spotify.ProviderApify {
-		checkCtx, checkCancel := context.WithTimeout(w.ctx, 5*time.Second)
+		checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
 		info := w.quota.CheckApify(checkCtx)
 		checkCancel()
 		if !info.Available {
@@ -78,12 +78,12 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	go w.inProgressLoop(msg, progress.done)
 	defer progress.Stop()
 
-	if err := w.processRequest(req, meta, provider, label); err != nil {
+	if err := w.processRequest(ctx, req, meta, provider, label); err != nil {
 		progress.Stop()
 
 		if errors.Is(err, errRequestAlreadySucceeded) {
 			w.recordDedupSkipped(label)
-			if ackErr := w.ackMsg(msg); ackErr != nil {
+			if ackErr := w.ackMsg(ctx, msg); ackErr != nil {
 				w.recordAckError(label)
 				log.Printf("[worker] Failed to ack deduplicated message: %v", ackErr)
 			}
@@ -91,7 +91,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 		}
 		if errors.Is(err, errTerminalFailure) {
 			w.recordTerminalFailure(label)
-			if ackErr := w.ackMsg(msg); ackErr != nil {
+			if ackErr := w.ackMsg(ctx, msg); ackErr != nil {
 				w.recordAckError(label)
 				log.Printf("[worker] Failed to ack terminal-failed message: %v", ackErr)
 			}
@@ -131,7 +131,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 		if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
 			w.recordDLQ(label)
 			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
-			w.publishScrapeDLQ(msg, meta, &req, "retry_exhausted: "+err.Error())
+			w.publishScrapeDLQ(ctx, msg, meta, &req, "retry_exhausted: "+err.Error())
 			if termErr := msg.Term(); termErr != nil {
 				log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
 			}
@@ -145,7 +145,7 @@ func (w *Worker) handleMsg(item inflightMsg, provider spotify.Provider, label st
 	}
 
 	progress.Stop()
-	if err := w.ackMsg(msg); err != nil {
+	if err := w.ackMsg(ctx, msg); err != nil {
 		w.recordAckError(label)
 		log.Printf("[worker] Failed to ack message: %v", err)
 	}
@@ -265,10 +265,10 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 	}
 }
 
-func (w *Worker) ackMsg(msg jetstream.Msg) error {
+func (w *Worker) ackMsg(ctx context.Context, msg jetstream.Msg) error {
 	var lastErr error
 	for attempt := range 3 {
-		ackCtx, cancel := context.WithTimeout(w.ctx, 3*time.Second)
+		ackCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		err := msg.DoubleAck(ackCtx)
 		cancel()
 		if err == nil {
@@ -283,8 +283,8 @@ func (w *Worker) ackMsg(msg jetstream.Msg) error {
 		delay := time.Duration(attempt+1) * 100 * time.Millisecond
 		select {
 		case <-time.After(delay):
-		case <-w.ctx.Done():
-			return w.ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 
@@ -300,7 +300,7 @@ func (w *Worker) ackMsg(msg jetstream.Msg) error {
 // DLQ
 // ---------------------------------------------------------------------------
 
-func (w *Worker) publishScrapeDLQ(msg jetstream.Msg, meta *jetstream.MsgMetadata, req *messaging.ScrapeRequested, reason string) {
+func (w *Worker) publishScrapeDLQ(ctx context.Context, msg jetstream.Msg, meta *jetstream.MsgMetadata, req *messaging.ScrapeRequested, reason string) {
 	env := map[string]any{
 		"reason":      reason,
 		"at":          time.Now().Format(time.RFC3339),
@@ -326,7 +326,7 @@ func (w *Worker) publishScrapeDLQ(msg jetstream.Msg, meta *jetstream.MsgMetadata
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(w.ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if _, err := w.js.Publish(ctx, messaging.SubjectScrapeDLQ, data); err != nil {
 		log.Printf("[worker] Failed to publish DLQ message: %v", err)
@@ -337,7 +337,7 @@ func (w *Worker) publishScrapeDLQ(msg jetstream.Msg, meta *jetstream.MsgMetadata
 // Core processing
 // ---------------------------------------------------------------------------
 
-func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.MsgMetadata, provider spotify.Provider, label string) error {
+func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequested, meta *jetstream.MsgMetadata, provider spotify.Provider, label string) error {
 	startedAt := time.Now()
 
 	if w.isRequestAlreadySucceeded(req.RequestID) {
@@ -379,7 +379,7 @@ func (w *Worker) processRequest(req messaging.ScrapeRequested, meta *jetstream.M
 	}
 
 	// Fetch the listener count using the specific provider assigned to this goroutine.
-	ctx, cancel := context.WithTimeout(w.ctx, w.fetchTimeout(provider))
+	ctx, cancel := context.WithTimeout(ctx, w.fetchTimeout(provider))
 	defer cancel()
 
 	listeners, err := w.fetcher.FetchOne(ctx, req.SpotifyID, provider)

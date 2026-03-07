@@ -113,7 +113,7 @@ func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 	req, err := messaging.UnmarshalScrapeRequested(msg.Data())
 	if err != nil {
 		log.Printf("[worker] Failed to unmarshal request (terminating): %v", err)
-		w.publishScrapeDLQ(msg, meta, nil, "unmarshal_error")
+		w.publishScrapeDLQ(w.ctx, msg, meta, nil, "unmarshal_error")
 		if termErr := msg.Term(); termErr != nil {
 			log.Printf("[worker] Failed to terminate poison message: %v", termErr)
 		}
@@ -170,7 +170,7 @@ func (w *Worker) providerLoop(g *providerGroup, slot int) {
 				return
 			}
 
-			result := w.handleMsg(item, g.provider, g.label)
+			result := w.handleMsg(g.ctx, item, g.provider, g.label)
 			if result == msgQuotaExpired {
 				log.Printf("[worker] Provider %s slot %d: quota exhausted, shutting down provider pool", g.label, slot)
 				// Cancel the group context so sibling goroutines exit too.
