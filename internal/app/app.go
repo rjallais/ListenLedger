@@ -25,6 +25,10 @@ func Run(ctx context.Context) error {
 	}
 
 	dataDir := appdir.ResolveDataDir()
+	if err := os.MkdirAll(dataDir, 0750); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: dataDir,
 	})
@@ -67,8 +71,4 @@ func Run(ctx context.Context) error {
 	})
 
 	return app.Start()
-}
-
-func init() {
-	_ = os.MkdirAll(appdir.ResolveDataDir(), 0750)
 }
