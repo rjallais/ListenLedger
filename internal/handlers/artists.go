@@ -41,7 +41,7 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 	}
 
 	// Check if spotify_id already exists
-	existingRecords, _ := h.app.FindRecordsByFilter(
+	existingRecords, err := h.app.FindRecordsByFilter(
 		"artists",
 		"spotify_id = {:spotify_id}",
 		"",
@@ -49,6 +49,9 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 		0,
 		dbx.Params{"spotify_id": spotifyID},
 	)
+	if err != nil {
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to check for existing artist"})
+	}
 	if len(existingRecords) > 0 {
 		existingName := existingRecords[0].GetString("name")
 		return e.JSON(http.StatusConflict, map[string]string{
