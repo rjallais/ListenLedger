@@ -319,9 +319,6 @@ func (h *Handler) handleUpdateAlbumTotalSongs(e *core.RequestEvent) error {
 	} else if action == "dec" && total > 0 {
 		total--
 	}
-	if total < 0 {
-		total = 0
-	}
 
 	collection := record.GetInt("collection_songs")
 	if total < collection {
