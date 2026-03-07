@@ -66,7 +66,7 @@ func (w *Worker) totalConcurrency() int {
 
 // newProviderGroup creates a providerGroup with a context derived from the
 // worker's root context and registers it in w.groups.
-func (w *Worker) newProviderGroup(provider spotify.Provider) *providerGroup {
+func (w *Worker) newProviderGroup(provider spotify.Provider, initialAlive int) *providerGroup {
 	ctx, cancel := context.WithCancel(w.ctx)
 	g := &providerGroup{
 		ctx:      ctx,
@@ -74,6 +74,9 @@ func (w *Worker) newProviderGroup(provider spotify.Provider) *providerGroup {
 		provider: provider,
 		label:    providerLabel(provider),
 		dead:     make(chan struct{}),
+	}
+	if initialAlive > 0 {
+		g.alive.Add(initialAlive)
 	}
 	// Start a goroutine that closes g.dead once every goroutine in the
 	// group has exited.
@@ -96,7 +99,7 @@ func (w *Worker) watchAllGroups() {
 	}
 
 	// All groups are gone.
-	log.Println("[worker] All provider groups have exited — draining NATS consumer")
+	log.Printf("[worker] All provider groups have exited - draining NATS consumer")
 	w.drainOnce.Do(func() {
 		if w.consume != nil {
 			w.consume.Drain()

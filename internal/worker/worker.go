@@ -284,16 +284,14 @@ func (w *Worker) Start() {
 	if len(slots) == 0 {
 		// No providers configured — run a single goroutine that will report
 		// fetcher-unavailable for every message.
-		log.Println("[worker] No providers configured; starting single fallback worker")
-		g := w.newProviderGroup(spotify.ProviderAny)
-		g.alive.Add(1)
+		log.Printf("[worker] No providers configured; starting single fallback worker")
+		g := w.newProviderGroup(spotify.ProviderAny, 1)
 		w.wg.Add(1)
 		go w.providerLoop(g, 0)
 	} else {
 		for _, slot := range slots {
-			g := w.newProviderGroup(slot.provider)
+			g := w.newProviderGroup(slot.provider, slot.concurrency)
 			for i := 0; i < slot.concurrency; i++ {
-				g.alive.Add(1)
 				w.wg.Add(1)
 				go w.providerLoop(g, i)
 			}
@@ -346,9 +344,9 @@ func (w *Worker) Stop() {
 
 	select {
 	case <-done:
-		log.Println("[worker] Stopped gracefully")
+		log.Printf("[worker] Stopped gracefully")
 	case <-time.After(30 * time.Second):
-		log.Println("[worker] Stop timed out, forcing shutdown")
+		log.Printf("[worker] Stop timed out, forcing shutdown")
 	}
 
 	if w.fetcher != nil {
