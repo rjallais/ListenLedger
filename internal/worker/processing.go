@@ -393,10 +393,10 @@ func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequest
 	}
 
 	// Fetch the listener count using the specific provider assigned to this goroutine.
-	ctx, cancel := context.WithTimeout(ctx, w.fetchTimeout(provider))
+	fetchCtx, cancel := context.WithTimeout(ctx, w.fetchTimeout(provider))
 	defer cancel()
 
-	listeners, err := w.fetcher.FetchOne(ctx, req.SpotifyID, provider)
+	listeners, err := w.fetcher.FetchOne(fetchCtx, req.SpotifyID, provider)
 	if err != nil {
 		log.Printf("[worker] Failed to fetch listeners for %s via %s: %v", req.SpotifyID, label, err)
 
