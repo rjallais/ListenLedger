@@ -279,6 +279,7 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	// Convert to type-safe structs
 	artists := make([]templates.Artist, 0, len(records))
 	for _, r := range records {
+		collectionSongs := r.GetInt("collection_songs")
 		artists = append(artists, templates.Artist{
 			ID:               r.Id,
 			Name:             r.GetString("name"),
@@ -287,8 +288,8 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 			GenreGroup:       r.GetString("genre_group"),
 			ListStatus:       r.GetString("list_status"),
 			FetchStatus:      r.GetString("fetch_status"),
-			CollectionSongs:  r.GetInt("collection_songs"),
-			TotalSongs:       r.GetInt("total_songs"),
+			CollectionSongs:  collectionSongs,
+			TotalSongs:       collectionSongs,
 			LastUpdated:      r.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
 		})
 	}
@@ -514,6 +515,7 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 	}
 
 	currentGenre := currentGenreFromRequest(e.Request)
+	collectionSongs := record.GetInt("collection_songs")
 
 	// Build artist struct for response
 	artist := templates.Artist{
@@ -524,8 +526,8 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 		GenreGroup:       record.GetString("genre_group"),
 		ListStatus:       record.GetString("list_status"),
 		FetchStatus:      record.GetString("fetch_status"),
-		CollectionSongs:  record.GetInt("collection_songs"),
-		TotalSongs:       record.GetInt("total_songs"),
+		CollectionSongs:  collectionSongs,
+		TotalSongs:       collectionSongs,
 		LastUpdated:      record.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
 	}
 
@@ -571,6 +573,8 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist"})
 	}
 
+	collectionSongs := record.GetInt("collection_songs")
+
 	// Return the updated artist row as SSE fragment for Datastar
 	artist := templates.Artist{
 		ID:               record.Id,
@@ -580,8 +584,8 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		GenreGroup:       record.GetString("genre_group"),
 		ListStatus:       record.GetString("list_status"),
 		FetchStatus:      record.GetString("fetch_status"),
-		CollectionSongs:  record.GetInt("collection_songs"),
-		TotalSongs:       record.GetInt("total_songs"),
+		CollectionSongs:  collectionSongs,
+		TotalSongs:       collectionSongs,
 		LastUpdated:      record.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
 	}
 
