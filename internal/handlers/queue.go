@@ -235,10 +235,22 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 		}
 	}
 
-	jobsQueued, _ := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "queued"})
-	jobsProcessing, _ := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "processing"})
-	jobsFailed, _ := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "failed"})
-	artistsPending, _ := h.app.CountRecords("artists", dbx.HashExp{"fetch_status": "pending"})
+	jobsQueued, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "queued"})
+	if err != nil {
+		log.Printf("[queue] Warning: failed to count queued jobs: %v", err)
+	}
+	jobsProcessing, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "processing"})
+	if err != nil {
+		log.Printf("[queue] Warning: failed to count processing jobs: %v", err)
+	}
+	jobsFailed, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "failed"})
+	if err != nil {
+		log.Printf("[queue] Warning: failed to count failed jobs: %v", err)
+	}
+	artistsPending, err := h.app.CountRecords("artists", dbx.HashExp{"fetch_status": "pending"})
+	if err != nil {
+		log.Printf("[queue] Warning: failed to count pending artists: %v", err)
+	}
 
 	activeBatchRemaining := int64(0)
 	if snapshot, ok := h.getActiveBatchSnapshot(); ok {
