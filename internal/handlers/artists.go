@@ -103,7 +103,6 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 	record.Set("fetch_status", "idle")
 	record.Set("monthly_listeners", monthlyListeners)
 	record.Set("collection_songs", collectionSongs)
-	record.Set("last_updated", time.Now())
 	record.Set("total_songs", 0) // Not stored, calculated dynamically
 
 	if err := h.app.Save(record); err != nil {
@@ -131,7 +130,7 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 		FetchStatus:      record.GetString("fetch_status"),
 		CollectionSongs:  record.GetInt("collection_songs"),
 		TotalSongs:       totalCount, // New artist goes to top, gets highest count
-		LastUpdated:      record.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
+		LastUpdated:      formatUpdatedAt(record.GetString("last_updated")),
 	}
 
 	return renderDatastar(e, templates.NewArtistCreateResponse(artist))
@@ -232,7 +231,7 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 			FetchStatus:      r.GetString("fetch_status"),
 			CollectionSongs:  r.GetInt("collection_songs"),
 			TotalSongs:       dynamicTotalSongs,
-			LastUpdated:      r.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
+			LastUpdated:      formatUpdatedAt(r.GetString("last_updated")),
 		})
 	}
 
@@ -298,7 +297,7 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 			FetchStatus:      r.GetString("fetch_status"),
 			CollectionSongs:  collectionSongs,
 			TotalSongs:       collectionSongs,
-			LastUpdated:      r.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
+			LastUpdated:      formatUpdatedAt(r.GetString("last_updated")),
 		})
 	}
 
@@ -536,7 +535,7 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 		FetchStatus:      record.GetString("fetch_status"),
 		CollectionSongs:  collectionSongs,
 		TotalSongs:       collectionSongs,
-		LastUpdated:      record.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
+		LastUpdated:      formatUpdatedAt(record.GetString("last_updated")),
 	}
 
 	if oldStatus != newStatus && (oldStatus == "waiting" || newStatus == "waiting") {
@@ -594,7 +593,7 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		FetchStatus:      record.GetString("fetch_status"),
 		CollectionSongs:  collectionSongs,
 		TotalSongs:       collectionSongs,
-		LastUpdated:      record.GetDateTime("last_updated").Time().Format("Jan 2, 2006"),
+		LastUpdated:      formatUpdatedAt(record.GetString("last_updated")),
 	}
 
 	return renderDatastar(e, templates.ArtistRow(artist))
