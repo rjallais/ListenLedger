@@ -37,24 +37,39 @@ type batchProgressSnapshot struct {
 }
 
 func (h *Handler) ensureBatchProgressSubscriber() {
-	h.batchOnce.Do(func() {
-		sub, err := h.nc.Subscribe(messaging.SubjectArtistUpdated, func(msg *nats.Msg) {
-			update, err := messaging.UnmarshalArtistUpdated(msg.Data)
-			if err != nil {
-				return
-			}
-			h.markBatchArtistDone(update.ArtistID, update.FetchStatus)
-		})
+	h.batchMu.RLock()
+	if h.batchUpdates != nil {
+		h.batchMu.RUnlock()
+		return
+	}
+	h.batchMu.RUnlock()
+
+	h.batchSubMu.Lock()
+	defer h.batchSubMu.Unlock()
+
+	h.batchMu.RLock()
+	if h.batchUpdates != nil {
+		h.batchMu.RUnlock()
+		return
+	}
+	h.batchMu.RUnlock()
+
+	sub, err := h.nc.Subscribe(messaging.SubjectArtistUpdated, func(msg *nats.Msg) {
+		update, err := messaging.UnmarshalArtistUpdated(msg.Data)
 		if err != nil {
-			log.Printf("[batch] Failed to subscribe to %s: %v", messaging.SubjectArtistUpdated, err)
 			return
 		}
-
-		h.batchMu.Lock()
-		h.batchUpdates = sub
-		h.batchMu.Unlock()
-		log.Printf("[batch] Tracking progress from %s", messaging.SubjectArtistUpdated)
+		h.markBatchArtistDone(update.ArtistID, update.FetchStatus)
 	})
+	if err != nil {
+		log.Printf("[batch] Failed to subscribe to %s: %v", messaging.SubjectArtistUpdated, err)
+		return
+	}
+
+	h.batchMu.Lock()
+	h.batchUpdates = sub
+	h.batchMu.Unlock()
+	log.Printf("[batch] Tracking progress from %s", messaging.SubjectArtistUpdated)
 }
 
 func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {

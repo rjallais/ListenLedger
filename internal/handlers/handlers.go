@@ -23,7 +23,7 @@ type Handler struct {
 	startedAt time.Time
 
 	batchMu      sync.RWMutex
-	batchOnce    sync.Once
+	batchSubMu   sync.Mutex
 	batches      map[string]*batchProgress
 	artistBatch  map[string]string
 	latestBatch  string
