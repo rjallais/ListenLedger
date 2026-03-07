@@ -413,7 +413,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 		"spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})",
 		"-monthly_listeners",
 		0, 0,
-		dbx.Params{"cutoff": fourHoursAgo.Format("2006-01-02 15:04:05.000Z")},
+		dbx.Params{"cutoff": fourHoursAgo.Format(time.RFC3339)},
 	)
 	if err != nil {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
