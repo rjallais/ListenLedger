@@ -371,14 +371,14 @@ func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequest
 	w.setScrapeJobProcessing(req.RequestID)
 
 	// Update artist status to pending.
-	if err := w.updateArtistStatus(req.ArtistID, "pending"); err != nil {
+	if err := w.updateArtistStatus(ctx, req.ArtistID, "pending"); err != nil {
 		return fmt.Errorf("set pending: %w", err)
 	}
 
 	// Check if fetcher is available.
 	if w.fetcher == nil {
 		log.Printf("[worker] Fetcher not available, marking as failed")
-		if err := w.updateArtistStatus(req.ArtistID, "failed"); err != nil {
+		if err := w.updateArtistStatus(ctx, req.ArtistID, "failed"); err != nil {
 			return fmt.Errorf("set failed: %w", err)
 		}
 		w.setScrapeJobFinished(req.RequestID, "failed", "fetcher_unavailable")
@@ -414,7 +414,7 @@ func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequest
 	}
 
 	// Update the artist record with new listener count.
-	if err := w.updateArtistListeners(req.ArtistID, listeners); err != nil {
+	if err := w.updateArtistListeners(ctx, req.ArtistID, listeners); err != nil {
 		return fmt.Errorf("update listeners: %w", err)
 	}
 

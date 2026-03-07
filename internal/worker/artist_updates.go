@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -43,7 +44,7 @@ func (w *Worker) flushTotalSongsRecalc() {
 		return
 	}
 
-	if err := w.recalculateTotalSongsForArtists(pending); err != nil {
+	if err := w.recalculateTotalSongsForArtists(w.ctx, pending); err != nil {
 		log.Printf("[worker] Warning: failed to recalculate total_songs ranks: %v", err)
 
 		w.recalcMu.Lock()
@@ -59,14 +60,21 @@ func (w *Worker) flushTotalSongsRecalc() {
 	}
 }
 
-func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) error {
+func (w *Worker) recalculateTotalSongsForArtists(ctx context.Context, artistIDs map[string]struct{}) error {
 	byGenre := map[string]map[string]struct{}{
 		"rock_metal":      {},
 		"everything_else": {},
 	}
 
 	for artistID := range artistIDs {
-		record, err := w.app.FindRecordById("artists", artistID)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("recalculate total_songs cancelled: %w", err)
+		}
+
+		record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
 		if err != nil {
 			continue
 		}
@@ -84,6 +92,9 @@ func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) 
 		if len(targets) == 0 {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("recalculate total_songs cancelled for genre %s: %w", genre, err)
+		}
 
 		records, err := w.app.FindRecordsByFilter(
 			"artists",
@@ -99,6 +110,10 @@ func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) 
 
 		totalCount := len(records)
 		for index, record := range records {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("recalculate total_songs cancelled while saving artist %s: %w", record.Id, err)
+			}
+
 			targetTotalSongs := totalCount - index
 			if record.GetInt("total_songs") == targetTotalSongs {
 				continue
@@ -119,25 +134,51 @@ func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) 
 // ---------------------------------------------------------------------------
 
 // updateArtistStatus updates the fetch_status field of an artist.
-func (w *Worker) updateArtistStatus(artistID, status string) error {
-	record, err := w.app.FindRecordById("artists", artistID)
+func (w *Worker) updateArtistStatus(ctx context.Context, artistID, status string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check cancellation before loading artist %s for status update: %w", artistID, err)
+	}
+
+	record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("load artist %s for status update: %w", artistID, err)
 	}
 
 	record.Set("fetch_status", status)
-	return w.app.Save(record)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check cancellation before saving status for artist %s: %w", artistID, err)
+	}
+	if err := w.app.Save(record); err != nil {
+		return fmt.Errorf("save fetch_status for artist %s: %w", artistID, err)
+	}
+	return nil
 }
 
 // updateArtistListeners updates the monthly_listeners, last_updated, and fetch_status of an artist.
-func (w *Worker) updateArtistListeners(artistID string, listeners int) error {
-	record, err := w.app.FindRecordById("artists", artistID)
+func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, listeners int) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check cancellation before loading artist %s for listener update: %w", artistID, err)
+	}
+
+	record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("load artist %s for listener update: %w", artistID, err)
 	}
 
 	record.Set("monthly_listeners", listeners)
 	record.Set("last_updated", time.Now())
 	record.Set("fetch_status", "idle")
-	return w.app.Save(record)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("check cancellation before saving listeners for artist %s: %w", artistID, err)
+	}
+	if err := w.app.Save(record); err != nil {
+		return fmt.Errorf("save listeners for artist %s: %w", artistID, err)
+	}
+	return nil
 }
