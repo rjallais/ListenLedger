@@ -143,11 +143,12 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 				}
 				return msgOK
 			}
-			w.recordDLQ(label)
-			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
 			if termErr := msg.Term(); termErr != nil {
 				log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
+				return msgOK
 			}
+			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
+			w.recordDLQ(label)
 			return msgOK
 		}
 
