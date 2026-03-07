@@ -398,10 +398,6 @@ func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequest
 			return errRequestAlreadySucceeded
 		}
 
-		if statusErr := w.updateArtistStatus(req.ArtistID, "failed"); statusErr != nil {
-			return fmt.Errorf("set failed: %w", statusErr)
-		}
-		w.setScrapeJobFinished(req.RequestID, "failed", "fetch_failed")
 		return fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, label, err)
 	}
 
