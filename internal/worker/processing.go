@@ -129,8 +129,6 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 		// If we've exhausted retries, dead-letter the message.
 		if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
-			w.recordDLQ(label)
-			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
 			if dlqErr := w.publishScrapeDLQ(ctx, msg, meta, &req, "retry_exhausted: "+err.Error()); dlqErr != nil {
 				log.Printf("[worker] Failed to publish retry-exhausted message to DLQ: %v", dlqErr)
 				if nakErr := msg.Nak(); nakErr != nil {
@@ -138,6 +136,8 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 				}
 				return msgOK
 			}
+			w.recordDLQ(label)
+			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
 			if termErr := msg.Term(); termErr != nil {
 				log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
 			}
