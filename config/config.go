@@ -15,6 +15,9 @@ import (
 
 // Config holds application configuration
 type Config struct {
+	// Static assets configuration
+	StaticDir string
+
 	// Browserless configuration
 	BrowserlessToken       string
 	BrowserlessEndpoint    string
@@ -86,6 +89,9 @@ type Config struct {
 // except when running under WSL, where it is disabled.
 func DefaultConfig() *Config {
 	return &Config{
+		// Static asset defaults
+		StaticDir: "static",
+
 		// Browserless defaults
 		BrowserlessEndpoint:    "https://production-sfo.browserless.io/chromium/bql",
 		BrowserlessConcurrency: 2,
@@ -142,6 +148,10 @@ func DefaultConfig() *Config {
 
 // LoadFromEnv loads configuration from environment variables
 func (c *Config) LoadFromEnv() error {
+	if staticDir := os.Getenv("STATIC_DIR"); staticDir != "" {
+		c.StaticDir = staticDir
+	}
+
 	// Browserless token (optional; when set, Browserless can be used)
 	if browserlessToken := os.Getenv("BROWSERLESS_TOKEN"); browserlessToken != "" {
 		c.BrowserlessToken = browserlessToken

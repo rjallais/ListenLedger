@@ -16,7 +16,7 @@ import (
 // handleStatic serves static files from the static directory.
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
-	return e.FileFS(os.DirFS("static"), path)
+	return e.FileFS(os.DirFS(h.staticDir), path)
 }
 
 // handleIndex redirects to albums view.

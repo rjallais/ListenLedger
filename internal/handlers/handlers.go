@@ -19,6 +19,7 @@ type Handler struct {
 	nc        *nats.Conn
 	js        jetstream.JetStream
 	cfg       *config.Config
+	staticDir string
 	startedAt time.Time
 
 	batchMu      sync.RWMutex
@@ -30,11 +31,17 @@ type Handler struct {
 
 // New creates a new Handler instance.
 func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg *config.Config) *Handler {
+	staticDir := "static"
+	if cfg != nil && cfg.StaticDir != "" {
+		staticDir = cfg.StaticDir
+	}
+
 	return &Handler{
 		app:       app,
 		nc:        nc,
 		js:        js,
 		cfg:       cfg,
+		staticDir: staticDir,
 		startedAt: time.Now(),
 
 		batches:     make(map[string]*batchProgress),
