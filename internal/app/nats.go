@@ -84,7 +84,7 @@ func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server
 
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create embedded NATS server (store_dir=%s): %w", opts.StoreDir, err)
 	}
 
 	go ns.Start()
