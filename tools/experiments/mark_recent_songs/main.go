@@ -1,5 +1,6 @@
-//go:build goexperiment.jsonv2
+//go:build ignore && goexperiment.jsonv2
 
+// Package main contains a one-off data maintenance utility kept outside normal builds.
 package main
 
 import (
