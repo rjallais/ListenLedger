@@ -18,9 +18,10 @@ import (
 func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase, js jetstream.JetStream) {
 	publish := func(record *core.Record, requestID string) {
 		if requestID == "" {
-			requestID = correlation.Get(record.Id)
+			requestID = correlation.Pop(record.Id)
+		} else {
+			correlation.Clear(record.Id)
 		}
-		correlation.Clear(record.Id)
 
 		updatedAt := record.GetDateTime("last_updated").Time().Format(time.RFC3339)
 		update := messaging.ArtistUpdated{
