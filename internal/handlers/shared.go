@@ -114,7 +114,7 @@ func formatUpdatedAt(raw string) string {
 	}
 
 	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-		return parsed.Format("Jan 2, 2006")
+		return parsed.Local().Format("Jan 2, 2006 3:04 PM")
 	}
 
 	return raw
