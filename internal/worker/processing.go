@@ -422,7 +422,10 @@ func (w *Worker) processRequest(ctx context.Context, req messaging.ScrapeRequest
 	}
 
 	// Update the artist record with new listener count.
-	if err := w.updateArtistListeners(ctx, req.ArtistID, listeners); err != nil {
+	persistCtx, persistCancel := context.WithTimeout(w.ctx, 5*time.Second)
+	defer persistCancel()
+
+	if err := w.updateArtistListeners(persistCtx, req.ArtistID, listeners); err != nil {
 		return fmt.Errorf("update listeners: %w", err)
 	}
 
