@@ -81,7 +81,7 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 	})
 
 	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to subscribe")
+		return e.String(http.StatusInternalServerError, fmt.Sprintf("Failed to subscribe: %v", err))
 	}
 
 	defer func() {
