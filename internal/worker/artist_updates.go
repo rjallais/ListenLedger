@@ -112,7 +112,7 @@ func (w *Worker) recalculateTotalSongsForArtists(ctx context.Context, artistIDs 
 		err := w.app.RecordQuery("artists").
 			WithContext(ctx).
 			AndWhere(dbx.NewExp("genre_group = {:genre} AND list_status != {:waiting}", dbx.Params{"genre": genre, "waiting": "waiting"})).
-			OrderBy("-monthly_listeners", "name", "id").
+			OrderBy("monthly_listeners DESC", "name", "id").
 			All(&records)
 		if err != nil {
 			return fmt.Errorf("list artists for %s: %w", genre, err)
