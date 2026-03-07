@@ -15,7 +15,7 @@ import (
 	"ListenLedger/internal/messaging"
 )
 
-func registerArtistUpdateFanout(app *pocketbase.PocketBase, js jetstream.JetStream) {
+func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase, js jetstream.JetStream) {
 	publish := func(record *core.Record, requestID string) {
 		if requestID == "" {
 			requestID = correlation.Get(record.Id)
@@ -41,9 +41,9 @@ func registerArtistUpdateFanout(app *pocketbase.PocketBase, js jetstream.JetStre
 
 		msgID := "artist.updated:" + record.Id + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		if _, err := js.Publish(ctx, messaging.SubjectArtistUpdated, data, jetstream.WithMsgID(msgID)); err != nil {
+		if _, err := js.Publish(publishCtx, messaging.SubjectArtistUpdated, data, jetstream.WithMsgID(msgID)); err != nil {
 			app.Logger().Warn("[hooks] failed to publish artist.updated to JetStream", "err", err)
 		} else if requestID != "" {
 			app.Logger().Debug("[hooks] published artist.updated", "artist_id", record.Id, "request_id", requestID)

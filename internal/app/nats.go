@@ -17,9 +17,9 @@ import (
 	"ListenLedger/internal/messaging"
 )
 
-func bootstrapNATS(dataDir string) (*natsserver.Server, *nats.Conn, jetstream.JetStream, error) {
+func bootstrapNATS(ctx context.Context, dataDir string) (*natsserver.Server, *nats.Conn, jetstream.JetStream, error) {
 	natsStoreDir := filepath.Join(dataDir, "nats")
-	ns, err := startEmbeddedNATS(natsStoreDir)
+	ns, err := startEmbeddedNATS(ctx, natsStoreDir)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}
@@ -38,7 +38,7 @@ func bootstrapNATS(dataDir string) (*natsserver.Server, *nats.Conn, jetstream.Je
 		return nil, nil, nil, fmt.Errorf("failed to initialize JetStream: %w", err)
 	}
 
-	if err := ensureJetStreamStreams(js); err != nil {
+	if err := ensureJetStreamStreams(ctx, js); err != nil {
 		nc.Close()
 		ns.Shutdown()
 		return nil, nil, nil, err
@@ -47,8 +47,8 @@ func bootstrapNATS(dataDir string) (*natsserver.Server, *nats.Conn, jetstream.Je
 	return ns, nc, js, nil
 }
 
-func ensureJetStreamStreams(js jetstream.JetStream) error {
-	jsCtx, cancelJS := context.WithTimeout(context.Background(), 5*time.Second)
+func ensureJetStreamStreams(ctx context.Context, js jetstream.JetStream) error {
+	jsCtx, cancelJS := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelJS()
 
 	if err := messaging.EnsureScrapeRequestStream(jsCtx, js); err != nil {
@@ -65,7 +65,7 @@ func ensureJetStreamStreams(js jetstream.JetStream) error {
 }
 
 // startEmbeddedNATS launches an in-process NATS server.
-func startEmbeddedNATS(storeDir string) (*natsserver.Server, error) {
+func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server, error) {
 	if err := os.MkdirAll(storeDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create NATS store dir: %w", err)
 	}
@@ -86,10 +86,25 @@ func startEmbeddedNATS(storeDir string) (*natsserver.Server, error) {
 
 	go ns.Start()
 
-	if !ns.ReadyForConnections(5 * time.Second) {
-		ns.Shutdown()
-		return nil, fmt.Errorf("NATS server failed to become ready")
-	}
+	readyUntil := time.NewTimer(5 * time.Second)
+	defer readyUntil.Stop()
 
-	return ns, nil
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
+
+	for {
+		if ns.ReadyForConnections(0) {
+			return ns, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			ns.Shutdown()
+			return nil, fmt.Errorf("NATS server startup canceled: %w", ctx.Err())
+		case <-readyUntil.C:
+			ns.Shutdown()
+			return nil, fmt.Errorf("NATS server failed to become ready")
+		case <-poll.C:
+		}
+	}
 }

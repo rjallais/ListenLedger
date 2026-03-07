@@ -4,6 +4,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -18,7 +19,11 @@ import (
 )
 
 // Run initializes and starts the PocketBase application and its background services.
-func Run() error {
+func Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	dataDir := appdir.ResolveDataDir()
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: dataDir,
@@ -37,12 +42,12 @@ func Run() error {
 			return fmt.Errorf("failed to load configuration: %w", err)
 		}
 
-		ns, nc, js, err := bootstrapNATS(dataDir)
+		ns, nc, js, err := bootstrapNATS(ctx, dataDir)
 		if err != nil {
 			return err
 		}
 
-		registerArtistUpdateFanout(app, js)
+		registerArtistUpdateFanout(ctx, app, js)
 
 		w := worker.New(app, nc, js, cfg)
 		w.Start()
