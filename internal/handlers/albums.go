@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -55,6 +56,7 @@ func albumStatusForUI(status string) string {
 	case "waiting":
 		return "waiting"
 	default:
+		log.Printf("[albums] unexpected album status %q; falling back to waiting", status)
 		return "waiting"
 	}
 }
