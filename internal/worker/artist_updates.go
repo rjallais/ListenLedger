@@ -154,6 +154,9 @@ func (w *Worker) updateArtistStatus(ctx context.Context, artistID, status string
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
 		return fmt.Errorf("load artist %s for status update: %w", artistID, err)
 	}
 
@@ -178,6 +181,9 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
 		return fmt.Errorf("load artist %s for listener update: %w", artistID, err)
 	}
 
