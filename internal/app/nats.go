@@ -48,20 +48,23 @@ func bootstrapNATS(ctx context.Context, dataDir string) (*natsserver.Server, *na
 }
 
 func ensureJetStreamStreams(ctx context.Context, js jetstream.JetStream) error {
-	jsCtx, cancelJS := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelJS()
-
-	if err := messaging.EnsureScrapeRequestStream(jsCtx, js); err != nil {
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureScrapeRequestStream); err != nil {
 		return fmt.Errorf("failed to ensure scrape request stream: %w", err)
 	}
-	if err := messaging.EnsureScrapeDLQStream(jsCtx, js); err != nil {
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureScrapeDLQStream); err != nil {
 		return fmt.Errorf("failed to ensure scrape dlq stream: %w", err)
 	}
-	if err := messaging.EnsureEventsStream(jsCtx, js); err != nil {
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureEventsStream); err != nil {
 		return fmt.Errorf("failed to ensure events stream: %w", err)
 	}
 
 	return nil
+}
+
+func ensureJetStreamStream(ctx context.Context, js jetstream.JetStream, ensure func(context.Context, jetstream.JetStream) error) error {
+	streamCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return ensure(streamCtx, js)
 }
 
 // startEmbeddedNATS launches an in-process NATS server.
