@@ -99,10 +99,6 @@ func (w *Worker) recalculateTotalSongsForArtists(artistIDs map[string]struct{}) 
 
 		totalCount := len(records)
 		for index, record := range records {
-			if _, tracked := targets[record.Id]; !tracked {
-				continue
-			}
-
 			targetTotalSongs := totalCount - index
 			if record.GetInt("total_songs") == targetTotalSongs {
 				continue
