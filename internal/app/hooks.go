@@ -40,15 +40,20 @@ func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase,
 			return
 		}
 
-		msgID := "artist.updated:" + record.Id + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		artistID := record.Id
+		msgID := "artist.updated:" + artistID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		logger := app.Logger()
 
-		publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		if _, err := js.Publish(publishCtx, messaging.SubjectArtistUpdated, data, jetstream.WithMsgID(msgID)); err != nil {
-			app.Logger().Warn("[hooks] failed to publish artist.updated to JetStream", "err", err)
-		} else if requestID != "" {
-			app.Logger().Debug("[hooks] published artist.updated", "artist_id", record.Id, "request_id", requestID)
-		}
+		go func(artistID, requestID, msgID string, data []byte) {
+			publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+
+			if _, err := js.Publish(publishCtx, messaging.SubjectArtistUpdated, data, jetstream.WithMsgID(msgID)); err != nil {
+				logger.Warn("[hooks] failed to publish artist.updated to JetStream", "err", err)
+			} else if requestID != "" {
+				logger.Debug("[hooks] published artist.updated", "artist_id", artistID, "request_id", requestID)
+			}
+		}(artistID, requestID, msgID, data)
 	}
 
 	app.OnRecordAfterUpdateSuccess("artists").BindFunc(func(e *core.RecordEvent) error {
