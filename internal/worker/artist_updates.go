@@ -4,6 +4,8 @@ package worker
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -76,6 +78,12 @@ func (w *Worker) recalculateTotalSongsForArtists(ctx context.Context, artistIDs 
 			return nil
 		})
 		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return fmt.Errorf("find artist %s: %w", artistID, err)
+		}
+		if record == nil {
 			continue
 		}
 		if record.GetString("list_status") == "waiting" {
