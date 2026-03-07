@@ -89,25 +89,20 @@ func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server
 
 	go ns.Start()
 
-	readyUntil := time.NewTimer(5 * time.Second)
-	defer readyUntil.Stop()
+	ready := make(chan bool, 1)
+	go func() {
+		ready <- ns.ReadyForConnections(5 * time.Second)
+	}()
 
-	poll := time.NewTicker(25 * time.Millisecond)
-	defer poll.Stop()
-
-	for {
-		if ns.ReadyForConnections(0) {
-			return ns, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			ns.Shutdown()
-			return nil, fmt.Errorf("NATS server startup canceled: %w", ctx.Err())
-		case <-readyUntil.C:
+	select {
+	case <-ctx.Done():
+		ns.Shutdown()
+		return nil, fmt.Errorf("NATS server startup canceled: %w", ctx.Err())
+	case ok := <-ready:
+		if !ok {
 			ns.Shutdown()
 			return nil, fmt.Errorf("NATS server failed to become ready")
-		case <-poll.C:
 		}
+		return ns, nil
 	}
 }
