@@ -47,6 +47,9 @@ func (w *Worker) flushTotalSongsRecalc() {
 	}
 
 	if err := w.recalculateTotalSongsForArtists(w.ctx, pending); err != nil {
+		if w.ctx.Err() != nil {
+			return
+		}
 		log.Printf("[worker] Warning: failed to recalculate total_songs ranks: %v", err)
 
 		w.recalcMu.Lock()
