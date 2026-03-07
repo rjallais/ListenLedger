@@ -113,7 +113,13 @@ func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 	req, err := messaging.UnmarshalScrapeRequested(msg.Data())
 	if err != nil {
 		log.Printf("[worker] Failed to unmarshal request (terminating): %v", err)
-		w.publishScrapeDLQ(w.ctx, msg, meta, nil, "unmarshal_error")
+		if dlqErr := w.publishScrapeDLQ(w.ctx, msg, meta, nil, "unmarshal_error"); dlqErr != nil {
+			log.Printf("[worker] Failed to publish poison message to DLQ: %v", dlqErr)
+			if nakErr := msg.Nak(); nakErr != nil {
+				log.Printf("[worker] Failed to NAK poison message after DLQ publish failure: %v", nakErr)
+			}
+			return
+		}
 		if termErr := msg.Term(); termErr != nil {
 			log.Printf("[worker] Failed to terminate poison message: %v", termErr)
 		}

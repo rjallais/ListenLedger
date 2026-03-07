@@ -131,7 +131,13 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 		if meta != nil && int(meta.NumDelivered) >= w.maxDeliver {
 			w.recordDLQ(label)
 			w.setScrapeJobFinished(req.RequestID, "failed", "retry_exhausted")
-			w.publishScrapeDLQ(ctx, msg, meta, &req, "retry_exhausted: "+err.Error())
+			if dlqErr := w.publishScrapeDLQ(ctx, msg, meta, &req, "retry_exhausted: "+err.Error()); dlqErr != nil {
+				log.Printf("[worker] Failed to publish retry-exhausted message to DLQ: %v", dlqErr)
+				if nakErr := msg.Nak(); nakErr != nil {
+					log.Printf("[worker] Failed to NAK retry-exhausted message after DLQ publish failure: %v", nakErr)
+				}
+				return msgOK
+			}
 			if termErr := msg.Term(); termErr != nil {
 				log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
 			}
@@ -300,7 +306,7 @@ func (w *Worker) ackMsg(ctx context.Context, msg jetstream.Msg) error {
 // DLQ
 // ---------------------------------------------------------------------------
 
-func (w *Worker) publishScrapeDLQ(ctx context.Context, msg jetstream.Msg, meta *jetstream.MsgMetadata, req *messaging.ScrapeRequested, reason string) {
+func (w *Worker) publishScrapeDLQ(ctx context.Context, msg jetstream.Msg, meta *jetstream.MsgMetadata, req *messaging.ScrapeRequested, reason string) error {
 	env := map[string]any{
 		"reason":      reason,
 		"at":          time.Now().Format(time.RFC3339),
@@ -322,15 +328,16 @@ func (w *Worker) publishScrapeDLQ(ctx context.Context, msg jetstream.Msg, meta *
 
 	data, err := json.Marshal(env)
 	if err != nil {
-		log.Printf("[worker] Failed to marshal DLQ envelope: %v", err)
-		return
+		return fmt.Errorf("marshal DLQ envelope: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if _, err := w.js.Publish(ctx, messaging.SubjectScrapeDLQ, data); err != nil {
-		log.Printf("[worker] Failed to publish DLQ message: %v", err)
+		return fmt.Errorf("publish DLQ message: %w", err)
 	}
+
+	return nil
 }
 
 // ---------------------------------------------------------------------------
