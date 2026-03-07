@@ -305,6 +305,52 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	return renderDatastar(e, templates.WaitingArtistRows(artists, offset+len(records), hasMore))
 }
 
+func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
+	collectionSongs := record.GetInt("collection_songs")
+	if record.GetString("list_status") == "waiting" {
+		return collectionSongs
+	}
+
+	filter := "genre_group = {:genre} && list_status != {:waiting}"
+	filterParams := dbx.Params{
+		"genre":   record.GetString("genre_group"),
+		"waiting": "waiting",
+	}
+
+	totalCount64, err := h.app.CountRecords("artists", dbx.NewExp(
+		"genre_group = {:genre} AND list_status != {:waiting}",
+		filterParams,
+	))
+	if err != nil {
+		return collectionSongs
+	}
+	totalCount := int(totalCount64)
+	if totalCount == 0 {
+		return collectionSongs
+	}
+
+	records, err := h.app.FindRecordsByFilter(
+		"artists",
+		filter,
+		"-monthly_listeners",
+		totalCount,
+		0,
+		filterParams,
+	)
+	if err != nil {
+		return collectionSongs
+	}
+
+	for i, candidate := range records {
+		if candidate.Id == record.Id {
+			position := i + 1
+			return totalCount - position + 1
+		}
+	}
+
+	return collectionSongs
+}
+
 // handleRefresh triggers a refresh request for an artist.
 func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 	artistID := e.Request.PathValue("artistId")
@@ -523,6 +569,7 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 
 	currentGenre := currentGenreFromRequest(e.Request)
 	collectionSongs := record.GetInt("collection_songs")
+	totalSongs := h.dynamicArtistTotalSongs(record)
 
 	// Build artist struct for response
 	artist := templates.Artist{
@@ -534,7 +581,7 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 		ListStatus:       record.GetString("list_status"),
 		FetchStatus:      record.GetString("fetch_status"),
 		CollectionSongs:  collectionSongs,
-		TotalSongs:       collectionSongs,
+		TotalSongs:       totalSongs,
 		LastUpdated:      formatUpdatedAt(record.GetString("last_updated")),
 	}
 
