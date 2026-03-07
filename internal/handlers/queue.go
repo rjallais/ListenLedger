@@ -317,7 +317,7 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	if err != nil {
 		log.Printf("[queue-retry] retry loop failed: %v", err)
 		if wantsJSONResponse(e.Request) {
-			return e.JSON(http.StatusOK, map[string]any{
+			return e.JSON(http.StatusInternalServerError, map[string]any{
 				"status": "error",
 				"error":  err.Error(),
 			})
