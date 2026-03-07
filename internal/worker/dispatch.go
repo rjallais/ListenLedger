@@ -101,10 +101,14 @@ func (w *Worker) watchAllGroups() {
 	// All groups are gone.
 	log.Printf("[worker] All provider groups have exited - draining NATS consumer")
 	w.drainOnce.Do(func() {
+		w.accepting.Store(false)
 		if w.consume != nil {
 			w.consume.Drain()
 		}
 		close(w.allGroupsDead)
+		w.dispatching.Wait()
+		w.rejectQueuedWork()
+		w.closeWork()
 	})
 }
 
@@ -132,6 +136,25 @@ func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 	// Keep heartbeats running while the message is queued in the channel.
 	progress := newProgressHandle()
 	go w.inProgressLoop(msg, progress.done)
+
+	if !w.accepting.Load() {
+		progress.Stop()
+		if nakErr := msg.Nak(); nakErr != nil {
+			log.Printf("[worker] Failed to NAK message after dispatch shutdown: %v", nakErr)
+		}
+		return
+	}
+
+	w.dispatching.Add(1)
+	defer w.dispatching.Done()
+
+	if !w.accepting.Load() {
+		progress.Stop()
+		if nakErr := msg.Nak(); nakErr != nil {
+			log.Printf("[worker] Failed to NAK message after dispatch shutdown: %v", nakErr)
+		}
+		return
+	}
 
 	select {
 	case w.work <- inflightMsg{msg: msg, dispatchProgress: progress, meta: meta, req: req}:

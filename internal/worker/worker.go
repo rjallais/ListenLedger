@@ -17,6 +17,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -113,6 +114,12 @@ type Worker struct {
 	// work is the shared channel that the single NATS consumer feeds.
 	// Provider goroutine pools pull from this channel.
 	work chan inflightMsg
+	// accepting gates whether dispatch callbacks may enqueue into work.
+	accepting atomic.Bool
+	// dispatching tracks in-flight dispatch callbacks so shutdown can safely
+	// drain and close the work queue without racing active sends.
+	dispatching   sync.WaitGroup
+	workCloseOnce sync.Once
 
 	// groups holds per-provider goroutine pool metadata.  Used during
 	// shutdown to wait for each pool independently and to log which
@@ -219,6 +226,7 @@ func (w *Worker) Start() {
 	// NATS consume callback can hand off messages without blocking on a full
 	// channel while all provider goroutines are busy.
 	w.work = make(chan inflightMsg, totalConc)
+	w.accepting.Store(true)
 
 	// Single durable JetStream consumer (restart-safe) for the shared queue.
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
@@ -322,6 +330,7 @@ func (w *Worker) Stop() {
 	w.recalcMu.Unlock()
 
 	// Drain NATS consumer (idempotent with watchAllGroups via drainOnce).
+	w.accepting.Store(false)
 	w.drainOnce.Do(func() {
 		if w.consume != nil {
 			w.consume.Drain()
@@ -331,10 +340,9 @@ func (w *Worker) Stop() {
 		}
 	})
 
-	// Close the work channel so provider goroutines exit after draining.
-	if w.work != nil {
-		close(w.work)
-	}
+	w.dispatching.Wait()
+	w.rejectQueuedWork()
+	w.closeWork()
 
 	done := make(chan struct{})
 	go func() {
@@ -356,4 +364,33 @@ func (w *Worker) Stop() {
 	}
 
 	w.logMetricsSummary("stop")
+}
+
+func (w *Worker) rejectQueuedWork() {
+	if w.work == nil {
+		return
+	}
+
+	for {
+		select {
+		case item, ok := <-w.work:
+			if !ok {
+				return
+			}
+			item.dispatchProgress.Stop()
+			if nakErr := item.msg.Nak(); nakErr != nil {
+				log.Printf("[worker] Failed to NAK queued message during shutdown: %v", nakErr)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (w *Worker) closeWork() {
+	w.workCloseOnce.Do(func() {
+		if w.work != nil {
+			close(w.work)
+		}
+	})
 }
