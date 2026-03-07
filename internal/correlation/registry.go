@@ -39,6 +39,23 @@ func Get(artistID string) string {
 	return e.requestID
 }
 
+func Pop(artistID string) string {
+	mu.Lock()
+	defer mu.Unlock()
+
+	e, ok := registry[artistID]
+	if !ok {
+		return ""
+	}
+
+	delete(registry, artistID)
+	if time.Now().After(e.expiresAt) {
+		return ""
+	}
+
+	return e.requestID
+}
+
 func Clear(artistID string) {
 	mu.Lock()
 	defer mu.Unlock()

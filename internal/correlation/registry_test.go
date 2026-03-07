@@ -49,6 +49,40 @@ func TestClear(t *testing.T) {
 	}
 }
 
+func TestPop(t *testing.T) {
+	artistID := "artist-pop"
+	requestID := "req-pop"
+
+	Associate(artistID, requestID)
+
+	got := Pop(artistID)
+	if got != requestID {
+		t.Fatalf("Pop() = %q, want %q", got, requestID)
+	}
+	if Get(artistID) != "" {
+		t.Fatalf("Get() after Pop() = %q, want empty", Get(artistID))
+	}
+}
+
+func TestPopExpired(t *testing.T) {
+	artistID := "artist-pop-expired"
+	requestID := "req-pop-expired"
+
+	mu.Lock()
+	registry[artistID] = entry{
+		requestID: requestID,
+		expiresAt: time.Now().Add(-1 * time.Minute),
+	}
+	mu.Unlock()
+
+	if got := Pop(artistID); got != "" {
+		t.Fatalf("Pop() of expired entry = %q, want empty", got)
+	}
+	if got := Get(artistID); got != "" {
+		t.Fatalf("Get() after expired Pop() = %q, want empty", got)
+	}
+}
+
 func TestPurgeExpired(t *testing.T) {
 	expiredID := "artist-expired-purge"
 	activeID := "artist-active-purge"
