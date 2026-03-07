@@ -450,7 +450,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 			requestID,
 		)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(e.Request.Context(), 5*time.Second)
 		ack, err := h.publishScrapeRequest(ctx, req)
 		cancel()
 
