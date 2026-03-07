@@ -97,6 +97,13 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 			}
 			return msgOK
 		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx.Err() != nil && errors.Is(err, ctx.Err())) {
+			log.Printf("[worker] Context cancelled while processing %s via %s: %v", req.ArtistID, label, err)
+			if nakErr := msg.Nak(); nakErr != nil {
+				log.Printf("[worker] Failed to NAK message after context cancellation: %v", nakErr)
+			}
+			return msgOK
+		}
 
 		// --- Quota exhaustion: NAK and signal the caller to stop. ---
 		if errors.Is(err, spotify.ErrQuotaExhausted) {
