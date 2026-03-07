@@ -73,10 +73,15 @@ func wantsJSONResponse(r *http.Request) bool {
 }
 
 // currentGenreFromRequest infers the genre from the request Referer URL's "genre" query parameter.
-// It returns "everything_else" when that parameter equals "everything_else"; otherwise it returns "rock_metal".
+// It returns the matched genre when it is in the allowed set; otherwise it falls back to "rock_metal".
 // If the Referer header is missing or cannot be parsed, "rock_metal" is returned.
 func currentGenreFromRequest(r *http.Request) string {
 	const defaultGenre = "rock_metal"
+
+	allowedGenres := map[string]bool{
+		"rock_metal":      true,
+		"everything_else": true,
+	}
 
 	ref := r.Referer()
 	if ref == "" {
@@ -89,7 +94,7 @@ func currentGenreFromRequest(r *http.Request) string {
 	}
 
 	genre := parsed.Query().Get("genre")
-	if genre == "everything_else" {
+	if genre != "" && allowedGenres[genre] {
 		return genre
 	}
 
