@@ -3,7 +3,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -232,14 +231,7 @@ func (h *Handler) batchSnapshotLocked(batch *batchProgress) batchProgressSnapsho
 
 func (h *Handler) patchBatchRefreshState(e *core.RequestEvent, snapshot batchProgressSnapshot) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	payload := fmt.Appendf(
-		nil,
-		`{"batchID":%q,"batchTotal":%d,"batchCompleted":%d,"batchDone":%t}`,
-		snapshot.ID,
-		snapshot.Total,
-		snapshot.Completed,
-		snapshot.Done,
-	)
+	payload := formatBatchSignal(snapshot.ID, snapshot.Total, snapshot.Completed, snapshot.Done)
 	if err := sse.PatchSignals(payload); err != nil {
 		return err
 	}

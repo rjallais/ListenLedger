@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 
@@ -28,14 +27,7 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 	sse := datastar.NewSSE(w, r, sseStreamOpts...)
 
 	if snapshot, ok := h.getLatestBatchSnapshot(); ok {
-		payload := fmt.Appendf(
-			nil,
-			`{"batchID":%q,"batchTotal":%d,"batchCompleted":%d,"batchDone":%t}`,
-			snapshot.ID,
-			snapshot.Total,
-			snapshot.Completed,
-			snapshot.Done,
-		)
+		payload := formatBatchSignal(snapshot.ID, snapshot.Total, snapshot.Completed, snapshot.Done)
 		if err := sse.PatchSignals(payload); err != nil {
 			return err
 		}

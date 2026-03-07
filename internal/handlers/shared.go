@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -51,6 +52,17 @@ func renderTempl(e *core.RequestEvent, component templ.Component) error {
 func renderDatastar(e *core.RequestEvent, c templ.Component) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
 	return sse.PatchElementTempl(c)
+}
+
+func formatBatchSignal(id string, total, completed int, done bool) []byte {
+	return fmt.Appendf(
+		nil,
+		`{"batchID":%q,"batchTotal":%d,"batchCompleted":%d,"batchDone":%t}`,
+		id,
+		total,
+		completed,
+		done,
+	)
 }
 
 func wantsJSONResponse(r *http.Request) bool {
