@@ -319,9 +319,10 @@ func (h *Handler) sortRecentSongEntries(entries []songListEntry) {
 		if left.song.BatchSeq != right.song.BatchSeq {
 			return left.song.BatchSeq > right.song.BatchSeq
 		}
-		// Within each batch, older insertions stay longer in the playlist.
+		// Within each batch, older insertions keep higher positions and stay
+		// longer in the playlist.
 		if left.song.BatchPos != right.song.BatchPos {
-			return left.song.BatchPos < right.song.BatchPos
+			return left.song.BatchPos > right.song.BatchPos
 		}
 		if !left.createdAt.Equal(right.createdAt) {
 			return left.createdAt.Before(right.createdAt)
@@ -386,7 +387,7 @@ func (h *Handler) sortPlaylistEntries(entries []songListEntry, playlistSort stri
 				return left.song.BatchSeq > right.song.BatchSeq
 			}
 			if left.song.BatchPos != right.song.BatchPos {
-				return left.song.BatchPos > right.song.BatchPos
+				return left.song.BatchPos < right.song.BatchPos
 			}
 			if !left.createdAt.Equal(right.createdAt) {
 				return left.createdAt.After(right.createdAt)
@@ -503,9 +504,14 @@ func (h *Handler) nextRecentBatchAssignment(now time.Time) (int, int, error) {
 		return 0, 0, err
 	}
 
+	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now)
+	return seq, pos, nil
+}
+
+func nextRecentBatchAssignmentFromEntries(entries []songListEntry, now time.Time) (int, int) {
 	maxSeq := 0
 	maxSeqCount := 0
-	maxSeqMaxPos := 0
+	maxSeqMinPos := songsRecentBatchSize + 1
 	latestInMaxSeq := time.Time{}
 
 	for _, entry := range entries {
@@ -521,15 +527,15 @@ func (h *Handler) nextRecentBatchAssignment(now time.Time) (int, int, error) {
 		if seq > maxSeq {
 			maxSeq = seq
 			maxSeqCount = 1
-			maxSeqMaxPos = max(1, entry.song.BatchPos)
+			maxSeqMinPos = clampRecentBatchPos(entry.song.BatchPos)
 			latestInMaxSeq = entry.createdAt
 			continue
 		}
 
 		if seq == maxSeq {
 			maxSeqCount++
-			if entry.song.BatchPos > maxSeqMaxPos {
-				maxSeqMaxPos = entry.song.BatchPos
+			if pos := clampRecentBatchPos(entry.song.BatchPos); pos < maxSeqMinPos {
+				maxSeqMinPos = pos
 			}
 			if entry.createdAt.After(latestInMaxSeq) {
 				latestInMaxSeq = entry.createdAt
@@ -538,21 +544,32 @@ func (h *Handler) nextRecentBatchAssignment(now time.Time) (int, int, error) {
 	}
 
 	if maxSeq == 0 {
-		return 1, 1, nil
+		return 1, songsRecentBatchSize
 	}
-	if maxSeqCount >= songsRecentBatchSize || maxSeqMaxPos >= songsRecentBatchSize {
-		return maxSeq + 1, 1, nil
+	if maxSeqCount >= songsRecentBatchSize || maxSeqMinPos <= 1 {
+		return maxSeq + 1, songsRecentBatchSize
 	}
 	if !latestInMaxSeq.IsZero() && now.Sub(latestInMaxSeq) >= songsRecentBatchWindow {
-		return maxSeq + 1, 1, nil
+		return maxSeq + 1, songsRecentBatchSize
 	}
 
-	nextPos := maxSeqMaxPos + 1
-	if nextPos > songsRecentBatchSize {
-		return maxSeq + 1, 1, nil
+	nextPos := maxSeqMinPos - 1
+	if nextPos < 1 {
+		return maxSeq + 1, songsRecentBatchSize
 	}
 
-	return maxSeq, nextPos, nil
+	return maxSeq, nextPos
+}
+
+func clampRecentBatchPos(pos int) int {
+	switch {
+	case pos < 1:
+		return songsRecentBatchSize
+	case pos > songsRecentBatchSize:
+		return songsRecentBatchSize
+	default:
+		return pos
+	}
 }
 
 // inferArtistNameFromSpotifyID resolves an artist name from a Spotify ID.
