@@ -359,7 +359,7 @@ func (h *Handler) sortNotRecentSongEntries(entries []songListEntry) {
 	})
 }
 
-func (h *Handler) sortCurrentPlaylistEntries(entries []songListEntry, playlistSort string) {
+func (h *Handler) sortPlaylistEntries(entries []songListEntry, playlistSort string) {
 	switch normalizePlaylistSort(playlistSort) {
 	case playlistSortReleaseAsc:
 		sort.SliceStable(entries, func(i, j int) bool {
@@ -423,21 +423,27 @@ func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
 	}
 
 	currentPlaylistEntries := make([]songListEntry, 0, currentCount)
-	waitingRemoval := make([]templates.Song, 0)
+	waitingRemovalEntries := make([]songListEntry, 0, max(0, len(recent)-songsCurrentPlaylistSize))
 
 	for i, entry := range recent {
 		if i < songsCurrentPlaylistSize {
 			currentPlaylistEntries = append(currentPlaylistEntries, entry)
 			continue
 		}
-		waitingRemoval = append(waitingRemoval, entry.song)
+		waitingRemovalEntries = append(waitingRemovalEntries, entry)
 	}
 
-	h.sortCurrentPlaylistEntries(currentPlaylistEntries, playlistSort)
+	h.sortPlaylistEntries(currentPlaylistEntries, playlistSort)
+	h.sortPlaylistEntries(waitingRemovalEntries, playlistSort)
 
 	currentPlaylist := make([]templates.Song, 0, len(currentPlaylistEntries))
 	for _, entry := range currentPlaylistEntries {
 		currentPlaylist = append(currentPlaylist, entry.song)
+	}
+
+	waitingRemoval := make([]templates.Song, 0, len(waitingRemovalEntries))
+	for _, entry := range waitingRemovalEntries {
+		waitingRemoval = append(waitingRemoval, entry.song)
 	}
 
 	return songPageData{

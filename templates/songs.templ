@@ -31,6 +31,7 @@ templ SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentC
 				<span>{ fmt.Sprintf("Older recent songs (%d)", len(waitingRemovalSongs)) }</span>
 			</div>
 			<div class="collapse-content">
+				@SongSortControls(playlistSort)
 				@SongSectionTable("songs-waiting-removal", waitingRemovalSongs, playlistSort)
 			</div>
 		</div>
@@ -69,23 +70,27 @@ templ CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) {
 			<span>{ fmt.Sprintf("Newest 500 (%d)", len(currentPlaylistSongs)) }</span>
 		</div>
 		<div class="collapse-content">
-			<div class="flex flex-wrap items-center gap-2 mb-4">
-				<span class="text-sm opacity-70">Sort by:</span>
-				<button
-					class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == "added_desc"), templ.KV("btn-outline", playlistSort != "added_desc") }
-					data-on:click="@get('/api/songs/sections?playlist_sort=added_desc')"
-				>
-					Most Recently Added
-				</button>
-				<button
-					class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == "release_asc"), templ.KV("btn-outline", playlistSort != "release_asc") }
-					data-on:click="@get('/api/songs/sections?playlist_sort=release_asc')"
-				>
-					Release Date (Oldest First)
-				</button>
-			</div>
+			@SongSortControls(playlistSort)
 			@SongSectionTable("songs-current", currentPlaylistSongs, playlistSort)
 		</div>
+	</div>
+}
+
+templ SongSortControls(playlistSort string) {
+	<div class="flex flex-wrap items-center gap-2 mb-4">
+		<span class="text-sm opacity-70">Sort by:</span>
+		<button
+			class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == "added_desc"), templ.KV("btn-outline", playlistSort != "added_desc") }
+			data-on:click="@get('/api/songs/sections?playlist_sort=added_desc')"
+		>
+			Most Recently Added
+		</button>
+		<button
+			class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == "release_asc"), templ.KV("btn-outline", playlistSort != "release_asc") }
+			data-on:click="@get('/api/songs/sections?playlist_sort=release_asc')"
+		>
+			Release Date (Oldest First)
+		</button>
 	</div>
 }
 
