@@ -407,7 +407,7 @@ func (h *Handler) sortWaitingRemovalEntries(entries []songListEntry, playlistSor
 				return left.releaseDate.Before(right.releaseDate)
 			}
 			if left.song.BatchSeq != right.song.BatchSeq {
-				return left.song.BatchSeq > right.song.BatchSeq
+				return left.song.BatchSeq < right.song.BatchSeq
 			}
 			if left.song.BatchPos != right.song.BatchPos {
 				return left.song.BatchPos < right.song.BatchPos
@@ -422,7 +422,7 @@ func (h *Handler) sortWaitingRemovalEntries(entries []songListEntry, playlistSor
 			left := entries[i]
 			right := entries[j]
 			if left.song.BatchSeq != right.song.BatchSeq {
-				return left.song.BatchSeq > right.song.BatchSeq
+				return left.song.BatchSeq < right.song.BatchSeq
 			}
 			if left.song.BatchPos != right.song.BatchPos {
 				return left.song.BatchPos < right.song.BatchPos

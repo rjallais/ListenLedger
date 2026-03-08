@@ -96,10 +96,48 @@ func TestSongBatchSortingFollowsCountdownPositions(t *testing.T) {
 	waitingRemovalOrdered := append([]songListEntry(nil), entries...)
 	h.sortWaitingRemovalEntries(waitingRemovalOrdered, playlistSortAddedDesc)
 	if waitingRemovalOrdered[0].song.ID != "newest" || waitingRemovalOrdered[1].song.ID != "middle" || waitingRemovalOrdered[2].song.ID != "oldest" {
-		t.Fatalf("sortWaitingRemovalEntries(added_desc) order = [%s %s %s], want [newest middle oldest]",
+		t.Fatalf("sortWaitingRemovalEntries(single batch) order = [%s %s %s], want [newest middle oldest]",
 			waitingRemovalOrdered[0].song.ID,
 			waitingRemovalOrdered[1].song.ID,
 			waitingRemovalOrdered[2].song.ID,
+		)
+	}
+}
+
+func TestWaitingRemovalSortingUsesLowestBatchAndPositionFirst(t *testing.T) {
+	now := time.Now()
+	entries := []songListEntry{
+		{
+			song:      templates.Song{ID: "batch2-pos2", BatchSeq: 2, BatchPos: 2},
+			createdAt: now.Add(-1 * time.Hour),
+		},
+		{
+			song:      templates.Song{ID: "batch1-pos3", BatchSeq: 1, BatchPos: 3},
+			createdAt: now.Add(-4 * time.Hour),
+		},
+		{
+			song:      templates.Song{ID: "batch1-pos1", BatchSeq: 1, BatchPos: 1},
+			createdAt: now.Add(-5 * time.Hour),
+		},
+		{
+			song:      templates.Song{ID: "batch2-pos1", BatchSeq: 2, BatchPos: 1},
+			createdAt: now.Add(-2 * time.Hour),
+		},
+	}
+
+	h := &Handler{}
+
+	waitingRemovalOrdered := append([]songListEntry(nil), entries...)
+	h.sortWaitingRemovalEntries(waitingRemovalOrdered, playlistSortAddedDesc)
+	if waitingRemovalOrdered[0].song.ID != "batch1-pos1" ||
+		waitingRemovalOrdered[1].song.ID != "batch1-pos3" ||
+		waitingRemovalOrdered[2].song.ID != "batch2-pos1" ||
+		waitingRemovalOrdered[3].song.ID != "batch2-pos2" {
+		t.Fatalf("sortWaitingRemovalEntries(removal order) = [%s %s %s %s], want [batch1-pos1 batch1-pos3 batch2-pos1 batch2-pos2]",
+			waitingRemovalOrdered[0].song.ID,
+			waitingRemovalOrdered[1].song.ID,
+			waitingRemovalOrdered[2].song.ID,
+			waitingRemovalOrdered[3].song.ID,
 		)
 	}
 }
