@@ -92,4 +92,14 @@ func TestSongBatchSortingFollowsCountdownPositions(t *testing.T) {
 			playlistOrdered[2].song.ID,
 		)
 	}
+
+	waitingRemovalOrdered := append([]songListEntry(nil), entries...)
+	h.sortWaitingRemovalEntries(waitingRemovalOrdered, playlistSortAddedDesc)
+	if waitingRemovalOrdered[0].song.ID != "newest" || waitingRemovalOrdered[1].song.ID != "middle" || waitingRemovalOrdered[2].song.ID != "oldest" {
+		t.Fatalf("sortWaitingRemovalEntries(added_desc) order = [%s %s %s], want [newest middle oldest]",
+			waitingRemovalOrdered[0].song.ID,
+			waitingRemovalOrdered[1].song.ID,
+			waitingRemovalOrdered[2].song.ID,
+		)
+	}
 }

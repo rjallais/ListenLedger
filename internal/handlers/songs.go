@@ -397,6 +397,44 @@ func (h *Handler) sortPlaylistEntries(entries []songListEntry, playlistSort stri
 	}
 }
 
+func (h *Handler) sortWaitingRemovalEntries(entries []songListEntry, playlistSort string) {
+	switch normalizePlaylistSort(playlistSort) {
+	case playlistSortReleaseAsc:
+		sort.SliceStable(entries, func(i, j int) bool {
+			left := entries[i]
+			right := entries[j]
+			if !left.releaseDate.Equal(right.releaseDate) {
+				return left.releaseDate.Before(right.releaseDate)
+			}
+			if left.song.BatchSeq != right.song.BatchSeq {
+				return left.song.BatchSeq > right.song.BatchSeq
+			}
+			if left.song.BatchPos != right.song.BatchPos {
+				return left.song.BatchPos < right.song.BatchPos
+			}
+			if !left.createdAt.Equal(right.createdAt) {
+				return left.createdAt.Before(right.createdAt)
+			}
+			return left.song.ID < right.song.ID
+		})
+	default:
+		sort.SliceStable(entries, func(i, j int) bool {
+			left := entries[i]
+			right := entries[j]
+			if left.song.BatchSeq != right.song.BatchSeq {
+				return left.song.BatchSeq > right.song.BatchSeq
+			}
+			if left.song.BatchPos != right.song.BatchPos {
+				return left.song.BatchPos < right.song.BatchPos
+			}
+			if !left.createdAt.Equal(right.createdAt) {
+				return left.createdAt.Before(right.createdAt)
+			}
+			return left.song.ID < right.song.ID
+		})
+	}
+}
+
 func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
 	playlistSort = normalizePlaylistSort(playlistSort)
 
@@ -435,7 +473,7 @@ func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
 	}
 
 	h.sortPlaylistEntries(currentPlaylistEntries, playlistSort)
-	h.sortPlaylistEntries(waitingRemovalEntries, playlistSort)
+	h.sortWaitingRemovalEntries(waitingRemovalEntries, playlistSort)
 
 	currentPlaylist := make([]templates.Song, 0, len(currentPlaylistEntries))
 	for _, entry := range currentPlaylistEntries {
