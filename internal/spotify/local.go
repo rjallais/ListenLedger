@@ -230,7 +230,11 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		if retryErr != nil {
 			return 0, retryErr
 		}
-		return c.fetchViaLocalHeadlessOnce(ctx, retryBrowser, artistID)
+		lb = retryBrowser
+		listeners, retryErr = c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+		if retryErr == nil {
+			return listeners, nil
+		}
 	}
 	if !shouldRetryLocalHeadless(ctx, err) {
 		return 0, err
