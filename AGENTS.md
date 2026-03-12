@@ -6,7 +6,7 @@ Guide for AI agents working in the ListenLedger codebase.
 - Primary app is a Go web dashboard using PocketBase + embedded NATS + Templ + Datastar (SSE). Entry point: `main.go`.
 - Background scraping flow: `/api/refresh/{artistId}` publishes `scrape.request` -> `internal/worker` consumes -> `internal/fetcher` retries -> `internal/spotify` (local headless, Browserless, ScrapingAnt, ScraperAPI, Apify) -> updates PocketBase and publishes `artist.updated` for SSE.
 - Worker architecture: a single durable JetStream consumer feeds a shared Go channel. Each configured provider runs a goroutine pool sized to its concurrency limit (pull-based). Providers pull work as they have capacity — e.g. a provider with 5 slots keeps 5 requests in flight. On quota exhaustion (`spotify.ErrQuotaExhausted`), the provider's entire goroutine pool shuts down; when all providers are exhausted the NATS consumer is drained. NAK-ed messages remain in JetStream for redelivery by surviving providers or after a restart.
-- Standalone utilities: `cmd/update_listeners` (PocketBase + chromedp bulk refresh with priority ordering) and `cmd/safebackup` (VACUUM INTO SQLite backups).
+- Standalone utilities: `cmd/update_listeners` (PocketBase + go-rod bulk refresh with priority ordering), `cmd/seed` (CSV seeding for albums/artists/songs), `cmd/backfill_song_artists` (audit/apply missing song artist Spotify IDs with report/review-queue output), and `cmd/safebackup` (VACUUM INTO SQLite backups).
 
 ## Build/Lint/Test Commands
 
@@ -39,16 +39,19 @@ go tool air
 
 # Run standalone utilities
 GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners
+GOEXPERIMENT=jsonv2 go run ./cmd/seed --dry-run
+GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists
 GOEXPERIMENT=jsonv2 go run ./cmd/safebackup
 ```
 
 ## Code Style Guidelines
 
 ### Build Constraint
-Every `.go` file must start with the jsonv2 build constraint:
+Most hand-authored runtime/test `.go` files start with the jsonv2 build constraint:
 ```go
 //go:build goexperiment.jsonv2
 ```
+Exceptions exist for generated Templ output (`templates/*_templ.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
 
 ### Import Ordering
 Group imports in this order with blank lines between groups (matches `goimports` convention):
@@ -124,33 +127,38 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - **PocketBase collections** are created on startup in `main.go` (albums/artists/songs). Schema export lives in `pb_schema.json`.
 - **Artist status fields**: `list_status = included|recently_added|not_added|waiting`, `fetch_status = idle|pending|failed`.
 - **NATS subjects**: `scrape.request` for jobs, `artist.updated` for UI updates (see `internal/worker/worker.go`).
-- **Spotify providers**: local headless (chromedp), Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
+- **Scrape job tracking**: `scrape_jobs` stores queued/processing/succeeded/failed attempts and powers `/api/queue` plus `/api/queue/retry` (see `migrations/1760500000_scrape_jobs.go`, `internal/handlers/queue.go`, `internal/worker/jobs.go`).
+- **Spotify providers**: local headless (go-rod), Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
 - **SSE UI updates**: `/api/events` uses Datastar fragments from `internal/handlers/handlers.go`.
+- **Batch refresh UI**: `/api/refresh/batch` creates in-memory progress state in `internal/handlers/batch_progress.go`; completion is driven by `artist.updated` events.
 - **Quota checks**: `/api/quota` in `internal/handlers/handlers.go` calls `internal/quota` (ScrapingAnt usage API, Apify `/v2/users/me/limits` for both USD budget and actor memory; Browserless/ScraperAPI assumed available). The `quota.Checker` struct exposes `ScrapingAntAPIBase`, `ScraperAPIBase`, and `ApifyAPIBase` fields that default to production URLs but can be overridden in unit tests with `httptest.NewServer` URLs. At runtime, `spotify.ErrQuotaExhausted` propagates from provider HTTP responses (401/402/403/429) through `internal/fetcher` (which skips retries on quota errors) to `internal/worker` (which NAKs the message and shuts down the provider pool).
 - **Apify pre-flight guard**: Before the Apify provider pool processes a message, `internal/worker` calls `quota.CheckApify()` to verify USD budget and actor memory availability. If the check fails the message is NAK-ed immediately (returned to JetStream for other providers) and the Apify pool shuts down — avoiding a wasted Actor run that would 402.
 
 ## Developer Workflows
-- Build/run requires the jsonv2 experiment (`//go:build goexperiment.jsonv2` across Go files).
+- Build/run requires the jsonv2 experiment (`//go:build goexperiment.jsonv2` across most runtime/test Go files).
 - Templ: edit `templates/*.templ`, then run `go tool templ generate` to update `templates/*_templ.go`.
 - Tailwind: edit `input.css`, then run `go tool gotailwind -i input.css -o static/styles.css`.
+- PocketBase data dir is resolved by `internal/appdir.ResolveDataDir()`: default `pb_data/`, override with `PB_DATA_DIR` for the web app, `cmd/seed`, and `cmd/update_listeners`.
 - Web app uses `pb_data/` for SQLite and is created on first run; PocketBase admin UI is at `/_/`.
 
 ## Project Conventions & Patterns
-- Provider config is env-based in `config/config.go` (e.g., `BROWSERLESS_TOKEN`, `SCRAPINGANT_TOKEN`, `LOCAL_HEADLESS_ENABLED`, `LOCAL_CHROME_PATH`, `LOCAL_CONCURRENCY`, `MAX_CONCURRENCY`, `MAX_RETRIES`, `LOG_SUCCESSFUL_FETCHES`).
+- Provider config is env-based in `config/config.go` (e.g., `BROWSERLESS_TOKEN`, `SCRAPINGANT_TOKEN`, `SCRAPERAPI_TOKEN`, `APIFY_TOKEN`, `LOCAL_HEADLESS_ENABLED`, `LOCAL_CHROME_PATH`, `LOCAL_CONCURRENCY`, `MAX_CONCURRENCY`, `MAX_RETRIES`, `LOG_SUCCESSFUL_FETCHES`, `PB_DATA_DIR`).
 - Fetch retries use per-request timeouts and exponential backoff (`internal/fetcher/fetcher.go`).
 - UI paging/lazy loading uses HTML fragment endpoints (e.g., `/api/albums/{status}`, `/api/artists/waiting`).
-- CSV seeding is implemented in `seed.go` for `Music - Sheet1.csv` and `Music - Sheet2.csv` (currently commented out in `main.go`).
+- CSV seeding lives in `cmd/seed/main.go` for `Music - Sheet1.csv` and `Music - Sheet2.csv`; use `--dry-run` to inspect creates before writing records.
 
 ## Integration Points
-- External services: Browserless BQL endpoint and ScrapingAnt HTTP API (see `internal/spotify/client.go`).
-- Local scraping uses chromedp with a local Chrome binary (`internal/spotify/local.go`).
-- CLI tooling uses chromedp and assumes a local Chrome path (see `cmd/update_listeners/main.go`).
+- External services: Browserless BQL endpoint, ScrapingAnt HTTP API, ScraperAPI, and Apify Actor runs for listener scraping (see `internal/spotify/client.go` and `internal/spotify/apify.go`).
+- Local scraping uses go-rod with a local Chrome binary or managed Chromium (`internal/spotify/local.go`).
+- CLI tooling uses go-rod plus shared Chrome path resolution (`cmd/update_listeners/main.go`, `internal/chrome/path.go`).
+- Song artist backfill queries MusicBrainz and Deezer track metadata (`internal/songbackfill/backfill.go`, `cmd/backfill_song_artists/main.go`).
 
 ## Gotchas
 - Always build/run with `GOEXPERIMENT=jsonv2` or imports of `encoding/json/v2` fail.
 - Do not edit `templates/*_templ.go` directly; regenerate from `.templ` sources.
 - `static/styles.css` is generated; regenerate after CSS changes.
-- Local headless scraping needs a Chrome binary; set `LOCAL_HEADLESS_ENABLED=false` or `LOCAL_CHROME_PATH` if not found.
+- Local headless scraping uses go-rod and may fall back to downloading/launching Chromium if `LOCAL_CHROME_PATH` is unset; set `LOCAL_HEADLESS_ENABLED=false` to disable it.
+- `cmd/backfill_song_artists` bootstraps PocketBase directly against the data dir; stop the live app first or point `--data-dir` at a backup copy. Dry run is the default; review the generated JSON/CSV report queue before rerunning with `--apply`.
 
 ## Skills
 A skill is a set of local instructions in a `SKILL.md` file.

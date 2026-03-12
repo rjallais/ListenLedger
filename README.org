@@ -87,6 +87,15 @@ GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners --concurrency 5 --headless=tru
 #+begin_src sh
 go run ./cmd/safebackup --db pb_data/data.db --out backups
 #+end_src
+- =cmd/backfill_song_artists=: dry-run-first backfill for songs with empty =artist_spotify_ids=. It uses existing artist records for exact matches, MusicBrainz recording credits as the primary collaborator source, and Deezer track contributors as a fallback when MusicBrainz cannot resolve the credit list cleanly.
+  Example:
+#+begin_src sh
+GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --limit 25
+cp -a pb_data /tmp/listenledger-pb-data-copy
+GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --data-dir /tmp/listenledger-pb-data-copy --limit 25
+GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --apply
+#+end_src
+  Review the JSON audit report in =<data-dir>/backfill_reports/= and run =cmd/safebackup= before using =--apply=. Dry-runs now also emit a JSON + CSV review queue for the remaining manual cases in the same =backfill_reports/= directory. If the web app is running, stop it first or dry-run against a copied =pb_data/= directory. MusicBrainz lookups are paced and retried automatically for transient 429/5xx failures, and Deezer is used as a secondary source for collaborator discovery, so full dry-runs are slower but more reliable.
 
 * Troubleshooting
 - =encoding/json/v2= errors: ensure =GOEXPERIMENT=jsonv2=.
