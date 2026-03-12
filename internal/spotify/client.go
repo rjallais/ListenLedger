@@ -90,11 +90,12 @@ type Client struct {
 	localMu sync.Mutex
 
 	// Providers
-	useLocal       atomic.Bool
-	useBrowserless bool
-	useScrapingAnt bool
-	useScraperAPI  bool
-	useApify       bool
+	useLocal          atomic.Bool
+	useDedicatedLocal atomic.Bool
+	useBrowserless    bool
+	useScrapingAnt    bool
+	useScraperAPI     bool
+	useApify          bool
 }
 
 // responseData represents the Browserless/BQL API response structure
