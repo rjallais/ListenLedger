@@ -162,7 +162,7 @@ func (lb *localBrowser) markRetired() {
 func (lb *localBrowser) waitForRetirement(ctx context.Context) {
 	lb.mu.Lock()
 	retireWait := lb.retireWait
-	alreadyDone := retireWait == nil || lb.activePages == 0
+	alreadyDone := retireWait == nil || (lb.retired && lb.activePages == 0)
 	lb.mu.Unlock()
 
 	if alreadyDone {
