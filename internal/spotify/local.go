@@ -209,7 +209,7 @@ func (lb *localBrowser) isAlive(ctx context.Context) bool {
 func (lb *localBrowser) snapshot() *rod.Browser {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	if lb.closed || lb.retired {
+	if lb.closed {
 		return nil
 	}
 	return lb.browser
@@ -225,6 +225,7 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 	if err == nil {
 		return listeners, nil
 	}
+	effectiveErr := err
 	if errors.Is(err, errLocalBrowserRetired) {
 		retryBrowser, retryErr := c.getOrCreateBrowser(ctx)
 		if retryErr != nil {
@@ -235,9 +236,10 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		if retryErr == nil {
 			return listeners, nil
 		}
+		effectiveErr = retryErr
 	}
-	if !shouldRetryLocalHeadless(ctx, err) {
-		return 0, err
+	if !shouldRetryLocalHeadless(ctx, effectiveErr) {
+		return 0, effectiveErr
 	}
 
 	c.recycleBrowser(ctx, lb, fmt.Sprintf("retrying in dedicated mode after timeout for artist=%s", artistID))
@@ -249,7 +251,7 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		return listeners, nil
 	}
 
-	return 0, fmt.Errorf("%w; dedicated mode retry failed: %v", err, retryErr)
+	return 0, fmt.Errorf("%w; dedicated mode retry failed: %v", effectiveErr, retryErr)
 }
 
 func (c *Client) fetchViaDedicatedLocalHeadless(ctx context.Context, artistID string) (int, error) {
