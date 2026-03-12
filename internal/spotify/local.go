@@ -6,8 +6,10 @@ package spotify
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +26,16 @@ type localBrowser struct {
 	browser *rod.Browser
 	mu      sync.Mutex // guards closed/browser fields
 
-	closed bool
+	closed          bool
+	retired         bool
+	activePages     int
+	retireWait      chan struct{}
+	retireCloseOnce sync.Once
 }
+
+var localHTMLReadyPattern = regexp.MustCompile(`(?i)"artistUnion"\s*:|"monthlyListeners"\s*:\s*(?:\d+|null)|\b0\s*monthly listeners\b|[\d,\.]+\s*[mMkK]?\s*monthly listeners`)
+
+var errLocalBrowserRetired = errors.New("local headless: shared browser is retired")
 
 // newLocalBrowser launches a headless Chromium instance and connects go-rod to
 // it. ctx is threaded into the connect call so startup is cancellable.
@@ -70,13 +80,14 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 		return nil, fmt.Errorf("local headless: failed to launch browser: %w", err)
 	}
 
-	browser := rod.New().Context(ctx).ControlURL(controlURL)
+	browser := rod.New().Context(startCtx).ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
 		// Kill the spawned Chrome process so it is not left as a zombie.
 		l.Kill()
 		l.Cleanup()
 		return nil, fmt.Errorf("local headless: failed to connect to browser: %w", err)
 	}
+	browser = browser.Context(context.Background())
 
 	// Honour the config flag — strict TLS by default, opt-in relaxation only.
 	if cfg.LocalIgnoreCertErrors {
@@ -84,7 +95,7 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 	}
 
 	log.Printf("[spotify] Local headless browser connected (go-rod)")
-	return &localBrowser{browser: browser}, nil
+	return &localBrowser{browser: browser, retireWait: make(chan struct{})}, nil
 }
 
 func (lb *localBrowser) Close() {
@@ -101,6 +112,73 @@ func (lb *localBrowser) Close() {
 	if browser != nil {
 		_ = browser.Close()
 	}
+}
+
+func (lb *localBrowser) tryAcquirePage() bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if lb.closed || lb.retired || lb.browser == nil {
+		return false
+	}
+	lb.activePages++
+	return true
+}
+
+func (lb *localBrowser) releasePage() {
+	lb.mu.Lock()
+	if lb.activePages > 0 {
+		lb.activePages--
+	}
+	shouldSignal := lb.retired && lb.activePages == 0
+	retireWait := lb.retireWait
+	lb.mu.Unlock()
+
+	if shouldSignal && retireWait != nil {
+		lb.retireCloseOnce.Do(func() { close(retireWait) })
+	}
+}
+
+func (lb *localBrowser) markRetired() {
+	lb.mu.Lock()
+	if lb.closed || lb.retired {
+		shouldSignal := lb.retired && lb.activePages == 0
+		retireWait := lb.retireWait
+		lb.mu.Unlock()
+		if shouldSignal && retireWait != nil {
+			lb.retireCloseOnce.Do(func() { close(retireWait) })
+		}
+		return
+	}
+	lb.retired = true
+	shouldSignal := lb.activePages == 0
+	retireWait := lb.retireWait
+	lb.mu.Unlock()
+
+	if shouldSignal && retireWait != nil {
+		lb.retireCloseOnce.Do(func() { close(retireWait) })
+	}
+}
+
+func (lb *localBrowser) waitForRetirement(ctx context.Context) {
+	lb.mu.Lock()
+	retireWait := lb.retireWait
+	alreadyDone := retireWait == nil || (lb.retired && lb.activePages == 0)
+	lb.mu.Unlock()
+
+	if alreadyDone {
+		return
+	}
+
+	select {
+	case <-retireWait:
+	case <-ctx.Done():
+	}
+}
+
+func (lb *localBrowser) isRetired() bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.retired
 }
 
 // isAlive reports whether the browser process is still reachable.
@@ -143,6 +221,59 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		return 0, err
 	}
 
+	listeners, err := c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+	if err == nil {
+		return listeners, nil
+	}
+	effectiveErr := err
+	if errors.Is(err, errLocalBrowserRetired) {
+		retryBrowser, retryErr := c.getOrCreateBrowser(ctx)
+		if retryErr != nil {
+			return 0, retryErr
+		}
+		lb = retryBrowser
+		listeners, retryErr = c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+		if retryErr == nil {
+			return listeners, nil
+		}
+		effectiveErr = retryErr
+	}
+	if !shouldRetryLocalHeadless(ctx, effectiveErr) {
+		return 0, fmt.Errorf("local headless: shared-browser fetch failed for artist=%s: %w", artistID, effectiveErr)
+	}
+
+	c.recycleBrowser(ctx, lb, fmt.Sprintf("retrying in dedicated mode after timeout for artist=%s", artistID))
+	log.Printf("[spotify] Local headless: retrying with dedicated browser after shared-browser timeout for artist=%s", artistID)
+
+	listeners, retryErr := c.fetchViaDedicatedLocalHeadless(ctx, artistID)
+	if retryErr == nil {
+		log.Printf("[spotify] Local headless recovered with dedicated browser for artist=%s", artistID)
+		return listeners, nil
+	}
+
+	return 0, errors.Join(
+		fmt.Errorf("local headless: shared-browser fetch failed for artist=%s: %w", artistID, effectiveErr),
+		fmt.Errorf("local headless: dedicated retry failed for artist=%s: %w", artistID, retryErr),
+	)
+
+}
+
+func (c *Client) fetchViaDedicatedLocalHeadless(ctx context.Context, artistID string) (int, error) {
+	lb, err := newLocalBrowser(ctx, c.config)
+	if err != nil {
+		return 0, fmt.Errorf("local headless: failed to launch dedicated browser: %w", err)
+	}
+	defer lb.Close()
+
+	listeners, err := c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+	if err != nil {
+		return 0, fmt.Errorf("local headless: dedicated fetch failed for artist=%s: %w", artistID, err)
+	}
+	return listeners, nil
+
+}
+
+func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser, artistID string) (int, error) {
 	artistURL := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 
 	// Enforce a bounded inner deadline so the local headless interception
@@ -154,6 +285,11 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 
 	// Snapshot the browser pointer under the lock so we never race with Close()
 	// which nils lb.browser. If the browser has already been closed, bail out.
+	if !lb.tryAcquirePage() {
+		return 0, errLocalBrowserRetired
+	}
+	defer lb.releasePage()
+
 	b := lb.snapshot()
 	if b == nil {
 		return 0, fmt.Errorf("local headless: browser was closed before request started")
@@ -188,9 +324,21 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 	}
 
 	// Set up CDP event listener to capture pathfinder API responses.
+	workCtx, stopWork := context.WithCancel(reqCtx)
+	defer stopWork()
+
 	resultChan := make(chan int, 1)
 	var once sync.Once
 	var targetReqs sync.Map
+	deliver := func(listeners int) {
+		once.Do(func() {
+			select {
+			case resultChan <- listeners:
+			default:
+			}
+			stopWork()
+		})
+	}
 
 	go page.EachEvent(
 		func(e *proto.NetworkResponseReceived) {
@@ -199,13 +347,16 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 			}
 		},
 		func(e *proto.NetworkLoadingFinished) {
+			if workCtx.Err() != nil {
+				return
+			}
 			if _, ok := targetReqs.Load(e.RequestID); !ok {
 				return
 			}
 			targetReqs.Delete(e.RequestID)
 
 			go func(reqID proto.NetworkRequestID) {
-				if reqCtx.Err() != nil {
+				if workCtx.Err() != nil {
 					return
 				}
 
@@ -225,15 +376,12 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 					return
 				}
 
-				once.Do(func() {
-					select {
-					case resultChan <- listeners:
-					default:
-					}
-				})
+				deliver(listeners)
 			}(e.RequestID)
 		},
 	)()
+
+	go c.pollLocalHeadlessDOM(workCtx, page, deliver)
 
 	// Navigate to the raw Spotify web player HTML renderer.
 	if err := page.Navigate(artistURL); err != nil {
@@ -250,6 +398,62 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 	}
 }
 
+func (c *Client) pollLocalHeadlessDOM(ctx context.Context, page *rod.Page, deliver func(int)) {
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer ticker.Stop()
+
+	try := func() bool {
+		html, err := page.Timeout(3 * time.Second).HTML()
+		if err != nil {
+			return false
+		}
+
+		listeners, ready, err := parseLocalHTMLMonthlyListeners([]byte(html))
+		if err != nil || !ready {
+			return false
+		}
+
+		deliver(listeners)
+		return true
+	}
+
+	if try() {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if try() {
+				return
+			}
+		}
+	}
+}
+
+func parseLocalHTMLMonthlyListeners(body []byte) (int, bool, error) {
+	html := string(body)
+	if !localHTMLReadyPattern.MatchString(html) {
+		return 0, false, nil
+	}
+
+	listeners, err := parseHTMLMonthlyListeners(body, "local headless dom")
+	if err != nil {
+		return 0, false, err
+	}
+
+	return listeners, true, nil
+}
+
+func shouldRetryLocalHeadless(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
 // getOrCreateBrowser returns the shared browser singleton, creating it if
 // necessary (first call, or after a crash eviction via evictDeadBrowser).
 // Only one goroutine performs the launch at a time; others wait on c.localInit.
@@ -264,10 +468,10 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 		if c.local != nil {
 			candidate := c.local
 			c.localMu.Unlock()
-			if candidate.isAlive(ctx) {
+			if candidate.isAlive(ctx) && !candidate.isRetired() {
 				// Verify the singleton hasn't been swapped while we were probing.
 				c.localMu.Lock()
-				if c.local == candidate {
+				if c.local == candidate && !candidate.isRetired() {
 					c.localMu.Unlock()
 					return candidate, nil
 				}
@@ -285,7 +489,8 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 			}
 			c.localMu.Unlock()
 			if dead != nil {
-				dead.Close()
+				dead.markRetired()
+				c.closeRetiredBrowserAsync(dead, 5*time.Second, "retired shared browser cleanup")
 			}
 			continue
 		}
@@ -346,9 +551,59 @@ func (c *Client) evictDeadBrowser(ctx context.Context, lb *localBrowser) {
 	c.localMu.Unlock()
 
 	if toClose != nil {
-		toClose.Close()
-		log.Printf("[spotify] Local headless: browser process died, will recreate on next request")
+		toClose.markRetired()
+		c.closeRetiredBrowserAsync(toClose, 5*time.Second, "browser process died, will recreate on next request")
 	}
+}
+
+func (c *Client) recycleBrowser(ctx context.Context, lb *localBrowser, reason string) {
+	if lb == nil {
+		return
+	}
+
+	lb.markRetired()
+
+	c.localMu.Lock()
+	var toClose *localBrowser
+	if c.local == lb {
+		toClose = lb
+		c.local = nil
+	}
+	c.localMu.Unlock()
+
+	if toClose != nil {
+		graceTimeout := localBrowserRetireGrace(ctx, 5*time.Second)
+		c.closeRetiredBrowserAsync(toClose, graceTimeout, fmt.Sprintf("recycled browser (%s)", reason))
+	}
+}
+
+func (c *Client) closeRetiredBrowserAsync(lb *localBrowser, grace time.Duration, reason string) {
+	if lb == nil {
+		return
+	}
+
+	go func() {
+		graceCtx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		lb.waitForRetirement(graceCtx)
+		lb.Close()
+		log.Printf("[spotify] Local headless: %s", reason)
+	}()
+}
+
+func localBrowserRetireGrace(ctx context.Context, fallback time.Duration) time.Duration {
+	if ctx == nil {
+		return fallback
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Second
+	}
+	return min(remaining, fallback)
 }
 
 func (c *Client) initLocalHeadless() {
