@@ -2,7 +2,11 @@
 
 package spotify
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 func TestParseLocalHTMLMonthlyListenersNotReady(t *testing.T) {
 	body := []byte(`<html><body><div>Loading artist page...</div></body></html>`)
@@ -46,5 +50,45 @@ func TestParseLocalHTMLMonthlyListenersVisibleText(t *testing.T) {
 	}
 	if listeners != 2400000 {
 		t.Fatalf("parseLocalHTMLMonthlyListeners() listeners = %d, want 2400000", listeners)
+	}
+}
+
+func TestParseLocalHTMLMonthlyListenersZeroListenerPayload(t *testing.T) {
+	body := []byte(`<html><script>{"data":{"artistUnion":{"stats":{"monthlyListeners":null}}}}</script></html>`)
+
+	listeners, ready, err := parseLocalHTMLMonthlyListeners(body)
+	if err != nil {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() error = %v", err)
+	}
+	if !ready {
+		t.Fatal("parseLocalHTMLMonthlyListeners() ready = false, want true")
+	}
+	if listeners != 0 {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() listeners = %d, want 0", listeners)
+	}
+}
+
+func TestParseLocalHTMLMonthlyListenersArtistUnionWithoutStats(t *testing.T) {
+	body := []byte(`<html><script>{"data":{"artistUnion":{"profile":{}}}}</script></html>`)
+
+	listeners, ready, err := parseLocalHTMLMonthlyListeners(body)
+	if err != nil {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() error = %v", err)
+	}
+	if !ready {
+		t.Fatal("parseLocalHTMLMonthlyListeners() ready = false, want true")
+	}
+	if listeners != 0 {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() listeners = %d, want 0", listeners)
+	}
+}
+
+func TestLocalBrowserRetireGraceUsesRemainingDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	grace := localBrowserRetireGrace(ctx, 5*time.Second)
+	if grace <= 0 || grace > 2*time.Second {
+		t.Fatalf("localBrowserRetireGrace() = %s, want within (0, 2s]", grace)
 	}
 }
