@@ -239,7 +239,7 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		effectiveErr = retryErr
 	}
 	if !shouldRetryLocalHeadless(ctx, effectiveErr) {
-		return 0, effectiveErr
+		return 0, fmt.Errorf("local headless: shared-browser fetch failed for artist=%s: %w", artistID, effectiveErr)
 	}
 
 	c.recycleBrowser(ctx, lb, fmt.Sprintf("retrying in dedicated mode after timeout for artist=%s", artistID))
@@ -251,17 +251,26 @@ func (c *Client) fetchViaLocalHeadless(ctx context.Context, artistID string) (in
 		return listeners, nil
 	}
 
-	return 0, fmt.Errorf("%w; dedicated mode retry failed: %v", effectiveErr, retryErr)
+	return 0, errors.Join(
+		fmt.Errorf("local headless: shared-browser fetch failed for artist=%s: %w", artistID, effectiveErr),
+		fmt.Errorf("local headless: dedicated retry failed for artist=%s: %w", artistID, retryErr),
+	)
+
 }
 
 func (c *Client) fetchViaDedicatedLocalHeadless(ctx context.Context, artistID string) (int, error) {
 	lb, err := newLocalBrowser(ctx, c.config)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("local headless: failed to launch dedicated browser: %w", err)
 	}
 	defer lb.Close()
 
-	return c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+	listeners, err := c.fetchViaLocalHeadlessOnce(ctx, lb, artistID)
+	if err != nil {
+		return 0, fmt.Errorf("local headless: dedicated fetch failed for artist=%s: %w", artistID, err)
+	}
+	return listeners, nil
+
 }
 
 func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser, artistID string) (int, error) {
