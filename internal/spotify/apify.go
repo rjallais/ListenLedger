@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -210,14 +211,29 @@ func parseApifyResponse(body []byte) (int, error) {
 		return 0, fmt.Errorf("apify: actor reported error: %s", item.Error)
 	}
 
-	// Prefer the already-parsed integer field.
-	if item.MonthlyListeners > 0 {
-		return item.MonthlyListeners, nil
+	if item.MonthlyListenersRaw != "" {
+		rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+		if err != nil {
+			return 0, err
+		}
+		// Prefer reparsing the raw text ourselves. The actor's numeric field has
+		// occasionally been observed to over-apply the M suffix and inflate values
+		// by 1,000,000. Raw text from the page is the safer source of truth.
+		if item.MonthlyListeners > 0 && item.MonthlyListeners != rawCount {
+			log.Printf(
+				"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+				item.URL,
+				item.MonthlyListeners,
+				rawCount,
+				item.MonthlyListenersRaw,
+			)
+		}
+		return rawCount, nil
 	}
 
-	// Fall back to the raw string field (e.g. "1,234,567 monthly listeners").
-	if item.MonthlyListenersRaw != "" {
-		return parseListenersFromRawText(item.MonthlyListenersRaw)
+	// Fall back to the already-parsed integer field when raw text is absent.
+	if item.MonthlyListeners > 0 {
+		return item.MonthlyListeners, nil
 	}
 
 	return 0, fmt.Errorf("apify: dataset item contained no listener data")
@@ -415,15 +431,36 @@ func parseListenersFromRawText(raw string) (int, error) {
 		return 0, fmt.Errorf("apify: 'monthly listeners' text not found in %q", raw)
 	}
 
-	before, _, ok := strings.Cut(raw, " ")
-	if !ok {
+	match := strings.TrimSpace(raw)
+	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
+	parts := re.FindStringSubmatch(match)
+	if len(parts) == 0 {
 		return 0, fmt.Errorf("apify: unexpected listener text format %q", raw)
 	}
 
-	numberStr := strings.ReplaceAll(before, ",", "")
-	count, err := strconv.Atoi(strings.TrimSpace(numberStr))
-	if err != nil {
-		return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
+	numberStr := strings.ReplaceAll(parts[1], ",", "")
+	multiplierStr := strings.ToUpper(parts[2])
+
+	var count int
+	switch multiplierStr {
+	case "M":
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse M float %q: %w", numberStr, err)
+		}
+		count = int(val * 1000000)
+	case "K":
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse K float %q: %w", numberStr, err)
+		}
+		count = int(val * 1000)
+	default:
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
+		}
+		count = int(val)
 	}
 
 	return count, nil

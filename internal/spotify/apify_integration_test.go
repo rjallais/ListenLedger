@@ -372,6 +372,8 @@ func TestApifyIntegration_parseListenersFromRawText(t *testing.T) {
 		{name: "standard format", raw: "4,567,890 monthly listeners", want: 4567890},
 		{name: "no comma", raw: "42 monthly listeners", want: 42},
 		{name: "mixed case", raw: "1,000 Monthly Listeners", want: 1000},
+		{name: "millions suffix", raw: "2.7M monthly listeners", want: 2700000},
+		{name: "thousands suffix", raw: "804.8K monthly listeners", want: 804800},
 		{name: "empty string", raw: "", wantErr: true},
 		{name: "no monthly listeners phrase", raw: "some other text", wantErr: true},
 		{name: "no leading number", raw: "monthly listeners", wantErr: true},
@@ -387,5 +389,19 @@ func TestApifyIntegration_parseListenersFromRawText(t *testing.T) {
 				t.Errorf("parseListenersFromRawText(%q) = %d, want %d", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestApifyIntegration_parseApifyResponsePrefersRawOverInflatedNumericField(t *testing.T) {
+	t.Parallel()
+
+	body := `[{"url":"https://open.spotify.com/artist/test","monthlyListeners":2745472000000,"monthlyListenersRaw":"2,745,472 monthly listeners"}]`
+
+	got, err := parseApifyResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("parseApifyResponse() error = %v", err)
+	}
+	if got != 2745472 {
+		t.Fatalf("parseApifyResponse() = %d, want 2745472", got)
 	}
 }
