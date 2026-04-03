@@ -205,21 +205,42 @@ func (w *Worker) markStaleJobs() {
 		artistID := job.GetString("artist")
 		requestID := job.GetString("request_id")
 
-		// Re-check the current status to avoid overwriting a job that
-		// completed between our query and this save.
-		if current := job.GetString("status"); current != "processing" {
+		freshJob, refreshErr := w.app.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
+			q.WithContext(w.ctx)
+			return nil
+		})
+		if refreshErr != nil {
+			log.Printf("[worker] Warning: failed to reload stale candidate job %s: %v", job.Id, refreshErr)
 			continue
 		}
 
-		job.Set("status", "failed")
-		job.Set("finished_at", time.Now())
-		job.Set("error", "stale_timeout")
-		if saveErr := w.app.Save(job); saveErr != nil {
+		// Re-check the current status from a fresh read to avoid clobbering a
+		// concurrent completion between the initial query and this update.
+		if current := freshJob.GetString("status"); current != "processing" {
+			continue
+		}
+
+		freshJob.Set("status", "failed")
+		freshJob.Set("finished_at", time.Now())
+		freshJob.Set("error", "stale_timeout")
+		if saveErr := w.app.Save(freshJob); saveErr != nil {
 			log.Printf("[worker] Warning: failed to mark stale job %s as failed: %v", job.Id, saveErr)
 			continue
 		}
 
 		if artistID == "" {
+			continue
+		}
+
+		artist, loadArtistErr := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+			q.WithContext(w.ctx)
+			return nil
+		})
+		if loadArtistErr != nil {
+			log.Printf("[worker] Warning: failed to load artist %s before stale status update: %v", artistID, loadArtistErr)
+			continue
+		}
+		if artist.GetString("fetch_status") != "pending" {
 			continue
 		}
 

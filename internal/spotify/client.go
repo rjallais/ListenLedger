@@ -320,13 +320,15 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 		}
 
 		if c.useLocalBrowserless {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
+			localBrowserlessCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			count, err := c.fetchWithProvider(localBrowserlessCtx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
+			cancel()
 			if err == nil {
 				return count, nil
 			}
 			providerErrors = append(providerErrors, fmt.Sprintf("local-browserless: %v", err))
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
+			if localBrowserlessCtx.Err() != nil {
+				return 0, localBrowserlessCtx.Err()
 			}
 		}
 
@@ -640,7 +642,7 @@ func normalizeLocalBrowserlessEndpoint(raw string) (*url.URL, error) {
 		port := parsed.Port()
 		if port == "" {
 			port = "3001"
-			log.Printf("[spotify] local browserless: no port in %q, defaulting to %s", raw, port)
+			log.Printf("[spotify] local browserless: no port for host=%q, defaulting to port=%s", parsed.Hostname(), port)
 		}
 		parsed.Host = "127.0.0.1:" + port
 	}

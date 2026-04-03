@@ -115,6 +115,7 @@ func TestFetchViaLocalBrowserlessParsesHTMLContent(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.DefaultConfig()
+	cfg.LocalHeadlessEnabled = false
 	cfg.LocalBrowserlessEnabled = true
 	cfg.LocalBrowserlessEndpoint = server.URL + "/chromium/bql"
 	cfg.LocalBrowserlessToken = "listenledger-local"
@@ -150,6 +151,7 @@ func TestFetchViaLocalBrowserlessUnauthorizedIsNotQuotaExhausted(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.DefaultConfig()
+	cfg.LocalHeadlessEnabled = false
 	cfg.LocalBrowserlessEnabled = true
 	cfg.LocalBrowserlessEndpoint = server.URL + "/chromium/content"
 

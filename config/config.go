@@ -358,7 +358,7 @@ func (c *Config) HasLocalHeadless() bool {
 
 // HasLocalBrowserless returns true if self-hosted Browserless is enabled.
 func (c *Config) HasLocalBrowserless() bool {
-	return c.LocalBrowserlessEnabled && c.LocalBrowserlessEndpoint != ""
+	return c.LocalBrowserlessEnabled && strings.TrimSpace(c.LocalBrowserlessEndpoint) != ""
 }
 
 // HasBrowserless returns true if Browserless is configured.

@@ -72,7 +72,7 @@ type apifyDatasetItem struct {
 	// Raw text fallback in case the actor returns a string value.
 	// Error is set by our own pageFunction when it cannot find listener text.
 	Error            string `json:"error,omitzero"`
-	MonthlyListeners int    `json:"monthlyListeners,omitzero"`
+	MonthlyListeners *int   `json:"monthlyListeners,omitzero"`
 	// IsError is the #error sentinel emitted by the Apify framework itself
 	// when the browser/navigation fails before the pageFunction even runs.
 	IsError bool `json:"#error,omitzero"`
@@ -219,11 +219,11 @@ func parseApifyResponse(body []byte) (int, error) {
 		// Prefer reparsing the raw text ourselves. The actor's numeric field has
 		// occasionally been observed to over-apply the M suffix and inflate values
 		// by 1,000,000. Raw text from the page is the safer source of truth.
-		if item.MonthlyListeners > 0 && item.MonthlyListeners != rawCount {
+		if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
 			log.Printf(
 				"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
 				item.URL,
-				item.MonthlyListeners,
+				*item.MonthlyListeners,
 				rawCount,
 				item.MonthlyListenersRaw,
 			)
@@ -232,8 +232,8 @@ func parseApifyResponse(body []byte) (int, error) {
 	}
 
 	// Fall back to the already-parsed integer field when raw text is absent.
-	if item.MonthlyListeners > 0 {
-		return item.MonthlyListeners, nil
+	if item.MonthlyListeners != nil {
+		return *item.MonthlyListeners, nil
 	}
 
 	return 0, fmt.Errorf("apify: dataset item contained no listener data")
@@ -386,11 +386,11 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 				log.Printf("[apify] batch: parse error for artist %s: %v", artistID, err)
 				continue
 			}
-			if item.MonthlyListeners > 0 && item.MonthlyListeners != rawCount {
+			if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
 				log.Printf(
 					"[apify] batch: listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
 					item.URL,
-					item.MonthlyListeners,
+					*item.MonthlyListeners,
 					rawCount,
 					item.MonthlyListenersRaw,
 				)
@@ -399,8 +399,8 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 			continue
 		}
 
-		if item.MonthlyListeners > 0 {
-			results[artistID] = item.MonthlyListeners
+		if item.MonthlyListeners != nil {
+			results[artistID] = *item.MonthlyListeners
 		}
 	}
 
