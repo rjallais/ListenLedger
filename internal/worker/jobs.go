@@ -244,8 +244,9 @@ func (w *Worker) markStaleJobs() {
 			continue
 		}
 
-		if updateErr := w.updateArtistStatus(w.ctx, artistID, "failed"); updateErr != nil {
-			log.Printf("[worker] Warning: failed to update artist %s status to failed: %v", artistID, updateErr)
+		artist.Set("fetch_status", "failed")
+		if saveArtistErr := w.app.Save(artist); saveArtistErr != nil {
+			log.Printf("[worker] Warning: failed to persist artist %s status to failed: %v", artistID, saveArtistErr)
 		}
 
 		log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)

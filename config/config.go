@@ -4,13 +4,13 @@
 package config
 
 import (
-	"ListenLedger/internal/chrome"
-
 	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"ListenLedger/internal/chrome"
 )
 
 // Config holds application configuration

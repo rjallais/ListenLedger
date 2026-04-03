@@ -19,6 +19,8 @@ import (
 	"strings"
 )
 
+var listenersRe = regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
+
 // apifyRunInput is the payload sent to the Apify Actor run endpoint.
 type apifyRunInput struct {
 	StartURLs []apifyURL `json:"startUrls"`
@@ -442,8 +444,7 @@ func parseListenersFromRawText(raw string) (int, error) {
 	}
 
 	match := strings.TrimSpace(raw)
-	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
-	parts := re.FindStringSubmatch(match)
+	parts := listenersRe.FindStringSubmatch(match)
 	if len(parts) == 0 {
 		return 0, fmt.Errorf("apify: unexpected listener text format %q", raw)
 	}
