@@ -465,12 +465,15 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	}
 
 	fourHoursAgo := time.Now().Add(-4 * time.Hour)
+	// Match the PocketBase DateTime format (space-separated, not RFC3339 T-separated)
+	// so SQLite string comparison works correctly.
+	pbCutoff := fourHoursAgo.Format("2006-01-02 15:04:05.000Z")
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
 		"spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})",
 		"-monthly_listeners",
 		0, 0,
-		dbx.Params{"cutoff": fourHoursAgo.Format(time.RFC3339)},
+		dbx.Params{"cutoff": pbCutoff},
 	)
 	if err != nil {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
