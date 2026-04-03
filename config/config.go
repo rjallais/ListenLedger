@@ -60,6 +60,12 @@ type Config struct {
 	// Local headless (go-rod) configuration
 	LocalChromePath string
 
+	// Local Browserless (self-hosted OCI container) configuration
+	LocalBrowserlessEnabled     bool
+	LocalBrowserlessEndpoint    string
+	LocalBrowserlessToken       string
+	LocalBrowserlessConcurrency int
+
 	// Shared behavior configuration
 	MaxConcurrency  int
 	MaxRetries      int
@@ -129,7 +135,17 @@ func DefaultConfig() *Config {
 		// Local headless defaults
 		// Disabled by default on WSL since Linux Chrome is typically not installed and Windows Chrome causes popup windows
 		LocalHeadlessEnabled: !chrome.IsWSL(),
-		LocalConcurrency:     10,
+		LocalConcurrency:     4,
+
+		// Local Browserless (self-hosted) defaults.
+		// Use the open-source Browserless v2 REST content API over IPv4 loopback:
+		// podman often publishes only 127.0.0.1, while "localhost" may resolve to ::1.
+		// Match the token used by the bundled `mise browserless:up` task. Users
+		// running a custom local container can override with
+		// LOCAL_BROWSERLESS_TOKEN or clear it explicitly.
+		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/chromium/content",
+		LocalBrowserlessToken:       "listenledger-local",
+		LocalBrowserlessConcurrency: 4,
 
 		// Shared defaults
 		MaxConcurrency:       1, // Shared external providers that still use MAX_CONCURRENCY.
@@ -254,6 +270,24 @@ func (c *Config) LoadFromEnv() error {
 		}
 	}
 
+	// Local Browserless (self-hosted OCI container) settings
+	if enabledStr := os.Getenv("LOCAL_BROWSERLESS_ENABLED"); enabledStr != "" {
+		if val, err := strconv.ParseBool(enabledStr); err == nil {
+			c.LocalBrowserlessEnabled = val
+		}
+	}
+	if endpoint := os.Getenv("LOCAL_BROWSERLESS_ENDPOINT"); endpoint != "" {
+		c.LocalBrowserlessEndpoint = endpoint
+	}
+	if token := os.Getenv("LOCAL_BROWSERLESS_TOKEN"); token != "" {
+		c.LocalBrowserlessToken = token
+	}
+	if concStr := os.Getenv("LOCAL_BROWSERLESS_CONCURRENCY"); concStr != "" {
+		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
+			c.LocalBrowserlessConcurrency = conc
+		}
+	}
+
 	// Allow overriding shared provider concurrency (used by ScrapingAnt).
 	if concStr := os.Getenv("MAX_CONCURRENCY"); concStr != "" {
 		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
@@ -322,6 +356,11 @@ func (c *Config) HasLocalHeadless() bool {
 	return c.LocalHeadlessEnabled
 }
 
+// HasLocalBrowserless returns true if self-hosted Browserless is enabled.
+func (c *Config) HasLocalBrowserless() bool {
+	return c.LocalBrowserlessEnabled && c.LocalBrowserlessEndpoint != ""
+}
+
 // HasBrowserless returns true if Browserless is configured.
 func (c *Config) HasBrowserless() bool {
 	return c.BrowserlessToken != "" && c.BrowserlessEndpoint != ""
@@ -345,8 +384,8 @@ func (c *Config) HasApify() bool {
 // Validate ensures the configuration is valid
 func (c *Config) Validate() error {
 	// At least one provider must be configured, or local headless must be enabled.
-	if !c.HasLocalHeadless() && c.BrowserlessToken == "" && c.ScrapingAntToken == "" && c.ScraperAPIToken == "" && c.ApifyToken == "" {
-		return errors.New("at least one provider token (BROWSERLESS_TOKEN, SCRAPINGANT_TOKEN, SCRAPERAPI_TOKEN, or APIFY_TOKEN) must be set, or enable local headless")
+	if !c.HasLocalHeadless() && !c.HasLocalBrowserless() && c.BrowserlessToken == "" && c.ScrapingAntToken == "" && c.ScraperAPIToken == "" && c.ApifyToken == "" {
+		return errors.New("at least one provider token (BROWSERLESS_TOKEN, SCRAPINGANT_TOKEN, SCRAPERAPI_TOKEN, or APIFY_TOKEN) must be set, or enable local headless/self-hosted browserless")
 	}
 	if c.MaxConcurrency <= 0 {
 		return errors.New("max concurrency must be positive")
@@ -362,6 +401,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ScraperAPIConcurrency <= 0 {
 		return errors.New("scraperapi concurrency must be positive")
+	}
+	if c.HasLocalBrowserless() && c.LocalBrowserlessConcurrency <= 0 {
+		return errors.New("local browserless concurrency must be positive")
 	}
 	return nil
 }
