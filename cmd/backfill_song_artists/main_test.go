@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,21 +124,21 @@ func TestBuildSummaryCountsNameOnlyUpdatesAsCandidates(t *testing.T) {
 func TestFetchTidalAccessTokenUsesClientCredentials(t *testing.T) {
 	t.Parallel()
 
+	handlerErrors := make(chan string, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			t.Fatalf("Method = %s, want POST", r.Method)
+			handlerErrors <- fmt.Sprintf("Method = %s, want POST", r.Method)
 		}
 		if got := r.Header.Get("Authorization"); got != "Basic "+base64.StdEncoding.EncodeToString([]byte("client-id:client-secret")) {
-			t.Fatalf("Authorization = %q", got)
+			handlerErrors <- fmt.Sprintf("Authorization = %q", got)
 		}
 		if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/x-www-form-urlencoded") {
-			t.Fatalf("Content-Type = %q", got)
+			handlerErrors <- fmt.Sprintf("Content-Type = %q", got)
 		}
 		if err := r.ParseForm(); err != nil {
-			t.Fatalf("ParseForm() error = %v", err)
-		}
-		if got := r.Form.Get("grant_type"); got != "client_credentials" {
-			t.Fatalf("grant_type = %q", got)
+			handlerErrors <- fmt.Sprintf("ParseForm() error = %v", err)
+		} else if got := r.Form.Get("grant_type"); got != "client_credentials" {
+			handlerErrors <- fmt.Sprintf("grant_type = %q", got)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "token-123",
@@ -153,5 +154,10 @@ func TestFetchTidalAccessTokenUsesClientCredentials(t *testing.T) {
 	}
 	if token != "token-123" {
 		t.Fatalf("fetchTidalAccessToken() = %q, want token-123", token)
+	}
+
+	close(handlerErrors)
+	for handlerErr := range handlerErrors {
+		t.Errorf("handler validation failed: %s", handlerErr)
 	}
 }

@@ -98,3 +98,58 @@ func TestBuildReviewItemCategorizesBorderlineTidalPrefill(t *testing.T) {
 		t.Fatalf("Category = %q, want ambiguous_tidal_prefill", item.Category)
 	}
 }
+
+func TestSelectCandidateForReviewMatchesCanonicalFilterNote(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		note string
+	}{
+		{
+			name: "canonical variant filtering",
+			note: `selected "Spaceship" from musicbrainz with confidence 0.95 after canonical variant filtering`,
+		},
+		{
+			name: "featured-track canonical filtering",
+			note: `selected "Spaceship" from deezer_track with confidence 0.88 after featured-track canonical filtering`,
+		},
+		{
+			name: "corroboration suffix",
+			note: `selected "Spaceship" from tidal_track with confidence 0.90 after corroboration from 2 sources`,
+		},
+		{
+			name: "plain (no suffix)",
+			note: `selected "Spaceship" from musicbrainz with confidence 0.95`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolution := songbackfill.Resolution{
+				Action: songbackfill.ActionSkipUnresolved,
+				ExternalCandidates: []songbackfill.CandidateSummary{
+					{Source: "wrong_source", Title: "Wrong", Confidence: 0.99},
+					{Source: "musicbrainz", Title: "Spaceship", Confidence: 0.95},
+					{Source: "deezer_track", Title: "Spaceship", Confidence: 0.88},
+					{Source: "tidal_track", Title: "Spaceship", Confidence: 0.90},
+				},
+				Notes: []string{tt.note},
+			}
+
+			got := selectCandidateForReview(resolution)
+			if got == nil {
+				t.Fatalf("selectCandidateForReview() returned nil")
+			}
+			if got.Title != "Spaceship" {
+				t.Fatalf("selectCandidateForReview().Title = %q, want Spaceship", got.Title)
+			}
+			if got.Source == "wrong_source" {
+				t.Fatalf("selectCandidateForReview() picked wrong_source instead of the resolver-chosen candidate")
+			}
+		})
+	}
+}
+

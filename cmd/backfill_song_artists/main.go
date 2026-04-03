@@ -1,5 +1,9 @@
 //go:build goexperiment.jsonv2
 
+// Command backfill_song_artists audits songs with empty artist_spotify_ids and
+// resolves multi-artist credits using MusicBrainz, Deezer, and optionally TIDAL
+// as external sources. By default it performs a dry-run that emits a JSON report
+// and a CSV review queue; rerun with --apply after review to persist updates.
 package main
 
 import (
@@ -100,10 +104,6 @@ func main() {
 		log.Fatalf("[backfill_song_artists] failed to load artists: %v", err)
 	}
 
-	if *limit > 0 && len(songs) > *limit {
-		songs = songs[:*limit]
-	}
-
 	if *retryFromLatestReport {
 		if plannedSongs, latestReportPath, err := planSongsFromLatestReport(*reportDir, songs); err != nil {
 			log.Printf("[backfill_song_artists] warning: failed to use latest report for retry planning: %v", err)
@@ -111,6 +111,10 @@ func main() {
 			songs = plannedSongs
 			log.Printf("[backfill_song_artists] prioritized %d songs using latest report %s", len(songs), latestReportPath)
 		}
+	}
+
+	if *limit > 0 && len(songs) > *limit {
+		songs = songs[:*limit]
 	}
 
 	log.Printf("[backfill_song_artists] loaded %d songs with empty artist_spotify_ids and %d artists with spotify_id", len(songs), len(artists))

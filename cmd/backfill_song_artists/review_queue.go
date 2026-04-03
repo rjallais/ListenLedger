@@ -20,7 +20,7 @@ import (
 
 var (
 	missingArtistNotePattern   = regexp.MustCompile(`^artist "(.+)" did not match an existing artist record$`)
-	selectedCandidateNoteMatch = regexp.MustCompile(`^selected "(.+)" from ([^ ]+) with confidence [0-9.]+(?: after corroboration from [0-9]+ sources)?$`)
+	selectedCandidateNoteMatch = regexp.MustCompile(`^selected "(.+)" from ([^ ]+) with confidence [0-9.]+(?:\s.*)?$`)
 )
 
 type reviewQueue struct {
@@ -358,6 +358,7 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 	if err := writer.Write([]string{
 		"priority",
 		"category",
+		"song_id",
 		"title",
 		"original_artist_name",
 		"release_date",
@@ -374,6 +375,7 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 		if err := writer.Write([]string{
 			fmt.Sprintf("%d", item.Priority),
 			item.Category,
+			item.SongID,
 			item.Title,
 			item.OriginalArtistName,
 			item.ReleaseDate,
