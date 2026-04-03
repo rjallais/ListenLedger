@@ -198,8 +198,8 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 		if err != nil {
 			continue
 		}
+		roundedParsed := math.Round(parsedConf*100) / 100
 		for _, candidate := range resolution.ExternalCandidates {
-			roundedParsed := math.Round(parsedConf*100) / 100
 			roundedCand := math.Round(candidate.Confidence*100) / 100
 			if candidate.Source == source && candidate.Title == title && roundedCand == roundedParsed {
 				selected := candidate
@@ -360,7 +360,6 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = file.Close() }()
 
 	writer := csv.NewWriter(file)
 
@@ -377,6 +376,7 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 		"recommended_action",
 		"notes",
 	}); err != nil {
+		_ = file.Close()
 		return err
 	}
 
@@ -394,12 +394,17 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 			item.RecommendedAction,
 			strings.Join(item.Notes, " | "),
 		}); err != nil {
+			_ = file.Close()
 			return err
 		}
 	}
 
 	writer.Flush()
-	return writer.Error()
+	if err := writer.Error(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func formatSuggestionList(suggestions []reviewArtistSuggestion) string {
