@@ -5,6 +5,7 @@ package spotify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -85,19 +86,28 @@ func TestDefaultConfigSetsLocalBrowserlessToken(t *testing.T) {
 func TestFetchViaLocalBrowserlessParsesHTMLContent(t *testing.T) {
 	t.Parallel()
 
+	handlerErrs := make(chan string, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Path; got != "/chromium/content" {
-			t.Fatalf("request path = %q, want /chromium/content", got)
+			handlerErrs <- fmt.Sprintf("request path = %q, want /chromium/content", got)
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
 		}
 		if got := r.URL.Query().Get("token"); got != "listenledger-local" {
-			t.Fatalf("token query = %q, want listenledger-local", got)
+			handlerErrs <- fmt.Sprintf("token query = %q, want listenledger-local", got)
+			http.Error(w, "bad token", http.StatusBadRequest)
+			return
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("ReadAll() error = %v", err)
+			handlerErrs <- fmt.Sprintf("ReadAll() error = %v", err)
+			http.Error(w, "read error", http.StatusInternalServerError)
+			return
 		}
 		if len(body) == 0 {
-			t.Fatal("expected non-empty request body")
+			handlerErrs <- "expected non-empty request body"
+			http.Error(w, "empty body", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, `<html><body><span>2,345,678 monthly listeners</span></body></html>`)
@@ -116,6 +126,13 @@ func TestFetchViaLocalBrowserlessParsesHTMLContent(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	got, err := client.fetchViaLocalBrowserless(context.Background(), "artist-1")
+
+	// Check handler errors after fetchViaLocalBrowserless returns.
+	close(handlerErrs)
+	for herr := range handlerErrs {
+		t.Fatalf("handler error: %s", herr)
+	}
+
 	if err != nil {
 		t.Fatalf("fetchViaLocalBrowserless() error = %v", err)
 	}

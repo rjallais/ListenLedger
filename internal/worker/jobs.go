@@ -180,7 +180,7 @@ func (w *Worker) sweepStaleJobs() {
 }
 
 func (w *Worker) markStaleJobs() {
-	cutoff := time.Now().Add(-staleJobThreshold).Format(time.RFC3339)
+	cutoff := time.Now().UTC().Add(-staleJobThreshold).Format("2006-01-02 15:04:05.000Z")
 
 	records, err := w.app.FindRecordsByFilter(
 		"scrape_jobs",
@@ -204,6 +204,12 @@ func (w *Worker) markStaleJobs() {
 	for _, job := range records {
 		artistID := job.GetString("artist")
 		requestID := job.GetString("request_id")
+
+		// Re-check the current status to avoid overwriting a job that
+		// completed between our query and this save.
+		if current := job.GetString("status"); current != "processing" {
+			continue
+		}
 
 		job.Set("status", "failed")
 		job.Set("finished_at", time.Now())

@@ -380,17 +380,27 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 			continue
 		}
 
-		if item.MonthlyListeners > 0 {
-			results[artistID] = item.MonthlyListeners
+		if item.MonthlyListenersRaw != "" {
+			rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+			if err != nil {
+				log.Printf("[apify] batch: parse error for artist %s: %v", artistID, err)
+				continue
+			}
+			if item.MonthlyListeners > 0 && item.MonthlyListeners != rawCount {
+				log.Printf(
+					"[apify] batch: listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+					item.URL,
+					item.MonthlyListeners,
+					rawCount,
+					item.MonthlyListenersRaw,
+				)
+			}
+			results[artistID] = rawCount
 			continue
 		}
 
-		if item.MonthlyListenersRaw != "" {
-			if count, err := parseListenersFromRawText(item.MonthlyListenersRaw); err == nil {
-				results[artistID] = count
-			} else {
-				log.Printf("[apify] batch: parse error for artist %s: %v", artistID, err)
-			}
+		if item.MonthlyListeners > 0 {
+			results[artistID] = item.MonthlyListeners
 		}
 	}
 

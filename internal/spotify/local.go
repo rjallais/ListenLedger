@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -411,6 +412,7 @@ func (c *Client) pollLocalHeadlessDOM(ctx context.Context, page *rod.Page, deliv
 		// Recover from panic if page is closed while we're accessing it
 		defer func() {
 			if r := recover(); r != nil {
+				log.Printf("[spotify] local headless DOM poll: recovered panic while accessing page: %v\n%s", r, debug.Stack())
 				success = false
 			}
 		}()

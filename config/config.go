@@ -279,7 +279,7 @@ func (c *Config) LoadFromEnv() error {
 	if endpoint := os.Getenv("LOCAL_BROWSERLESS_ENDPOINT"); endpoint != "" {
 		c.LocalBrowserlessEndpoint = endpoint
 	}
-	if token := os.Getenv("LOCAL_BROWSERLESS_TOKEN"); token != "" {
+	if token, ok := os.LookupEnv("LOCAL_BROWSERLESS_TOKEN"); ok {
 		c.LocalBrowserlessToken = token
 	}
 	if concStr := os.Getenv("LOCAL_BROWSERLESS_CONCURRENCY"); concStr != "" {

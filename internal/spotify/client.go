@@ -218,9 +218,15 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		Timeout:   340 * time.Second,
 	}
 
+	// Local Browserless HTTP client. The worker context timeout
+	// (ProviderLocalBrowserless) controls the effective deadline;
+	// this client timeout is just a safety net.
 	localBrowserlessTimeout := cfg.HTTPTimeout
-	if localBrowserlessTimeout < 70*time.Second {
-		localBrowserlessTimeout = 70 * time.Second
+	if localBrowserlessTimeout > 60*time.Second {
+		localBrowserlessTimeout = 60 * time.Second
+	}
+	if localBrowserlessTimeout < 30*time.Second {
+		localBrowserlessTimeout = 30 * time.Second
 	}
 	httpClientLocalBrowserless := &http.Client{
 		Transport: transport,
@@ -634,6 +640,7 @@ func normalizeLocalBrowserlessEndpoint(raw string) (*url.URL, error) {
 		port := parsed.Port()
 		if port == "" {
 			port = "3001"
+			log.Printf("[spotify] local browserless: no port in %q, defaulting to %s", raw, port)
 		}
 		parsed.Host = "127.0.0.1:" + port
 	}
