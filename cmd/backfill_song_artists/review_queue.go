@@ -199,7 +199,9 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 			continue
 		}
 		for _, candidate := range resolution.ExternalCandidates {
-			if candidate.Source == source && candidate.Title == title && math.Abs(candidate.Confidence-parsedConf) < 0.005 {
+			roundedParsed := math.Round(parsedConf*100) / 100
+			roundedCand := math.Round(candidate.Confidence*100) / 100
+			if candidate.Source == source && candidate.Title == title && roundedCand == roundedParsed {
 				selected := candidate
 				return &selected
 			}
@@ -361,7 +363,6 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 	defer func() { _ = file.Close() }()
 
 	writer := csv.NewWriter(file)
-	defer writer.Flush()
 
 	if err := writer.Write([]string{
 		"priority",
@@ -397,6 +398,7 @@ func writeReviewQueueCSV(path string, queue reviewQueue) error {
 		}
 	}
 
+	writer.Flush()
 	return writer.Error()
 }
 
