@@ -314,6 +314,8 @@ func (w *Worker) Start() {
 	go w.watchAllGroups()
 	w.wg.Add(1)
 	go w.metricsReporter()
+	w.wg.Add(1)
+	go w.sweepStaleJobs()
 
 	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
 }

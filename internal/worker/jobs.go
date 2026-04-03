@@ -155,3 +155,72 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 		}
 	}
 }
+
+const staleJobThreshold = 5 * time.Minute
+const staleJobSweepInterval = 30 * time.Second
+
+// sweepStaleJobs periodically marks scrape jobs that have been "processing"
+// for longer than staleJobThreshold as "failed" with a "stale_timeout" error.
+// It also updates the associated artist's fetch_status to "failed" so that
+// batch progress tracking can count it as completed.
+func (w *Worker) sweepStaleJobs() {
+	defer w.wg.Done()
+
+	ticker := time.NewTicker(staleJobSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-ticker.C:
+			w.markStaleJobs()
+		}
+	}
+}
+
+func (w *Worker) markStaleJobs() {
+	cutoff := time.Now().Add(-staleJobThreshold).Format(time.RFC3339)
+
+	records, err := w.app.FindRecordsByFilter(
+		"scrape_jobs",
+		"status = {:status} && started_at < {:cutoff}",
+		"",
+		50,
+		0,
+		dbx.Params{"status": "processing", "cutoff": cutoff},
+	)
+	if err != nil {
+		log.Printf("[worker] Warning: failed to query stale scrape jobs: %v", err)
+		return
+	}
+
+	if len(records) == 0 {
+		return
+	}
+
+	log.Printf("[worker] Sweeping %d stale scrape job(s) older than %s", len(records), staleJobThreshold)
+
+	for _, job := range records {
+		artistID := job.GetString("artist")
+		requestID := job.GetString("request_id")
+
+		job.Set("status", "failed")
+		job.Set("finished_at", time.Now())
+		job.Set("error", "stale_timeout")
+		if saveErr := w.app.Save(job); saveErr != nil {
+			log.Printf("[worker] Warning: failed to mark stale job %s as failed: %v", job.Id, saveErr)
+			continue
+		}
+
+		if artistID == "" {
+			continue
+		}
+
+		if updateErr := w.updateArtistStatus(w.ctx, artistID, "failed"); updateErr != nil {
+			log.Printf("[worker] Warning: failed to update artist %s status to failed: %v", artistID, updateErr)
+		}
+
+		log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
+	}
+}
