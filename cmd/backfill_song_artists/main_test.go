@@ -82,7 +82,7 @@ func TestPrioritizeSongsForRetryOrdersLikelyResolvableFirst(t *testing.T) {
 	}
 
 	gotIDs := []string{got[0].ID, got[1].ID, got[2].ID, got[3].ID, got[4].ID}
-	wantIDs := []string{"new", "missing", "mismatch", "ambiguous", "manual"}
+	wantIDs := []string{"missing", "mismatch", "new", "ambiguous", "manual"}
 	for i := range wantIDs {
 		if gotIDs[i] != wantIDs[i] {
 			t.Fatalf("order[%d] = %q, want %q (full=%v)", i, gotIDs[i], wantIDs[i], gotIDs)

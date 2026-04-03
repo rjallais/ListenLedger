@@ -6,9 +6,11 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -20,7 +22,7 @@ import (
 
 var (
 	missingArtistNotePattern   = regexp.MustCompile(`^artist "(.+)" did not match an existing artist record$`)
-	selectedCandidateNoteMatch = regexp.MustCompile(`^selected "(.+)" from ([^ ]+) with confidence [0-9.]+(?:\s.*)?$`)
+	selectedCandidateNoteMatch = regexp.MustCompile(`^selected "(.+)" from ([^ ]+) with confidence ([0-9.]+)(?:\s.*)?$`)
 )
 
 type reviewQueue struct {
@@ -125,10 +127,12 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 		Notes:                     append([]string(nil), resolution.Notes...),
 	}
 
+	chosenIsTidal := selectedCandidate != nil && selectedCandidate.Source == "tidal_track"
+
 	switch {
 	case resolution.Action == songbackfill.ActionSkipAmbiguous:
 		item.Priority = 2
-		if hasTidalCandidate(resolution.ExternalCandidates) {
+		if chosenIsTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates)) {
 			item.Category = "ambiguous_tidal_prefill"
 			item.RecommendedAction = "Choose the correct TIDAL artist list, update artist_name if appropriate, then rerun the backfill."
 		} else {
@@ -139,7 +143,7 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 		item.Priority = 1
 		item.Category = "missing_artist_record"
 		item.RecommendedAction = "Create or map the missing artist records, then rerun the backfill."
-	case hasTidalCandidate(resolution.ExternalCandidates):
+	case chosenIsTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates)):
 		item.Priority = 3
 		item.Category = "tidal_prefill_review"
 		item.RecommendedAction = "Review the suggested TIDAL artist list before updating artist_name and rerunning the backfill."
@@ -185,13 +189,17 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 
 	for _, note := range resolution.Notes {
 		matches := selectedCandidateNoteMatch.FindStringSubmatch(note)
-		if len(matches) != 3 {
+		if len(matches) != 4 {
 			continue
 		}
 		title := matches[1]
 		source := matches[2]
+		parsedConf, err := strconv.ParseFloat(matches[3], 64)
+		if err != nil {
+			continue
+		}
 		for _, candidate := range resolution.ExternalCandidates {
-			if candidate.Source == source && candidate.Title == title {
+			if candidate.Source == source && candidate.Title == title && math.Abs(candidate.Confidence-parsedConf) < 0.005 {
 				selected := candidate
 				return &selected
 			}

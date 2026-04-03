@@ -153,3 +153,31 @@ func TestSelectCandidateForReviewMatchesCanonicalFilterNote(t *testing.T) {
 	}
 }
 
+func TestSelectCandidateForReviewDisambiguatesByConfidence(t *testing.T) {
+	t.Parallel()
+
+	// Two candidates share (source, title) but have different confidence and artist lists.
+	// The resolver note pins confidence 0.88, so selectCandidateForReview must return the
+	// candidate with confidence 0.88, not the one with 0.95.
+	resolution := songbackfill.Resolution{
+		Action: songbackfill.ActionSkipUnresolved,
+		ExternalCandidates: []songbackfill.CandidateSummary{
+			{Source: "deezer_track", Title: "Spaceship", ArtistNames: []string{"Benny Benassi"}, Confidence: 0.95},
+			{Source: "deezer_track", Title: "Spaceship", ArtistNames: []string{"Benny Benassi", "Kelis"}, Confidence: 0.88},
+		},
+		Notes: []string{
+			`selected "Spaceship" from deezer_track with confidence 0.88 after canonical variant filtering`,
+		},
+	}
+
+	got := selectCandidateForReview(resolution)
+	if got == nil {
+		t.Fatalf("selectCandidateForReview() returned nil")
+	}
+	if got.Confidence != 0.88 {
+		t.Fatalf("selectCandidateForReview().Confidence = %.2f, want 0.88", got.Confidence)
+	}
+	if len(got.ArtistNames) != 2 || got.ArtistNames[1] != "Kelis" {
+		t.Fatalf("selectCandidateForReview().ArtistNames = %v, want [Benny Benassi Kelis]", got.ArtistNames)
+	}
+}

@@ -405,7 +405,7 @@ func prioritizeSongsForRetry(songs []songbackfill.SongInput, hints map[string]re
 	for _, song := range songs {
 		hint, ok := hints[song.ID]
 		if !ok {
-			prioritized = append(prioritized, prioritizedSong{song: song, priority: 0, retryEligible: true})
+			prioritized = append(prioritized, prioritizedSong{song: song, priority: 3, retryEligible: true})
 			continue
 		}
 		prioritized = append(prioritized, prioritizedSong{
