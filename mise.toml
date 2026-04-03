@@ -28,10 +28,14 @@ AIR_BIN_PATH = "./tmp/main"
 # MAX_CONCURRENCY = "1"
 # MAX_RETRIES = "2"
 # LOG_SUCCESSFUL_FETCHES = "false"
-# LOCAL_HEADLESS_ENABLED = "<true|false>"
+# LOCAL_HEADLESS_ENABLED = "false"
 # LOCAL_CHROME_PATH = "<path to chromium executable>"
-# LOCAL_CONCURRENCY = "<number>"
+# LOCAL_CONCURRENCY = "4"
 # LOCAL_IGNORE_CERT_ERRORS = "<true|false>"
+# LOCAL_BROWSERLESS_ENABLED = "true"
+# LOCAL_BROWSERLESS_ENDPOINT = "http://127.0.0.1:3001/chromium/bql"
+# LOCAL_BROWSERLESS_TOKEN = "listenledger-local"
+# LOCAL_BROWSERLESS_CONCURRENCY = "8"
 
 # =============================================================================
 # BUILD TASKS - Used for production builds
@@ -84,8 +88,35 @@ run = "go mod tidy"
 
 [tasks.run]
 description = "Build and run the application"
-run = "go run . serve --http=localhost:8090"
+run = "go run . serve --http=localhost:8091"
 depends = ["build"]
+
+[tasks."browserless:up"]
+description = "Start the self-hosted Browserless container"
+run = """
+podman rm --force listenledger-browserless 2>/dev/null
+podman run -d \
+  --name listenledger-browserless \
+  --publish 3001:3000 \
+  --env "CONCURRENT=4" \
+  --env "QUEUED=8" \
+  --env "TIMEOUT=60000" \
+  --env "TOKEN=listenledger-local" \
+  --restart unless-stopped \
+  ghcr.io/browserless/chromium
+"""
+
+[tasks."browserless:down"]
+description = "Stop the self-hosted Browserless container"
+run = "podman rm --force listenledger-browserless"
+
+[tasks."browserless:status"]
+description = "Show Browserless container status"
+run = "podman ps --filter name=listenledger-browserless"
+
+[tasks."browserless:logs"]
+description = "Follow Browserless container logs"
+run = "podman logs --follow listenledger-browserless"
 
 [tasks.admin]
 description = "Create a superuser account (requires ADMIN_EMAIL and ADMIN_PASSWORD env vars)"
@@ -93,7 +124,7 @@ run = "go run . superuser upsert $env.ADMIN_EMAIL $env.ADMIN_PASSWORD"
 
 [tasks.quota]
 description = "Check quota status for scraping providers"
-run = "curl -s http://localhost:8090/api/quota | from json | to yaml"
+run = "curl -s http://localhost:8091/api/quota | from json | to yaml"
 
 [tasks.clean]
 description = "Clean build artifacts"
