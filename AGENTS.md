@@ -4,7 +4,7 @@ Guide for AI agents working in the ListenLedger codebase.
 
 ## Big Picture
 - Primary app is a Go web dashboard using PocketBase + embedded NATS + Templ + Datastar (SSE). Entry point: `main.go`.
-- Background scraping flow: `/api/refresh/{artistId}` publishes `scrape.request` -> `internal/worker` consumes -> `internal/fetcher` retries -> `internal/spotify` (local headless, Browserless, ScrapingAnt, ScraperAPI, Apify) -> updates PocketBase and publishes `artist.updated` for SSE.
+- Background scraping flow: `/api/refresh/{artistId}` publishes `scrape.request` -> `internal/worker` consumes -> `internal/fetcher` retries -> `internal/spotify` (local headless, self-hosted Browserless, cloud Browserless, ScrapingAnt, ScraperAPI, Apify) -> updates PocketBase and publishes `artist.updated` for SSE.
 - Worker architecture: a single durable JetStream consumer feeds a shared Go channel. Each configured provider runs a goroutine pool sized to its concurrency limit (pull-based). Providers pull work as they have capacity — e.g. a provider with 5 slots keeps 5 requests in flight. On quota exhaustion (`spotify.ErrQuotaExhausted`), the provider's entire goroutine pool shuts down; when all providers are exhausted the NATS consumer is drained. NAK-ed messages remain in JetStream for redelivery by surviving providers or after a restart.
 - Standalone utilities: `cmd/update_listeners` (PocketBase + go-rod bulk refresh with priority ordering), `cmd/seed` (CSV seeding for albums/artists/songs), `cmd/backfill_song_artists` (audit/apply missing song artist Spotify IDs with report/review-queue output), and `cmd/safebackup` (VACUUM INTO SQLite backups).
 
@@ -128,7 +128,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - **Artist status fields**: `list_status = included|recently_added|not_added|waiting`, `fetch_status = idle|pending|failed`.
 - **NATS subjects**: `scrape.request` for jobs, `artist.updated` for UI updates (see `internal/worker/worker.go`).
 - **Scrape job tracking**: `scrape_jobs` stores queued/processing/succeeded/failed attempts and powers `/api/queue` plus `/api/queue/retry` (see `migrations/1760500000_scrape_jobs.go`, `internal/handlers/queue.go`, `internal/worker/jobs.go`).
-- **Spotify providers**: local headless (go-rod), Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
+- **Spotify providers**: local headless (go-rod), self-hosted Browserless (OCI container via `docker-compose.yml`), cloud Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
 - **SSE UI updates**: `/api/events` uses Datastar fragments from `internal/handlers/handlers.go`.
 - **Batch refresh UI**: `/api/refresh/batch` creates in-memory progress state in `internal/handlers/batch_progress.go`; completion is driven by `artist.updated` events.
 - **Quota checks**: `/api/quota` in `internal/handlers/handlers.go` calls `internal/quota` (ScrapingAnt usage API, Apify `/v2/users/me/limits` for both USD budget and actor memory; Browserless/ScraperAPI assumed available). The `quota.Checker` struct exposes `ScrapingAntAPIBase`, `ScraperAPIBase`, and `ApifyAPIBase` fields that default to production URLs but can be overridden in unit tests with `httptest.NewServer` URLs. At runtime, `spotify.ErrQuotaExhausted` propagates from provider HTTP responses (401/402/403/429) through `internal/fetcher` (which skips retries on quota errors) to `internal/worker` (which NAKs the message and shuts down the provider pool).
@@ -142,13 +142,13 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - Web app uses `pb_data/` for SQLite and is created on first run; PocketBase admin UI is at `/_/`.
 
 ## Project Conventions & Patterns
-- Provider config is env-based in `config/config.go` (e.g., `BROWSERLESS_TOKEN`, `SCRAPINGANT_TOKEN`, `SCRAPERAPI_TOKEN`, `APIFY_TOKEN`, `LOCAL_HEADLESS_ENABLED`, `LOCAL_CHROME_PATH`, `LOCAL_CONCURRENCY`, `MAX_CONCURRENCY`, `MAX_RETRIES`, `LOG_SUCCESSFUL_FETCHES`, `PB_DATA_DIR`).
+- Provider config is env-based in `config/config.go` (e.g., `BROWSERLESS_TOKEN`, `SCRAPINGANT_TOKEN`, `SCRAPERAPI_TOKEN`, `APIFY_TOKEN`, `LOCAL_HEADLESS_ENABLED`, `LOCAL_CHROME_PATH`, `LOCAL_CONCURRENCY`, `LOCAL_BROWSERLESS_ENABLED`, `LOCAL_BROWSERLESS_ENDPOINT`, `LOCAL_BROWSERLESS_TOKEN`, `LOCAL_BROWSERLESS_CONCURRENCY`, `MAX_CONCURRENCY`, `MAX_RETRIES`, `LOG_SUCCESSFUL_FETCHES`, `PB_DATA_DIR`).
 - Fetch retries use per-request timeouts and exponential backoff (`internal/fetcher/fetcher.go`).
 - UI paging/lazy loading uses HTML fragment endpoints (e.g., `/api/albums/{status}`, `/api/artists/waiting`).
 - CSV seeding lives in `cmd/seed/main.go` for `Music - Sheet1.csv` and `Music - Sheet2.csv`; use `--dry-run` to inspect creates before writing records.
 
 ## Integration Points
-- External services: Browserless BQL endpoint, ScrapingAnt HTTP API, ScraperAPI, and Apify Actor runs for listener scraping (see `internal/spotify/client.go` and `internal/spotify/apify.go`).
+- External services: Browserless BQL endpoint (cloud and self-hosted), ScrapingAnt HTTP API, ScraperAPI, and Apify Actor runs for listener scraping (see `internal/spotify/client.go` and `internal/spotify/apify.go`).
 - Local scraping uses go-rod with a local Chrome binary or managed Chromium (`internal/spotify/local.go`).
 - CLI tooling uses go-rod plus shared Chrome path resolution (`cmd/update_listeners/main.go`, `internal/chrome/path.go`).
 - Song artist backfill queries MusicBrainz and Deezer track metadata (`internal/songbackfill/backfill.go`, `cmd/backfill_song_artists/main.go`).

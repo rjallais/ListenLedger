@@ -12,11 +12,15 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+var listenersRe = regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
 
 // apifyRunInput is the payload sent to the Apify Actor run endpoint.
 type apifyRunInput struct {
@@ -71,7 +75,7 @@ type apifyDatasetItem struct {
 	// Raw text fallback in case the actor returns a string value.
 	// Error is set by our own pageFunction when it cannot find listener text.
 	Error            string `json:"error,omitzero"`
-	MonthlyListeners int    `json:"monthlyListeners,omitzero"`
+	MonthlyListeners *int   `json:"monthlyListeners,omitzero"`
 	// IsError is the #error sentinel emitted by the Apify framework itself
 	// when the browser/navigation fails before the pageFunction even runs.
 	IsError bool `json:"#error,omitzero"`
@@ -210,14 +214,29 @@ func parseApifyResponse(body []byte) (int, error) {
 		return 0, fmt.Errorf("apify: actor reported error: %s", item.Error)
 	}
 
-	// Prefer the already-parsed integer field.
-	if item.MonthlyListeners > 0 {
-		return item.MonthlyListeners, nil
+	if item.MonthlyListenersRaw != "" {
+		rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+		if err != nil {
+			return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
+		}
+		// Prefer reparsing the raw text ourselves. The actor's numeric field has
+		// occasionally been observed to over-apply the M suffix and inflate values
+		// by 1,000,000. Raw text from the page is the safer source of truth.
+		if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
+			log.Printf(
+				"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+				item.URL,
+				*item.MonthlyListeners,
+				rawCount,
+				item.MonthlyListenersRaw,
+			)
+		}
+		return rawCount, nil
 	}
 
-	// Fall back to the raw string field (e.g. "1,234,567 monthly listeners").
-	if item.MonthlyListenersRaw != "" {
-		return parseListenersFromRawText(item.MonthlyListenersRaw)
+	// Fall back to the already-parsed integer field when raw text is absent.
+	if item.MonthlyListeners != nil {
+		return *item.MonthlyListeners, nil
 	}
 
 	return 0, fmt.Errorf("apify: dataset item contained no listener data")
@@ -329,8 +348,8 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 // parseApifyBatchResponse extracts a map of artistID → listenerCount from the
 // Apify dataset items array returned by run-sync-get-dataset-items.
 // Items that contain an error (either the Apify #error sentinel or our own
-// pageFunction error field) are logged and skipped; the caller treats absent
-// keys as misses.
+// pageFunction error field) are logged and skipped. Raw-text parse failures
+// are returned with the item URL so callers can surface the bad payload.
 func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	var items apifyRunResponse
 	if err := json.Unmarshal(body, &items); err != nil {
@@ -364,17 +383,26 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 			continue
 		}
 
-		if item.MonthlyListeners > 0 {
-			results[artistID] = item.MonthlyListeners
+		if item.MonthlyListenersRaw != "" {
+			rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+			if err != nil {
+				return nil, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
+			}
+			if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
+				log.Printf(
+					"[apify] batch: listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+					item.URL,
+					*item.MonthlyListeners,
+					rawCount,
+					item.MonthlyListenersRaw,
+				)
+			}
+			results[artistID] = rawCount
 			continue
 		}
 
-		if item.MonthlyListenersRaw != "" {
-			if count, err := parseListenersFromRawText(item.MonthlyListenersRaw); err == nil {
-				results[artistID] = count
-			} else {
-				log.Printf("[apify] batch: parse error for artist %s: %v", artistID, err)
-			}
+		if item.MonthlyListeners != nil {
+			results[artistID] = *item.MonthlyListeners
 		}
 	}
 
@@ -415,15 +443,34 @@ func parseListenersFromRawText(raw string) (int, error) {
 		return 0, fmt.Errorf("apify: 'monthly listeners' text not found in %q", raw)
 	}
 
-	before, _, ok := strings.Cut(raw, " ")
-	if !ok {
+	parts := listenersRe.FindStringSubmatch(raw)
+	if len(parts) == 0 {
 		return 0, fmt.Errorf("apify: unexpected listener text format %q", raw)
 	}
 
-	numberStr := strings.ReplaceAll(before, ",", "")
-	count, err := strconv.Atoi(strings.TrimSpace(numberStr))
-	if err != nil {
-		return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
+	numberStr := strings.ReplaceAll(parts[1], ",", "")
+	multiplierStr := strings.ToUpper(parts[2])
+
+	var count int
+	switch multiplierStr {
+	case "M":
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse M float %q: %w", numberStr, err)
+		}
+		count = int(math.Round(val * 1000000))
+	case "K":
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse K float %q: %w", numberStr, err)
+		}
+		count = int(math.Round(val * 1000))
+	default:
+		val, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
+		}
+		count = int(math.Round(val))
 	}
 
 	return count, nil
@@ -501,7 +548,7 @@ async function pageFunction(context) {
             let suffix = match[2].toUpperCase();
             if (suffix === 'M') { num *= 1000000; }
             else if (suffix === 'K') { num *= 1000; }
-            return Math.floor(num);
+			return Math.round(num);
         }
 
         if (text.includes('"artistUnion"')) {
@@ -583,7 +630,7 @@ async function pageFunction(context) {
     const suffix = match[2].toUpperCase();
     if (suffix === 'M') { count *= 1000000; }
     else if (suffix === 'K') { count *= 1000; }
-    const monthlyListeners = isNaN(count) ? 0 : Math.floor(count);
+	const monthlyListeners = isNaN(count) ? 0 : Math.round(count);
     return {
         url: request.url,
         monthlyListeners,

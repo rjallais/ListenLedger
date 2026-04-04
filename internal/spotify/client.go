@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -49,6 +50,8 @@ const (
 	ProviderScraperAPI
 	// ProviderApify uses only Apify.
 	ProviderApify
+	// ProviderLocalBrowserless uses a self-hosted Browserless container.
+	ProviderLocalBrowserless
 )
 
 // ListenerFetcher defines the interface for fetching listener counts
@@ -71,13 +74,17 @@ type Client struct {
 	// runs, which can take up to 90 s for the Actor to complete.
 	// The shared httpClient uses cfg.HTTPTimeout (30 s), which is too short.
 	httpClientApify *http.Client
+	// httpClientLocalBrowserless is dedicated because self-hosted Browserless
+	// content requests regularly exceed the shared 30 s timeout under load.
+	httpClientLocalBrowserless *http.Client
 
 	// Semaphores per provider to respect individual rate limits
-	semBrowserless chan struct{}
-	semLocal       chan struct{}
-	semScrapingAnt chan struct{}
-	semScraperAPI  chan struct{}
-	semApify       chan struct{}
+	semBrowserless      chan struct{}
+	semLocal            chan struct{}
+	semScrapingAnt      chan struct{}
+	semScraperAPI       chan struct{}
+	semApify            chan struct{}
+	semLocalBrowserless chan struct{}
 
 	local *localBrowser
 	// localInit is non-nil while a browser launch is in progress.
@@ -90,11 +97,12 @@ type Client struct {
 	localMu sync.Mutex
 
 	// Providers
-	useLocal       atomic.Bool
-	useBrowserless bool
-	useScrapingAnt bool
-	useScraperAPI  bool
-	useApify       bool
+	useLocal            atomic.Bool
+	useBrowserless      bool
+	useScrapingAnt      bool
+	useScraperAPI       bool
+	useApify            bool
+	useLocalBrowserless bool
 }
 
 // responseData represents the Browserless/BQL API response structure
@@ -210,26 +218,45 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		Timeout:   340 * time.Second,
 	}
 
+	// Local Browserless HTTP client. The worker context timeout
+	// (ProviderLocalBrowserless) controls the effective deadline;
+	// this client timeout is just a safety net.
+	localBrowserlessTimeout := cfg.HTTPTimeout
+	if localBrowserlessTimeout > 60*time.Second {
+		localBrowserlessTimeout = 60 * time.Second
+	}
+	if localBrowserlessTimeout < 30*time.Second {
+		localBrowserlessTimeout = 30 * time.Second
+	}
+	httpClientLocalBrowserless := &http.Client{
+		Transport: transport,
+		Timeout:   localBrowserlessTimeout,
+	}
+
 	// Determine which providers are available based on configuration.
 	useBrowserless := cfg.HasBrowserless()
 	useScrapingAnt := cfg.HasScrapingAnt()
 	useScraperAPI := cfg.HasScraperAPI()
 	useApify := cfg.HasApify()
+	useLocalBrowserless := cfg.HasLocalBrowserless()
 
 	client := &Client{
-		config:               cfg,
-		httpClient:           httpClient,
-		httpClientScraperAPI: httpClientScraperAPI,
-		httpClientApify:      httpClientApify,
-		semLocal:             make(chan struct{}, cfg.LocalConcurrency),
-		semBrowserless:       make(chan struct{}, max(1, cfg.BrowserlessConcurrency)),
-		semScrapingAnt:       make(chan struct{}, cfg.MaxConcurrency),
-		semScraperAPI:        make(chan struct{}, max(1, cfg.ScraperAPIConcurrency)),
-		semApify:             make(chan struct{}, 1),
-		useBrowserless:       useBrowserless,
-		useScrapingAnt:       useScrapingAnt,
-		useScraperAPI:        useScraperAPI,
-		useApify:             useApify,
+		config:                     cfg,
+		httpClient:                 httpClient,
+		httpClientScraperAPI:       httpClientScraperAPI,
+		httpClientApify:            httpClientApify,
+		httpClientLocalBrowserless: httpClientLocalBrowserless,
+		semLocal:                   make(chan struct{}, cfg.LocalConcurrency),
+		semBrowserless:             make(chan struct{}, max(1, cfg.BrowserlessConcurrency)),
+		semScrapingAnt:             make(chan struct{}, cfg.MaxConcurrency),
+		semScraperAPI:              make(chan struct{}, max(1, cfg.ScraperAPIConcurrency)),
+		semApify:                   make(chan struct{}, 1),
+		semLocalBrowserless:        make(chan struct{}, max(1, cfg.LocalBrowserlessConcurrency)),
+		useBrowserless:             useBrowserless,
+		useScrapingAnt:             useScrapingAnt,
+		useScraperAPI:              useScraperAPI,
+		useApify:                   useApify,
+		useLocalBrowserless:        useLocalBrowserless,
 	}
 
 	client.initLocalHeadless()
@@ -271,9 +298,15 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 		}
 		return c.fetchWithProvider(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
 
+	case ProviderLocalBrowserless:
+		if !c.useLocalBrowserless {
+			return 0, fmt.Errorf("local browserless not configured")
+		}
+		return c.fetchWithProvider(ctx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
+
 	case ProviderAny:
-		// Default strategy: Local headless -> Browserless -> ScrapingAnt -> ScraperAPI -> Apify
-		providerErrors := make([]string, 0, 5)
+		// Default strategy: Local headless -> Local Browserless -> Browserless -> ScrapingAnt -> ScraperAPI -> Apify
+		providerErrors := make([]string, 0, 6)
 
 		if c.useLocal.Load() {
 			count, err := c.fetchWithProvider(ctx, artistID, c.semLocal, c.fetchViaLocalHeadless, "local")
@@ -283,6 +316,19 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 			providerErrors = append(providerErrors, fmt.Sprintf("local: %v", err))
 			if ctx.Err() != nil {
 				return 0, ctx.Err()
+			}
+		}
+
+		if c.useLocalBrowserless {
+			localBrowserlessCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			count, err := c.fetchWithProvider(localBrowserlessCtx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
+			cancel()
+			if err == nil {
+				return count, nil
+			}
+			providerErrors = append(providerErrors, fmt.Sprintf("local-browserless: %v", err))
+			if localBrowserlessCtx.Err() != nil {
+				return 0, localBrowserlessCtx.Err()
 			}
 		}
 
@@ -487,6 +533,129 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 	}
 
 	return c.parseBrowserlessResponse(body)
+}
+
+// fetchViaLocalBrowserless fetches the monthly listener count via a self-hosted
+// Browserless container.
+//
+// The open-source Browserless v2 image does not expose the cloud-only BQL route;
+// it serves `/chromium/content` instead. Fetch rendered HTML from the local
+// container and parse the listeners count the same way as the HTML providers.
+func (c *Client) fetchViaLocalBrowserless(ctx context.Context, artistID string) (int, error) {
+	payload := map[string]any{
+		"url": fmt.Sprintf("https://open.spotify.com/artist/%s", artistID),
+		"gotoOptions": map[string]any{
+			"waitUntil": "networkidle2",
+			"timeout":   max(30000, int(c.config.RequestTimeout.Milliseconds())),
+		},
+		"bestAttempt":         true,
+		"rejectResourceTypes": []string{"image", "font", "media"},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal local browserless payload: %w", err)
+	}
+
+	req, err := c.buildLocalBrowserlessRequest(ctx, bodyBytes)
+	if err != nil {
+		return 0, fmt.Errorf("failed to build local Browserless request: %w", err)
+	}
+
+	resp, err := c.httpClientLocalBrowserless.Do(req)
+	if err != nil {
+		return 0, &providerHTTPError{provider: "local-browserless", err: err}
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close local browserless response body: %v\n", closeErr)
+		}
+	}()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return 0, fmt.Errorf("local browserless authentication failed (status %d)", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return 0, &RateLimitError{
+			Provider:   "local-browserless",
+			StatusCode: http.StatusTooManyRequests,
+		}
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return 0, fmt.Errorf("local browserless billing/quota failure (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		snippet := strings.TrimSpace(string(snippetBytes))
+		if len(snippet) > 400 {
+			snippet = snippet[:400] + "..."
+		}
+		if snippet != "" {
+			return 0, fmt.Errorf("local browserless unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
+		}
+		return 0, fmt.Errorf("local browserless unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("local browserless failed to read response body: %w", err)
+	}
+
+	return parseHTMLMonthlyListeners(body, "local-browserless")
+}
+
+func (c *Client) buildLocalBrowserlessRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	endpoint, err := normalizeLocalBrowserlessEndpoint(c.config.LocalBrowserlessEndpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.config.LocalBrowserlessToken != "" {
+		q := endpoint.Query()
+		q.Set("token", c.config.LocalBrowserlessToken)
+		endpoint.RawQuery = q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "ListenLedger/1.0")
+	req.Header.Set("Connection", "keep-alive")
+	return req, nil
+}
+
+func normalizeLocalBrowserlessEndpoint(raw string) (*url.URL, error) {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return nil, fmt.Errorf("local browserless endpoint is empty")
+	}
+
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse local browserless endpoint: %w", err)
+	}
+
+	if strings.EqualFold(parsed.Hostname(), "localhost") {
+		port := parsed.Port()
+		if port == "" {
+			port = "3001"
+			log.Printf("[spotify] local browserless: no port for host=%q, defaulting to port=%s", parsed.Hostname(), port)
+		}
+		parsed.Host = "127.0.0.1:" + port
+	}
+
+	if parsed.Path == "" || parsed.Path == "/" || strings.HasSuffix(parsed.Path, "/chromium/bql") {
+		basePath := strings.TrimSuffix(parsed.Path, "/chromium/bql")
+		if basePath == "/" {
+			basePath = ""
+		}
+		parsed.Path = basePath + "/chromium/content"
+	}
+
+	return parsed, nil
 }
 
 // buildBrowserlessRequest creates an HTTP request for fetching listener data via Browserless/BQL.
@@ -723,7 +892,7 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 		}
 	}()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusForbidden {
 		return 0, false, fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {

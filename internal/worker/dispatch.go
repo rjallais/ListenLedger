@@ -48,6 +48,13 @@ func (w *Worker) providerSlots() []providerSlot {
 		// Keep Apify provider processing single-flight at the worker level.
 		slots = append(slots, providerSlot{provider: spotify.ProviderApify, concurrency: 1})
 	}
+	if w.cfg.HasLocalBrowserless() {
+		conc := w.cfg.LocalBrowserlessConcurrency
+		if conc <= 0 {
+			conc = 1
+		}
+		slots = append(slots, providerSlot{provider: spotify.ProviderLocalBrowserless, concurrency: conc})
+	}
 
 	return slots
 }
@@ -225,6 +232,8 @@ func providerLabel(provider spotify.Provider) string {
 		return messaging.ScrapeProviderScraperAPI
 	case spotify.ProviderApify:
 		return messaging.ScrapeProviderApify
+	case spotify.ProviderLocalBrowserless:
+		return messaging.ScrapeProviderLocalBrowserless
 	default:
 		return messaging.ScrapeProviderAny
 	}

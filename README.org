@@ -45,7 +45,11 @@ SCRAPERAPI_WAIT_FOR_SELECTOR = "span"
 APIFY_MAX_CONCURRENCY = "25"
 LOCAL_HEADLESS_ENABLED = "true"
 LOCAL_CHROME_PATH = "C:\\Path\\To\\chrome.exe"
-LOCAL_CONCURRENCY = "8"
+LOCAL_CONCURRENCY = "4"
+LOCAL_BROWSERLESS_ENABLED = "true"
+LOCAL_BROWSERLESS_ENDPOINT = "http://127.0.0.1:3001/chromium/content"
+LOCAL_BROWSERLESS_TOKEN = "listenledger-local"
+LOCAL_BROWSERLESS_CONCURRENCY = "4"
 MAX_CONCURRENCY = "1"
 MAX_RETRIES = "2"
 LOG_SUCCESSFUL_FETCHES = "false"
@@ -64,7 +68,7 @@ GOEXPERIMENT=jsonv2 go build -o ListenLedger .
 GOEXPERIMENT=jsonv2 ./ListenLedger
 #+end_src
 
-The web UI is served on PocketBase's default port (usually http://127.0.0.1:8090). Admin UI: =/_/=.
+The web UI is served on port 8091 (http://127.0.0.1:8091). Admin UI: =/_/=.
 
 Using =mise=:
 #+begin_src sh

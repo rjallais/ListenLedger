@@ -53,6 +53,21 @@ func TestParseLocalHTMLMonthlyListenersVisibleText(t *testing.T) {
 	}
 }
 
+func TestParseLocalHTMLMonthlyListenersPrefersExactRenderedTextOverApproximateMetadata(t *testing.T) {
+	body := []byte(`<html><head><meta property="og:description" content="Artist · 3.8M monthly listeners."></head><body><span>3,849,594 monthly listeners</span></body></html>`)
+
+	listeners, ready, err := parseLocalHTMLMonthlyListeners(body)
+	if err != nil {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() error = %v", err)
+	}
+	if !ready {
+		t.Fatal("parseLocalHTMLMonthlyListeners() ready = false, want true")
+	}
+	if listeners != 3849594 {
+		t.Fatalf("parseLocalHTMLMonthlyListeners() listeners = %d, want 3849594", listeners)
+	}
+}
+
 func TestParseLocalHTMLMonthlyListenersZeroListenerPayload(t *testing.T) {
 	body := []byte(`<html><script>{"data":{"artistUnion":{"stats":{"monthlyListeners":null}}}}</script></html>`)
 

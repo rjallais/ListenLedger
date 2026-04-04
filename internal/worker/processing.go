@@ -40,10 +40,11 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 		return msgOK
 	}
 
-	if provider == spotify.ProviderLocalHeadless {
+	if provider == spotify.ProviderLocalHeadless || provider == spotify.ProviderLocalBrowserless {
 		if park, attempts, retryable := w.shouldParkLocalPool(label); park {
 			log.Printf(
-				"[worker] Local provider unhealthy (attempts=%d retryable=%d succeeded=0) — parking local provider pool for this run",
+				"[worker] Provider %s unhealthy (attempts=%d retryable=%d succeeded=0) — parking provider pool for this run",
+				label,
 				attempts,
 				retryable,
 			)
@@ -193,6 +194,11 @@ func (w *Worker) fetchTimeout(provider spotify.Provider) time.Duration {
 			return w.cfg.RequestTimeout
 		}
 		return 300 * time.Second
+	case spotify.ProviderLocalBrowserless:
+		if w.cfg.RequestTimeout > 60*time.Second {
+			return w.cfg.RequestTimeout
+		}
+		return 60 * time.Second
 	}
 
 	// ProviderAny fallback.

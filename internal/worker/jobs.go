@@ -3,6 +3,8 @@
 package worker
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -153,5 +155,138 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 		if saveErr := w.app.Save(rec); saveErr != nil {
 			log.Printf("[worker] Warning: failed to reconcile failed job %s: %v", rec.Id, saveErr)
 		}
+	}
+}
+
+const staleJobThreshold = 5 * time.Minute
+const staleJobSweepInterval = 30 * time.Second
+const staleJobSweepTimeout = 20 * time.Second
+
+// sweepStaleJobs periodically marks scrape jobs that have been "processing"
+// for longer than staleJobThreshold as "failed" with a "stale_timeout" error.
+// It also updates the associated artist's fetch_status to "failed" so that
+// batch progress tracking can count it as completed.
+func (w *Worker) sweepStaleJobs() {
+	defer w.wg.Done()
+
+	ticker := time.NewTicker(staleJobSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.ctx.Done():
+			return
+		case <-ticker.C:
+			func() {
+				ctx, cancel := context.WithTimeout(w.ctx, staleJobSweepTimeout)
+				defer cancel()
+				w.markStaleJobs(ctx)
+			}()
+		}
+	}
+}
+
+func (w *Worker) markStaleJobs(ctx context.Context) {
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
+	cutoff := time.Now().UTC().Add(-staleJobThreshold).Format("2006-01-02 15:04:05.000Z")
+
+	records := make([]*core.Record, 0)
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("status = {:status} AND started_at < {:cutoff}", dbx.Params{"status": "processing", "cutoff": cutoff})).
+		Limit(50).
+		All(&records)
+	if err != nil {
+		log.Printf("[worker] Warning: failed to query stale scrape jobs: %v", err)
+		return
+	}
+
+	if len(records) == 0 {
+		return
+	}
+
+	log.Printf("[worker] Sweeping %d stale scrape job(s) older than %s", len(records), staleJobThreshold)
+
+	for _, job := range records {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
+		artistID := job.GetString("artist")
+		requestID := job.GetString("request_id")
+		jobUpdated := false
+
+		err := w.app.RunInTransaction(func(txApp core.App) error {
+			freshJob, refreshErr := txApp.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
+				q.WithContext(ctx)
+				return nil
+			})
+			if refreshErr != nil {
+				return fmt.Errorf("failed to reload job %s: %w", job.Id, refreshErr)
+			}
+
+			// Re-check status and started_at cutoff from a fresh read to avoid
+			// clobbering a job that was restarted after the initial scan.
+			guard := make([]*core.Record, 0, 1)
+			guardErr := txApp.RecordQuery("scrape_jobs").
+				WithContext(ctx).
+				AndWhere(dbx.NewExp("id = {:id} AND status = {:status} AND started_at < {:cutoff}", dbx.Params{"id": freshJob.Id, "status": "processing", "cutoff": cutoff})).
+				Limit(1).
+				All(&guard)
+			if guardErr != nil {
+				return fmt.Errorf("failed to re-check stale guard for job %s: %w", job.Id, guardErr)
+			}
+			if len(guard) == 0 {
+				return nil
+			}
+
+			freshJob.Set("status", "failed")
+			freshJob.Set("finished_at", time.Now())
+			freshJob.Set("error", "stale_timeout")
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if saveErr := txApp.Save(freshJob); saveErr != nil {
+				return fmt.Errorf("failed to save job %s: %w", job.Id, saveErr)
+			}
+			jobUpdated = true
+
+			if artistID == "" {
+				return nil
+			}
+
+			artist, loadArtistErr := txApp.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+				q.WithContext(ctx)
+				return nil
+			})
+			if loadArtistErr != nil {
+				return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, job.Id, loadArtistErr)
+			}
+			if artist.GetString("fetch_status") != "pending" {
+				return nil
+			}
+
+			artist.Set("fetch_status", "failed")
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if saveArtistErr := txApp.Save(artist); saveArtistErr != nil {
+				return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, job.Id, saveArtistErr)
+			}
+
+			return nil
+		})
+		if err != nil {
+			log.Printf("[worker] Warning: failed to mark stale job %s (request_id=%s) as failed: %v", job.Id, requestID, err)
+			continue
+		}
+		if !jobUpdated {
+			continue
+		}
+
+		log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
 	}
 }

@@ -37,6 +37,8 @@ const (
 	ScrapeProviderScraperAPI = "scraperapi"
 	// ScrapeProviderApify targets Apify scraping.
 	ScrapeProviderApify = "apify"
+	// ScrapeProviderLocalBrowserless targets self-hosted Browserless scraping.
+	ScrapeProviderLocalBrowserless = "local-browserless"
 )
 
 // ScrapeRequested is the durable queue payload for a listener refresh job.
@@ -79,6 +81,7 @@ func NormalizeScrapeProvider(provider string) string {
 	switch provider {
 	case ScrapeProviderLocal,
 		ScrapeProviderBrowserless,
+		ScrapeProviderLocalBrowserless,
 		ScrapeProviderScrapingAnt,
 		ScrapeProviderScraperAPI,
 		ScrapeProviderApify:

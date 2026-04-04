@@ -74,7 +74,7 @@ func (h *Handler) ensureBatchProgressSubscriber() {
 }
 
 func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
-	if artistID == "" || fetchStatus != "idle" {
+	if artistID == "" || (fetchStatus != "idle" && fetchStatus != "failed") {
 		return
 	}
 
