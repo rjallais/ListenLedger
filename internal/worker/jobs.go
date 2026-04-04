@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -216,6 +217,7 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 
 		artistID := job.GetString("artist")
 		requestID := job.GetString("request_id")
+		jobUpdated := false
 
 		err := w.app.RunInTransaction(func(txApp core.App) error {
 			freshJob, refreshErr := txApp.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
@@ -223,12 +225,21 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 				return nil
 			})
 			if refreshErr != nil {
-				return refreshErr
+				return fmt.Errorf("failed to reload job %s: %w", job.Id, refreshErr)
 			}
 
-			// Re-check the current status from a fresh read to avoid clobbering a
-			// concurrent completion between the initial query and this update.
-			if current := freshJob.GetString("status"); current != "processing" {
+			// Re-check status and started_at cutoff from a fresh read to avoid
+			// clobbering a job that was restarted after the initial scan.
+			guard := make([]*core.Record, 0, 1)
+			guardErr := txApp.RecordQuery("scrape_jobs").
+				WithContext(ctx).
+				AndWhere(dbx.NewExp("id = {:id} AND status = {:status} AND started_at < {:cutoff}", dbx.Params{"id": freshJob.Id, "status": "processing", "cutoff": cutoff})).
+				Limit(1).
+				All(&guard)
+			if guardErr != nil {
+				return fmt.Errorf("failed to re-check stale guard for job %s: %w", job.Id, guardErr)
+			}
+			if len(guard) == 0 {
 				return nil
 			}
 
@@ -239,8 +250,9 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 				return err
 			}
 			if saveErr := txApp.Save(freshJob); saveErr != nil {
-				return saveErr
+				return fmt.Errorf("failed to save job %s: %w", job.Id, saveErr)
 			}
+			jobUpdated = true
 
 			if artistID == "" {
 				return nil
@@ -251,8 +263,7 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 				return nil
 			})
 			if loadArtistErr != nil {
-				log.Printf("[worker] Warning: failed to load artist %s before stale status update: %v", artistID, loadArtistErr)
-				return loadArtistErr
+				return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, job.Id, loadArtistErr)
 			}
 			if artist.GetString("fetch_status") != "pending" {
 				return nil
@@ -263,14 +274,16 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 				return err
 			}
 			if saveArtistErr := txApp.Save(artist); saveArtistErr != nil {
-				log.Printf("[worker] Warning: failed to persist artist %s status to failed: %v", artistID, saveArtistErr)
-				return saveArtistErr
+				return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, job.Id, saveArtistErr)
 			}
 
 			return nil
 		})
 		if err != nil {
-			log.Printf("[worker] Warning: failed to mark stale job %s as failed: %v", job.Id, err)
+			log.Printf("[worker] Warning: failed to mark stale job %s (request_id=%s) as failed: %v", job.Id, requestID, err)
+			continue
+		}
+		if !jobUpdated {
 			continue
 		}
 

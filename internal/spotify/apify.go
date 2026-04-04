@@ -548,7 +548,7 @@ async function pageFunction(context) {
             let suffix = match[2].toUpperCase();
             if (suffix === 'M') { num *= 1000000; }
             else if (suffix === 'K') { num *= 1000; }
-            return Math.floor(num);
+			return Math.round(num);
         }
 
         if (text.includes('"artistUnion"')) {
@@ -630,7 +630,7 @@ async function pageFunction(context) {
     const suffix = match[2].toUpperCase();
     if (suffix === 'M') { count *= 1000000; }
     else if (suffix === 'K') { count *= 1000; }
-    const monthlyListeners = isNaN(count) ? 0 : Math.floor(count);
+	const monthlyListeners = isNaN(count) ? 0 : Math.round(count);
     return {
         url: request.url,
         monthlyListeners,
