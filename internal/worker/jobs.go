@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"log"
 	"strings"
 	"time"
@@ -158,6 +159,7 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 
 const staleJobThreshold = 5 * time.Minute
 const staleJobSweepInterval = 30 * time.Second
+const staleJobSweepTimeout = 20 * time.Second
 
 // sweepStaleJobs periodically marks scrape jobs that have been "processing"
 // for longer than staleJobThreshold as "failed" with a "stale_timeout" error.
@@ -174,22 +176,28 @@ func (w *Worker) sweepStaleJobs() {
 		case <-w.ctx.Done():
 			return
 		case <-ticker.C:
-			w.markStaleJobs()
+			func() {
+				ctx, cancel := context.WithTimeout(w.ctx, staleJobSweepTimeout)
+				defer cancel()
+				w.markStaleJobs(ctx)
+			}()
 		}
 	}
 }
 
-func (w *Worker) markStaleJobs() {
+func (w *Worker) markStaleJobs(ctx context.Context) {
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
 	cutoff := time.Now().UTC().Add(-staleJobThreshold).Format("2006-01-02 15:04:05.000Z")
 
-	records, err := w.app.FindRecordsByFilter(
-		"scrape_jobs",
-		"status = {:status} && started_at < {:cutoff}",
-		"",
-		50,
-		0,
-		dbx.Params{"status": "processing", "cutoff": cutoff},
-	)
+	records := make([]*core.Record, 0)
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("status = {:status} AND started_at < {:cutoff}", dbx.Params{"status": "processing", "cutoff": cutoff})).
+		Limit(50).
+		All(&records)
 	if err != nil {
 		log.Printf("[worker] Warning: failed to query stale scrape jobs: %v", err)
 		return
@@ -202,11 +210,15 @@ func (w *Worker) markStaleJobs() {
 	log.Printf("[worker] Sweeping %d stale scrape job(s) older than %s", len(records), staleJobThreshold)
 
 	for _, job := range records {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
 		artistID := job.GetString("artist")
 		requestID := job.GetString("request_id")
 
 		freshJob, refreshErr := w.app.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
-			q.WithContext(w.ctx)
+			q.WithContext(ctx)
 			return nil
 		})
 		if refreshErr != nil {
@@ -223,6 +235,9 @@ func (w *Worker) markStaleJobs() {
 		freshJob.Set("status", "failed")
 		freshJob.Set("finished_at", time.Now())
 		freshJob.Set("error", "stale_timeout")
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		if saveErr := w.app.Save(freshJob); saveErr != nil {
 			log.Printf("[worker] Warning: failed to mark stale job %s as failed: %v", job.Id, saveErr)
 			continue
@@ -233,7 +248,7 @@ func (w *Worker) markStaleJobs() {
 		}
 
 		artist, loadArtistErr := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
-			q.WithContext(w.ctx)
+			q.WithContext(ctx)
 			return nil
 		})
 		if loadArtistErr != nil {
@@ -245,6 +260,9 @@ func (w *Worker) markStaleJobs() {
 		}
 
 		artist.Set("fetch_status", "failed")
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		if saveArtistErr := w.app.Save(artist); saveArtistErr != nil {
 			log.Printf("[worker] Warning: failed to persist artist %s status to failed: %v", artistID, saveArtistErr)
 		}

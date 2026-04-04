@@ -216,7 +216,7 @@ func parseApifyResponse(body []byte) (int, error) {
 	if item.MonthlyListenersRaw != "" {
 		rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
 		}
 		// Prefer reparsing the raw text ourselves. The actor's numeric field has
 		// occasionally been observed to over-apply the M suffix and inflate values

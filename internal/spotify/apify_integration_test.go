@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -405,3 +406,18 @@ func TestApifyIntegration_parseApifyResponsePrefersRawOverInflatedNumericField(t
 		t.Fatalf("parseApifyResponse() = %d, want 2745472", got)
 	}
 }
+
+func TestApifyIntegration_parseApifyResponseWrapsRawParseErrorWithURL(t *testing.T) {
+	t.Parallel()
+
+	body := `[{"url":"https://open.spotify.com/artist/test-id","monthlyListenersRaw":"not listeners text"}]`
+
+	_, err := parseApifyResponse([]byte(body))
+	if err == nil {
+		t.Fatal("parseApifyResponse() error = nil, want wrapped parse error")
+	}
+	if !strings.Contains(err.Error(), "https://open.spotify.com/artist/test-id") {
+		t.Fatalf("parseApifyResponse() error = %v, want URL in message", err)
+	}
+}
+

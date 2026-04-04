@@ -5,6 +5,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -272,9 +273,11 @@ func (c *Config) LoadFromEnv() error {
 
 	// Local Browserless (self-hosted OCI container) settings
 	if enabledStr := os.Getenv("LOCAL_BROWSERLESS_ENABLED"); enabledStr != "" {
-		if val, err := strconv.ParseBool(enabledStr); err == nil {
-			c.LocalBrowserlessEnabled = val
+		val, err := strconv.ParseBool(enabledStr)
+		if err != nil {
+			return fmt.Errorf("invalid LOCAL_BROWSERLESS_ENABLED: %w", err)
 		}
+		c.LocalBrowserlessEnabled = val
 	}
 	if endpoint := os.Getenv("LOCAL_BROWSERLESS_ENDPOINT"); endpoint != "" {
 		c.LocalBrowserlessEndpoint = endpoint
@@ -283,9 +286,14 @@ func (c *Config) LoadFromEnv() error {
 		c.LocalBrowserlessToken = token
 	}
 	if concStr := os.Getenv("LOCAL_BROWSERLESS_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.LocalBrowserlessConcurrency = conc
+		conc, err := strconv.Atoi(concStr)
+		if err != nil {
+			return fmt.Errorf("invalid LOCAL_BROWSERLESS_CONCURRENCY: %w", err)
 		}
+		if conc <= 0 {
+			return fmt.Errorf("invalid LOCAL_BROWSERLESS_CONCURRENCY: must be positive")
+		}
+		c.LocalBrowserlessConcurrency = conc
 	}
 
 	// Allow overriding shared provider concurrency (used by ScrapingAnt).
@@ -384,7 +392,7 @@ func (c *Config) HasApify() bool {
 // Validate ensures the configuration is valid
 func (c *Config) Validate() error {
 	// At least one provider must be configured, or local headless must be enabled.
-	if !c.HasLocalHeadless() && !c.HasLocalBrowserless() && c.BrowserlessToken == "" && c.ScrapingAntToken == "" && c.ScraperAPIToken == "" && c.ApifyToken == "" {
+	if !c.HasLocalHeadless() && !c.HasLocalBrowserless() && !c.HasBrowserless() && !c.HasScrapingAnt() && !c.HasScraperAPI() && !c.HasApify() {
 		return errors.New("at least one provider token (BROWSERLESS_TOKEN, SCRAPINGANT_TOKEN, SCRAPERAPI_TOKEN, or APIFY_TOKEN) must be set, or enable local headless/self-hosted browserless")
 	}
 	if c.MaxConcurrency <= 0 {
