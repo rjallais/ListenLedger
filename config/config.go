@@ -393,7 +393,7 @@ func (c *Config) HasApify() bool {
 func (c *Config) Validate() error {
 	// At least one provider must be configured, or local headless must be enabled.
 	if !c.HasLocalHeadless() && !c.HasLocalBrowserless() && !c.HasBrowserless() && !c.HasScrapingAnt() && !c.HasScraperAPI() && !c.HasApify() {
-		return errors.New("at least one provider token (BROWSERLESS_TOKEN, SCRAPINGANT_TOKEN, SCRAPERAPI_TOKEN, or APIFY_TOKEN) must be set, or enable local headless/self-hosted browserless")
+		return errors.New("at least one usable provider must be configured: set BROWSERLESS_TOKEN with BrowserlessEndpoint, SCRAPINGANT_TOKEN with ScrapingAntEndpoint, SCRAPERAPI_TOKEN with ScraperAPIEndpoint, or APIFY_TOKEN with ApifyEndpoint and ApifyActorID; or enable local headless/self-hosted browserless")
 	}
 	if c.MaxConcurrency <= 0 {
 		return errors.New("max concurrency must be positive")

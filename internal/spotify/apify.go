@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -347,8 +348,8 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 // parseApifyBatchResponse extracts a map of artistID → listenerCount from the
 // Apify dataset items array returned by run-sync-get-dataset-items.
 // Items that contain an error (either the Apify #error sentinel or our own
-// pageFunction error field) are logged and skipped; the caller treats absent
-// keys as misses.
+// pageFunction error field) are logged and skipped. Raw-text parse failures
+// are returned with the item URL so callers can surface the bad payload.
 func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	var items apifyRunResponse
 	if err := json.Unmarshal(body, &items); err != nil {
@@ -385,8 +386,7 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 		if item.MonthlyListenersRaw != "" {
 			rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
 			if err != nil {
-				log.Printf("[apify] batch: parse error for artist %s: %v", artistID, err)
-				continue
+				return nil, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
 			}
 			if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
 				log.Printf(
@@ -458,19 +458,19 @@ func parseListenersFromRawText(raw string) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("apify: failed to parse M float %q: %w", numberStr, err)
 		}
-		count = int(val * 1000000)
+		count = int(math.Round(val * 1000000))
 	case "K":
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("apify: failed to parse K float %q: %w", numberStr, err)
 		}
-		count = int(val * 1000)
+		count = int(math.Round(val * 1000))
 	default:
 		val, err := strconv.ParseFloat(numberStr, 64)
 		if err != nil {
 			return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
 		}
-		count = int(val)
+		count = int(math.Round(val))
 	}
 
 	return count, nil

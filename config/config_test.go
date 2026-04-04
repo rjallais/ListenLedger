@@ -26,7 +26,7 @@ func TestLoadFromEnvFailsOnInvalidLocalBrowserlessEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	err := cfg.LoadFromEnv()
 	if err == nil {
-		t.Fatal("LoadFromEnv() error = nil, want invalid LOCAL_BROWSERLESS_ENABLED")
+		t.Fatalf("LoadFromEnv() error = nil, want invalid LOCAL_BROWSERLESS_ENABLED")
 	}
 	if !strings.Contains(err.Error(), "invalid LOCAL_BROWSERLESS_ENABLED") {
 		t.Fatalf("LoadFromEnv() error = %v, want invalid LOCAL_BROWSERLESS_ENABLED", err)
@@ -39,7 +39,7 @@ func TestLoadFromEnvFailsOnInvalidLocalBrowserlessConcurrency(t *testing.T) {
 	cfg := DefaultConfig()
 	err := cfg.LoadFromEnv()
 	if err == nil {
-		t.Fatal("LoadFromEnv() error = nil, want invalid LOCAL_BROWSERLESS_CONCURRENCY")
+		t.Fatalf("LoadFromEnv() error = nil, want invalid LOCAL_BROWSERLESS_CONCURRENCY")
 	}
 	if !strings.Contains(err.Error(), "invalid LOCAL_BROWSERLESS_CONCURRENCY") {
 		t.Fatalf("LoadFromEnv() error = %v, want invalid LOCAL_BROWSERLESS_CONCURRENCY", err)
@@ -60,3 +60,18 @@ func TestValidateRequiresUsableProviderConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAllowsEmptyLocalBrowserlessOverrides(t *testing.T) {
+	t.Setenv("LOCAL_BROWSERLESS_ENDPOINT", "")
+	t.Setenv("LOCAL_BROWSERLESS_TOKEN", "")
+
+	cfg := DefaultConfig()
+	if err := cfg.LoadFromEnv(); err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.LocalBrowserlessEndpoint != "" {
+		t.Fatalf("LocalBrowserlessEndpoint = %q, want empty string", cfg.LocalBrowserlessEndpoint)
+	}
+	if cfg.LocalBrowserlessToken != "" {
+		t.Fatalf("LocalBrowserlessToken = %q, want empty string", cfg.LocalBrowserlessToken)
+	}
+}
