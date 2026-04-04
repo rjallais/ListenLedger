@@ -243,6 +243,8 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 			continue
 		}
 
+		log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
+
 		if artistID == "" {
 			continue
 		}

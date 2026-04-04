@@ -56,7 +56,7 @@ func TestValidateRequiresUsableProviderConfig(t *testing.T) {
 
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("Validate() error = nil, want failure when only raw token is set")
+		t.Fatalf("Validate() error = nil, want failure when only raw token is set")
 	}
 }
 

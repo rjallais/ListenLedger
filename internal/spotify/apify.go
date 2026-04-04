@@ -443,8 +443,7 @@ func parseListenersFromRawText(raw string) (int, error) {
 		return 0, fmt.Errorf("apify: 'monthly listeners' text not found in %q", raw)
 	}
 
-	match := strings.TrimSpace(raw)
-	parts := listenersRe.FindStringSubmatch(match)
+	parts := listenersRe.FindStringSubmatch(raw)
 	if len(parts) == 0 {
 		return 0, fmt.Errorf("apify: unexpected listener text format %q", raw)
 	}

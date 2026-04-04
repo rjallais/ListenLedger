@@ -3,8 +3,6 @@
 package spotify
 
 import (
-	"ListenLedger/config"
-
 	"bytes"
 	"context"
 	"encoding/json/v2"
@@ -15,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ListenLedger/config"
 )
 
 // TestApifyIntegration_FetchListenerCount performs a live end-to-end call to
