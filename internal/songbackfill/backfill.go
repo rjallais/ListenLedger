@@ -1529,13 +1529,6 @@ func (l *TidalLookup) doRequest(ctx context.Context, client *http.Client, endpoi
 	return client.Do(req)
 }
 
-func (l *TidalLookup) searchLimit() int {
-	if l.SearchLimit <= 0 {
-		return defaultTidalSearchLimit
-	}
-	return l.SearchLimit
-}
-
 type musicBrainzRecordingResponse struct {
 	Recordings []musicBrainzRecording `json:"recordings"`
 }
@@ -1773,10 +1766,6 @@ type tidalItemAttributes struct {
 	Name        string `json:"name"`
 }
 
-type tidalArtistBrief struct {
-	Name string `json:"name"`
-}
-
 func tidalIncludedTrackItems(payload tidalSearchResponse) []tidalSearchItem {
 	trackIDs := map[string]bool{}
 	for _, ref := range payload.Data.Relationships.Tracks.Data {
@@ -1827,21 +1816,6 @@ func tidalTrackArtistNames(track tidalSearchItem, included []tidalSearchItem) []
 
 func tidalIncludedArtistName(attributes tidalItemAttributes) string {
 	return attributes.Name
-}
-
-func tidalArtistNames(artists []tidalArtistBrief) []string {
-	names := make([]string, 0, len(artists))
-	seen := map[string]bool{}
-	for _, artist := range artists {
-		name := strings.TrimSpace(artist.Name)
-		key := normalizeKey(name)
-		if name == "" || key == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		names = append(names, name)
-	}
-	return names
 }
 
 func tidalConfidence(song SongInput, primaryArtistPrefix string, item tidalSearchItem, artistNames []string) float64 {
