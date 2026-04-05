@@ -54,3 +54,6 @@ __pycache__/
 missing_artists.txt
 tools/count.txt
 
+# Developer utilities
+cmd/lookup_artists/
+
