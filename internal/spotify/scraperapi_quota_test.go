@@ -42,10 +42,10 @@ func TestFetchViaScraperAPIQuotaExhaustedOn403(t *testing.T) {
 	}
 
 	if !errors.Is(err, ErrQuotaExhausted) {
-		t.Errorf("expected ErrQuotaExhausted, got %v", err)
+		t.Fatalf("expected ErrQuotaExhausted, got %v", err)
 	}
 
 	if callCount != 1 {
-		t.Errorf("expected 1 call, got %d. It should not retry profiles on 403", callCount)
+		t.Fatalf("expected 1 call, got %d. It should not retry profiles on 403", callCount)
 	}
 }
