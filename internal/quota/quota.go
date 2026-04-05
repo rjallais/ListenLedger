@@ -4,14 +4,15 @@
 package quota
 
 import (
-	"ListenLedger/config"
-
 	"context"
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"time"
+
+	"ListenLedger/config"
 )
 
 // ApifyLimitsResponse represents the Apify /v2/users/me/limits endpoint response.
@@ -400,8 +401,8 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 	maxUSD := limitsResp.Data.Limits.MaxMonthlyUsageUSD
 
 	// Convert USD values to integer cents for the shared Info representation.
-	usedCents := int(usedUSD * 100)
-	maxCents := int(maxUSD * 100)
+	usedCents := int(math.Round(usedUSD * 100))
+	maxCents := int(math.Round(maxUSD * 100))
 	remainingCents := maxCents - usedCents
 	if remainingCents < 0 {
 		remainingCents = 0

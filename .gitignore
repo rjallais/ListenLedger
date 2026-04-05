@@ -49,3 +49,11 @@ __pycache__/
 /AGENTS.md
 .gemini/
 # .agents/
+
+# Local scratch notes
+missing_artists.txt
+tools/count.txt
+
+# Developer utilities
+cmd/lookup_artists/
+
