@@ -83,47 +83,44 @@ func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) erro
 
 	count := 0
 	for i, row := range records {
-		if i == 0 {
+		if i == 0 || len(row) < 5 {
 			continue
 		}
-
-		if len(row) < 5 {
-			continue
-		}
-
-		title := strings.TrimSpace(row[0])
-		artistName := strings.TrimSpace(row[1])
-
-		if title == "" || artistName == "" {
-			continue
-		}
-
-		collectionSongs := parseNumber(row[2])
-		totalSongs := parseNumber(row[3])
-		status := determineAlbumStatus(collectionSongs, totalSongs)
-
-		if dryRun {
-			log.Printf("[seed] Would create album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
-			count++
-			continue
-		}
-
-		record := core.NewRecord(collection)
-		record.Set("title", title)
-		record.Set("artist_name", artistName)
-		record.Set("collection_songs", collectionSongs)
-		record.Set("total_songs", totalSongs)
-		record.Set("status", status)
-
-		if err := app.Save(record); err != nil {
-			log.Printf("[seed] Warning: failed to save album %q: %v", title, err)
-			continue
-		}
-		count++
+		count += seedAlbumRow(app, collection, dryRun, row)
 	}
 
 	log.Printf("[seed] %s %d album records", dryRunAction(dryRun), count)
 	return nil
+}
+
+func seedAlbumRow(app *pocketbase.PocketBase, collection *core.Collection, dryRun bool, row []string) int {
+	title := strings.TrimSpace(row[0])
+	artistName := strings.TrimSpace(row[1])
+	if title == "" || artistName == "" {
+		return 0
+	}
+
+	collectionSongs := parseNumber(row[2])
+	totalSongs := parseNumber(row[3])
+	status := determineAlbumStatus(collectionSongs, totalSongs)
+
+	if dryRun {
+		log.Printf("[seed] Would create album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
+		return 1
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("title", title)
+	record.Set("artist_name", artistName)
+	record.Set("collection_songs", collectionSongs)
+	record.Set("total_songs", totalSongs)
+	record.Set("status", status)
+
+	if err := app.Save(record); err != nil {
+		log.Printf("[seed] Warning: failed to save album %q: %v", title, err)
+		return 0
+	}
+	return 1
 }
 
 // seedArtistsFromSheet1 reads artists from the given Sheet1 CSV and creates artist records for two genre groups ("rock_metal" and "everything_else").
@@ -131,6 +128,14 @@ func seedAlbums(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) erro
 // It extracts fields (name, spotify_id, monthly_listeners, collection_songs, total_songs) from two separate column ranges per row, deduplicates by spotify_id, and either logs the would-be actions when dryRun is true or saves new records to the "artists" collection.
 //
 // Returns an error if the CSV file cannot be opened or read, or if the "artists" collection cannot be located.
+type artistColumnMapping struct {
+	Name            int
+	SpotifyID       int
+	Listeners       int
+	CollectionSongs int
+	TotalSongs      int
+}
+
 func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
 	file, err := os.Open(sheet1Path)
 	if err != nil {
@@ -149,90 +154,69 @@ func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path s
 		return fmt.Errorf("artists collection not found: %w", err)
 	}
 
-	existingArtists := make(map[string]bool)
-	rockMetalCount := 0
-	everythingElseCount := 0
+	ctx := seedContext{app: app, collection: collection, dryRun: dryRun, seen: make(map[string]bool)}
+
+	rockMetalMapping := artistColumnMapping{Name: 7, SpotifyID: 8, Listeners: 9, CollectionSongs: 10, TotalSongs: 11}
+	everythingElseMapping := artistColumnMapping{Name: 13, SpotifyID: 14, Listeners: 15, CollectionSongs: 16, TotalSongs: 17}
 
 	for i, row := range records {
 		if i == 0 {
 			continue
 		}
-
 		if len(row) > 11 {
-			name := strings.TrimSpace(row[7])
-			spotifyID := strings.TrimSpace(row[8])
-			listenersStr := strings.TrimSpace(row[9])
-			collectionSongs := parseNumber(row[10])
-			totalSongs := parseNumber(row[11])
-
-			if name != "" && spotifyID != "" && !existingArtists[spotifyID] {
-				listeners := parseListeners(listenersStr)
-
-				if dryRun {
-					log.Printf("[seed] Would create rock_metal artist: %q (%s, %d listeners)", name, spotifyID, listeners)
-					existingArtists[spotifyID] = true
-					rockMetalCount++
-					continue
-				}
-
-				record := core.NewRecord(collection)
-				record.Set("name", name)
-				record.Set("spotify_id", spotifyID)
-				record.Set("monthly_listeners", listeners)
-				record.Set("genre_group", "rock_metal")
-				record.Set("list_status", "included")
-				record.Set("fetch_status", "idle")
-				record.Set("collection_songs", collectionSongs)
-				record.Set("total_songs", totalSongs)
-
-				if err := app.Save(record); err != nil {
-					log.Printf("[seed] Warning: failed to save rock_metal artist %q: %v", name, err)
-				} else {
-					existingArtists[spotifyID] = true
-					rockMetalCount++
-				}
-			}
+			ctx.rockMetalCount += ctx.seedArtistGenreGroup(row, rockMetalMapping, "rock_metal")
 		}
-
 		if len(row) > 17 {
-			name := strings.TrimSpace(row[13])
-			spotifyID := strings.TrimSpace(row[14])
-			listenersStr := strings.TrimSpace(row[15])
-			collectionSongs := parseNumber(row[16])
-			totalSongs := parseNumber(row[17])
-
-			if name != "" && spotifyID != "" && !existingArtists[spotifyID] {
-				listeners := parseListeners(listenersStr)
-
-				if dryRun {
-					log.Printf("[seed] Would create everything_else artist: %q (%s, %d listeners)", name, spotifyID, listeners)
-					existingArtists[spotifyID] = true
-					everythingElseCount++
-					continue
-				}
-
-				record := core.NewRecord(collection)
-				record.Set("name", name)
-				record.Set("spotify_id", spotifyID)
-				record.Set("monthly_listeners", listeners)
-				record.Set("genre_group", "everything_else")
-				record.Set("list_status", "included")
-				record.Set("fetch_status", "idle")
-				record.Set("collection_songs", collectionSongs)
-				record.Set("total_songs", totalSongs)
-
-				if err := app.Save(record); err != nil {
-					log.Printf("[seed] Warning: failed to save everything_else artist %q: %v", name, err)
-				} else {
-					existingArtists[spotifyID] = true
-					everythingElseCount++
-				}
-			}
+			ctx.everythingElseCount += ctx.seedArtistGenreGroup(row, everythingElseMapping, "everything_else")
 		}
 	}
 
-	log.Printf("[seed] %s %d rock_metal artists, %d everything_else artists", dryRunAction(dryRun), rockMetalCount, everythingElseCount)
+	log.Printf("[seed] %s %d rock_metal artists, %d everything_else artists", dryRunAction(dryRun), ctx.rockMetalCount, ctx.everythingElseCount)
 	return nil
+}
+
+type seedContext struct {
+	app                 *pocketbase.PocketBase
+	collection          *core.Collection
+	dryRun              bool
+	seen                map[string]bool
+	rockMetalCount      int
+	everythingElseCount int
+}
+
+func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMapping, genreGroup string) int {
+	name := strings.TrimSpace(row[cols.Name])
+	spotifyID := strings.TrimSpace(row[cols.SpotifyID])
+	if name == "" || spotifyID == "" || c.seen[spotifyID] {
+		return 0
+	}
+
+	listeners := parseListeners(strings.TrimSpace(row[cols.Listeners]))
+	collectionSongs := parseNumber(row[cols.CollectionSongs])
+	totalSongs := parseNumber(row[cols.TotalSongs])
+
+	if c.dryRun {
+		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
+		c.seen[spotifyID] = true
+		return 1
+	}
+
+	record := core.NewRecord(c.collection)
+	record.Set("name", name)
+	record.Set("spotify_id", spotifyID)
+	record.Set("monthly_listeners", listeners)
+	record.Set("genre_group", genreGroup)
+	record.Set("list_status", "included")
+	record.Set("fetch_status", "idle")
+	record.Set("collection_songs", collectionSongs)
+	record.Set("total_songs", totalSongs)
+
+	if err := c.app.Save(record); err != nil {
+		log.Printf("[seed] Warning: failed to save %s artist %q: %v", genreGroup, name, err)
+		return 0
+	}
+	c.seen[spotifyID] = true
+	return 1
 }
 
 func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) error {
@@ -266,100 +250,108 @@ func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) 
 		if i == 0 {
 			continue
 		}
-
 		if len(row) > 5 {
-			songTitle := strings.TrimSpace(row[3])
-			artistName := strings.TrimSpace(row[4])
-			releaseDate := strings.TrimSpace(row[5])
-
-			songKey := songTitle + "|" + artistName
-			if songTitle != "" && artistName != "" && !addedSongs[songKey] {
-				if dryRun {
-					log.Printf("[seed] Would create song: %q by %q (%s)", songTitle, artistName, releaseDate)
-					addedSongs[songKey] = true
-					songCount++
-					continue
-				}
-
-				record := core.NewRecord(songsCollection)
-				record.Set("title", songTitle)
-				record.Set("artist_name", artistName)
-				record.Set("release_date", releaseDate)
-				record.Set("is_recent", true)
-
-				if err := app.Save(record); err != nil {
-					log.Printf("[seed] Warning: failed to save song %q: %v", songTitle, err)
-				} else {
-					addedSongs[songKey] = true
-					songCount++
-				}
-			}
+			songCount += seedSongFromSheet2Row(app, dryRun, songsCollection, row, addedSongs)
 		}
-
 		if len(row) > 9 {
-			bandName := strings.TrimSpace(row[7])
-			spotifyID := strings.TrimSpace(row[8])
-			listenersStr := strings.TrimSpace(row[9])
-
-			if bandName != "" && spotifyID != "" {
-				listeners := parseListeners(listenersStr)
-				if listeners == 0 {
-					continue
-				}
-
-				if dryRun {
-					existingRecords, err := app.FindRecordsByFilter(
-						artistsCollection.Id,
-						"spotify_id = {:spotifyId}",
-						"-created",
-						1, 0,
-						map[string]any{"spotifyId": spotifyID},
-					)
-
-					if err == nil && len(existingRecords) > 0 {
-						log.Printf("[seed] Would update artist: %q (%d listeners)", bandName, listeners)
-						artistUpdateCount++
-					} else {
-						log.Printf("[seed] Would create artist: %q (%s, %d listeners)", bandName, spotifyID, listeners)
-					}
-					continue
-				}
-
-				existingRecords, err := app.FindRecordsByFilter(
-					artistsCollection.Id,
-					"spotify_id = {:spotifyId}",
-					"-created",
-					1, 0,
-					map[string]any{"spotifyId": spotifyID},
-				)
-
-				if err == nil && len(existingRecords) > 0 {
-					record := existingRecords[0]
-					record.Set("monthly_listeners", listeners)
-					if err := app.Save(record); err != nil {
-						log.Printf("[seed] Warning: failed to update artist %q: %v", bandName, err)
-					} else {
-						artistUpdateCount++
-					}
-				} else {
-					record := core.NewRecord(artistsCollection)
-					record.Set("name", bandName)
-					record.Set("spotify_id", spotifyID)
-					record.Set("monthly_listeners", listeners)
-					record.Set("genre_group", "rock_metal")
-					record.Set("list_status", "waiting")
-					record.Set("fetch_status", "idle")
-
-					if err := app.Save(record); err != nil {
-						log.Printf("[seed] Warning: failed to create artist %q: %v", bandName, err)
-					}
-				}
-			}
+			artistUpdateCount += upsertArtistFromSheet2(app, dryRun, artistsCollection, row)
 		}
 	}
 
 	log.Printf("[seed] %s %d song records, %d artist updates from Sheet2", dryRunAction(dryRun), songCount, artistUpdateCount)
 	return nil
+}
+
+func seedSongFromSheet2Row(app *pocketbase.PocketBase, dryRun bool, collection *core.Collection, row []string, added map[string]bool) int {
+	songTitle := strings.TrimSpace(row[3])
+	artistName := strings.TrimSpace(row[4])
+	releaseDate := strings.TrimSpace(row[5])
+
+	songKey := songTitle + "|" + artistName
+	if songTitle == "" || artistName == "" || added[songKey] {
+		return 0
+	}
+
+	if dryRun {
+		log.Printf("[seed] Would create song: %q by %q (%s)", songTitle, artistName, releaseDate)
+		added[songKey] = true
+		return 1
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("title", songTitle)
+	record.Set("artist_name", artistName)
+	record.Set("release_date", releaseDate)
+	record.Set("is_recent", true)
+
+	if err := app.Save(record); err != nil {
+		log.Printf("[seed] Warning: failed to save song %q: %v", songTitle, err)
+		return 0
+	}
+	added[songKey] = true
+	return 1
+}
+
+func upsertArtistFromSheet2(app *pocketbase.PocketBase, dryRun bool, collection *core.Collection, row []string) int {
+	bandName := strings.TrimSpace(row[7])
+	spotifyID := strings.TrimSpace(row[8])
+	listenersStr := strings.TrimSpace(row[9])
+
+	if bandName == "" || spotifyID == "" {
+		return 0
+	}
+	listeners := parseListeners(listenersStr)
+	if listeners == 0 {
+		return 0
+	}
+
+	if dryRun {
+		return logDryRunArtistUpsert(app, collection, bandName, spotifyID, listeners)
+	}
+	return saveArtistUpsert(app, collection, bandName, spotifyID, listeners)
+}
+
+func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
+	existing, err := app.FindRecordsByFilter(
+		collection.Id, "spotify_id = {:spotifyId}", "-created", 1, 0,
+		map[string]any{"spotifyId": spotifyID},
+	)
+	if err == nil && len(existing) > 0 {
+		log.Printf("[seed] Would update artist: %q (%d listeners)", bandName, listeners)
+	} else {
+		log.Printf("[seed] Would create artist: %q (%s, %d listeners)", bandName, spotifyID, listeners)
+	}
+	return 0
+}
+
+func saveArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
+	existing, err := app.FindRecordsByFilter(
+		collection.Id, "spotify_id = {:spotifyId}", "-created", 1, 0,
+		map[string]any{"spotifyId": spotifyID},
+	)
+	if err == nil && len(existing) > 0 {
+		record := existing[0]
+		record.Set("monthly_listeners", listeners)
+		if err := app.Save(record); err != nil {
+			log.Printf("[seed] Warning: failed to update artist %q: %v", bandName, err)
+			return 0
+		}
+		return 1
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("name", bandName)
+	record.Set("spotify_id", spotifyID)
+	record.Set("monthly_listeners", listeners)
+	record.Set("genre_group", "rock_metal")
+	record.Set("list_status", "waiting")
+	record.Set("fetch_status", "idle")
+
+	if err := app.Save(record); err != nil {
+		log.Printf("[seed] Warning: failed to create artist %q: %v", bandName, err)
+		return 0
+	}
+	return 1
 }
 
 func determineAlbumStatus(collectionSongs, totalSongs int) string {
