@@ -166,112 +166,119 @@ func DefaultConfig() *Config {
 	}
 }
 
-// LoadFromEnv loads configuration from environment variables
+// LoadFromEnv loads configuration from environment variables.
 func (c *Config) LoadFromEnv() error {
 	if staticDir := os.Getenv("STATIC_DIR"); staticDir != "" {
 		c.StaticDir = staticDir
 	}
 
-	// Browserless token (optional; when set, Browserless can be used)
-	if browserlessToken := os.Getenv("BROWSERLESS_TOKEN"); browserlessToken != "" {
-		c.BrowserlessToken = browserlessToken
+	c.loadBrowserlessConfig()
+	c.loadScrapingAntConfig()
+	c.loadScraperAPIConfig()
+	if err := c.loadApifyConfig(); err != nil {
+		return err
 	}
+	if err := c.loadLocalHeadlessConfig(); err != nil {
+		return err
+	}
+	if err := c.loadLocalBrowserlessConfig(); err != nil {
+		return err
+	}
+	c.loadSharedConfig()
+	c.loadJetStreamConfig()
 
-	// Optional override for Browserless endpoint
+	return nil
+}
+
+// loadBrowserlessConfig reads cloud Browserless provider settings from env.
+func (c *Config) loadBrowserlessConfig() {
+	if token := os.Getenv("BROWSERLESS_TOKEN"); token != "" {
+		c.BrowserlessToken = token
+	}
 	if endpoint := os.Getenv("BROWSERLESS_ENDPOINT"); endpoint != "" {
 		c.BrowserlessEndpoint = endpoint
 	}
-	if concStr := os.Getenv("BROWSERLESS_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.BrowserlessConcurrency = conc
-		}
+	if conc, ok := parsePositiveInt("BROWSERLESS_CONCURRENCY"); ok {
+		c.BrowserlessConcurrency = conc
 	}
+}
 
-	// ScrapingAnt token (optional; when set, ScrapingAnt can be used alongside Browserless)
-	if scrapingAntToken := os.Getenv("SCRAPINGANT_TOKEN"); scrapingAntToken != "" {
-		c.ScrapingAntToken = scrapingAntToken
+// loadScrapingAntConfig reads ScrapingAnt provider settings from env.
+func (c *Config) loadScrapingAntConfig() {
+	if token := os.Getenv("SCRAPINGANT_TOKEN"); token != "" {
+		c.ScrapingAntToken = token
 	}
+	if endpoint := os.Getenv("SCRAPINGANT_ENDPOINT"); endpoint != "" {
+		c.ScrapingAntEndpoint = endpoint
+	}
+}
 
-	// Optional override for ScrapingAnt endpoint
-	if scrapingAntEndpoint := os.Getenv("SCRAPINGANT_ENDPOINT"); scrapingAntEndpoint != "" {
-		c.ScrapingAntEndpoint = scrapingAntEndpoint
+// loadScraperAPIConfig reads ScraperAPI provider settings from env.
+func (c *Config) loadScraperAPIConfig() {
+	if token := os.Getenv("SCRAPERAPI_TOKEN"); token != "" {
+		c.ScraperAPIToken = token
 	}
-
-	// ScraperAPI token (optional; when set, ScraperAPI can be used)
-	if scraperAPIToken := os.Getenv("SCRAPERAPI_TOKEN"); scraperAPIToken != "" {
-		c.ScraperAPIToken = scraperAPIToken
+	if endpoint := os.Getenv("SCRAPERAPI_ENDPOINT"); endpoint != "" {
+		c.ScraperAPIEndpoint = endpoint
 	}
-
-	// Optional override for ScraperAPI endpoint
-	if scraperAPIEndpoint := os.Getenv("SCRAPERAPI_ENDPOINT"); scraperAPIEndpoint != "" {
-		c.ScraperAPIEndpoint = scraperAPIEndpoint
-	}
-	if concStr := os.Getenv("SCRAPERAPI_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.ScraperAPIConcurrency = conc
-		}
+	if conc, ok := parsePositiveInt("SCRAPERAPI_CONCURRENCY"); ok {
+		c.ScraperAPIConcurrency = conc
 	}
 	if selector, ok := os.LookupEnv("SCRAPERAPI_WAIT_FOR_SELECTOR"); ok {
 		c.ScraperAPIWaitForSelector = selector
 	}
+}
 
-	// Apify token (optional; when set, Apify can be used as a provider)
-	if apifyToken := os.Getenv("APIFY_TOKEN"); apifyToken != "" {
-		c.ApifyToken = apifyToken
+// loadApifyConfig reads Apify provider settings from env.
+func (c *Config) loadApifyConfig() error {
+	if token := os.Getenv("APIFY_TOKEN"); token != "" {
+		c.ApifyToken = token
 	}
-
-	// Optional override for Apify endpoint
-	if apifyEndpoint := os.Getenv("APIFY_ENDPOINT"); apifyEndpoint != "" {
-		c.ApifyEndpoint = apifyEndpoint
+	if endpoint := os.Getenv("APIFY_ENDPOINT"); endpoint != "" {
+		c.ApifyEndpoint = endpoint
 	}
-
-	// Optional override for Apify Actor ID
-	if apifyActorID := os.Getenv("APIFY_ACTOR_ID"); apifyActorID != "" {
-		c.ApifyActorID = apifyActorID
+	if actorID := os.Getenv("APIFY_ACTOR_ID"); actorID != "" {
+		c.ApifyActorID = actorID
 	}
-
-	// Apify memory allocation per run (MB)
-	if memStr := os.Getenv("APIFY_MEMORY_MB"); memStr != "" {
-		if mem, err := strconv.Atoi(memStr); err == nil && mem > 0 {
-			c.ApifyMemoryMB = mem
-		}
+	if mem, ok := parsePositiveInt("APIFY_MEMORY_MB"); ok {
+		c.ApifyMemoryMB = mem
 	}
-
-	// Maximum concurrent browser pages per Actor run
-	if concStr := os.Getenv("APIFY_MAX_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.ApifyMaxConcurrency = conc
-		}
+	if conc, ok := parsePositiveInt("APIFY_MAX_CONCURRENCY"); ok {
+		c.ApifyMaxConcurrency = conc
 	}
-
-	// Number of artist URLs per Actor run (batch size)
-	if batchStr := os.Getenv("APIFY_BATCH_SIZE"); batchStr != "" {
-		if batch, err := strconv.Atoi(batchStr); err == nil && batch > 0 {
-			c.ApifyBatchSize = batch
-		}
+	if batch, ok := parsePositiveInt("APIFY_BATCH_SIZE"); ok {
+		c.ApifyBatchSize = batch
 	}
+	return nil
+}
 
-	// Local headless settings
+// loadLocalHeadlessConfig reads local headless (go-rod) settings from env.
+func (c *Config) loadLocalHeadlessConfig() error {
 	if enabledStr := os.Getenv("LOCAL_HEADLESS_ENABLED"); enabledStr != "" {
-		if val, err := strconv.ParseBool(enabledStr); err == nil {
-			c.LocalHeadlessEnabled = val
+		val, err := strconv.ParseBool(enabledStr)
+		if err != nil {
+			return fmt.Errorf("invalid LOCAL_HEADLESS_ENABLED: %w", err)
 		}
+		c.LocalHeadlessEnabled = val
 	}
 	if chromePath := os.Getenv("LOCAL_CHROME_PATH"); chromePath != "" {
 		c.LocalChromePath = chromePath
 	}
-	if concStr := os.Getenv("LOCAL_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.LocalConcurrency = conc
-		}
+	if conc, ok := parsePositiveInt("LOCAL_CONCURRENCY"); ok {
+		c.LocalConcurrency = conc
 	}
 	if ignoreCertStr := os.Getenv("LOCAL_IGNORE_CERT_ERRORS"); ignoreCertStr != "" {
-		if val, err := strconv.ParseBool(ignoreCertStr); err == nil {
-			c.LocalIgnoreCertErrors = val
+		val, err := strconv.ParseBool(ignoreCertStr)
+		if err != nil {
+			return fmt.Errorf("invalid LOCAL_IGNORE_CERT_ERRORS: %w", err)
 		}
+		c.LocalIgnoreCertErrors = val
 	}
+	return nil
+}
 
-	// Local Browserless (self-hosted OCI container) settings
+// loadLocalBrowserlessConfig reads self-hosted Browserless (OCI container) settings from env.
+func (c *Config) loadLocalBrowserlessConfig() error {
 	if enabledStr := os.Getenv("LOCAL_BROWSERLESS_ENABLED"); enabledStr != "" {
 		val, err := strconv.ParseBool(enabledStr)
 		if err != nil {
@@ -295,33 +302,30 @@ func (c *Config) LoadFromEnv() error {
 		}
 		c.LocalBrowserlessConcurrency = conc
 	}
+	return nil
+}
 
-	// Allow overriding shared provider concurrency (used by ScrapingAnt).
-	if concStr := os.Getenv("MAX_CONCURRENCY"); concStr != "" {
-		if conc, err := strconv.Atoi(concStr); err == nil && conc > 0 {
-			c.MaxConcurrency = conc
-		}
+// loadSharedConfig reads shared provider behavior settings from env.
+func (c *Config) loadSharedConfig() {
+	if conc, ok := parsePositiveInt("MAX_CONCURRENCY"); ok {
+		c.MaxConcurrency = conc
 	}
-
-	// Allow overriding max retries via env var
 	if retriesStr := os.Getenv("MAX_RETRIES"); retriesStr != "" {
 		if retries, err := strconv.Atoi(retriesStr); err == nil && retries >= 0 {
 			c.MaxRetries = retries
 		}
 	}
-
-	// Optional per-request success logging to avoid noisy production logs by default.
 	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
 		if logVal, err := strconv.ParseBool(logStr); err == nil {
 			c.LogSuccessfulFetches = logVal
 		}
 	}
+}
 
-	// JetStream scrape worker tuning
-	if maxDeliverStr := os.Getenv("SCRAPE_MAX_DELIVER"); maxDeliverStr != "" {
-		if maxDeliver, err := strconv.Atoi(maxDeliverStr); err == nil && maxDeliver > 0 {
-			c.ScrapeMaxDeliver = maxDeliver
-		}
+// loadJetStreamConfig reads JetStream scrape worker tuning from env.
+func (c *Config) loadJetStreamConfig() {
+	if maxDeliver, ok := parsePositiveInt("SCRAPE_MAX_DELIVER"); ok {
+		c.ScrapeMaxDeliver = maxDeliver
 	}
 	if backoffStr := os.Getenv("SCRAPE_BACKOFF"); backoffStr != "" {
 		if vals := parseDurationList(backoffStr); len(vals) > 0 {
@@ -338,8 +342,20 @@ func (c *Config) LoadFromEnv() error {
 			c.ScrapeInProgressInterval = d
 		}
 	}
+}
 
-	return nil
+// parsePositiveInt reads the named env variable and returns its integer value
+// if present and positive, along with a boolean indicating success.
+func parsePositiveInt(envKey string) (int, bool) {
+	s := os.Getenv(envKey)
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func parseDurationList(raw string) []time.Duration {
@@ -389,27 +405,46 @@ func (c *Config) HasApify() bool {
 	return c.ApifyToken != "" && c.ApifyEndpoint != "" && c.ApifyActorID != ""
 }
 
-// Validate ensures the configuration is valid
+// hasAnyProvider returns true if at least one scraping provider is configured.
+func (c *Config) hasAnyProvider() bool {
+	return c.HasLocalHeadless() ||
+		c.HasLocalBrowserless() ||
+		c.HasBrowserless() ||
+		c.HasScrapingAnt() ||
+		c.HasScraperAPI() ||
+		c.HasApify()
+}
+
+// Validate ensures the configuration is valid.
 func (c *Config) Validate() error {
-	// At least one provider must be configured, or local headless must be enabled.
-	if !c.HasLocalHeadless() && !c.HasLocalBrowserless() && !c.HasBrowserless() && !c.HasScrapingAnt() && !c.HasScraperAPI() && !c.HasApify() {
+	if !c.hasAnyProvider() {
 		return errors.New("at least one usable provider must be configured: set BROWSERLESS_TOKEN with BrowserlessEndpoint, SCRAPINGANT_TOKEN with ScrapingAntEndpoint, SCRAPERAPI_TOKEN with ScraperAPIEndpoint, or APIFY_TOKEN with ApifyEndpoint and ApifyActorID; or enable local headless/self-hosted browserless")
 	}
-	if c.MaxConcurrency <= 0 {
-		return errors.New("max concurrency must be positive")
+	return errors.Join(
+		validatePositive("max concurrency", c.MaxConcurrency),
+		validatePositive("browserless concurrency", c.BrowserlessConcurrency),
+		validateNonNegative("max retries", c.MaxRetries),
+		validatePositive("local concurrency", c.LocalConcurrency),
+		validatePositive("scraperapi concurrency", c.ScraperAPIConcurrency),
+		validateLocalBrowserlessConcurrency(c),
+	)
+}
+
+func validatePositive(name string, v int) error {
+	if v <= 0 {
+		return fmt.Errorf("%s must be positive", name)
 	}
-	if c.BrowserlessConcurrency <= 0 {
-		return errors.New("browserless concurrency must be positive")
+	return nil
+}
+
+func validateNonNegative(name string, v int) error {
+	if v < 0 {
+		return fmt.Errorf("%s cannot be negative", name)
 	}
-	if c.MaxRetries < 0 {
-		return errors.New("max retries cannot be negative")
-	}
-	if c.LocalConcurrency <= 0 {
-		return errors.New("local concurrency must be positive")
-	}
-	if c.ScraperAPIConcurrency <= 0 {
-		return errors.New("scraperapi concurrency must be positive")
-	}
+	return nil
+}
+
+func validateLocalBrowserlessConcurrency(c *Config) error {
 	if c.HasLocalBrowserless() && c.LocalBrowserlessConcurrency <= 0 {
 		return errors.New("local browserless concurrency must be positive")
 	}

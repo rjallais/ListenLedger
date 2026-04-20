@@ -12,11 +12,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -127,10 +125,13 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	// Use configured memory (default 8192 MB). Even a single-artist run benefits
 	// from extra headroom; the memory parameter drives Actor container sizing.
 	// timeout=90 gives the Actor 90 s to navigate and render the Spotify page.
-	endpoint := buildApifyEndpoint(
-		c.config.ApifyEndpoint, c.config.ApifyActorID, c.config.ApifyToken,
-		c.config.ApifyMemoryMB, 90,
-	)
+	endpoint := buildApifyEndpoint(apifyEndpointParams{
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: 90,
+	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -182,7 +183,6 @@ func parseApifyResponse(body []byte) (int, error) {
 	if err := json.Unmarshal(body, &items); err != nil {
 		return 0, fmt.Errorf("apify: failed to unmarshal dataset items: %w", err)
 	}
-
 	if len(items) == 0 {
 		return 0, fmt.Errorf("apify: actor returned no dataset items")
 	}
@@ -191,55 +191,57 @@ func parseApifyResponse(body []byte) (int, error) {
 
 	// The Apify framework sets #error=true when the browser or navigation
 	// fails before our pageFunction even runs (e.g. OOM, page-creation timeout).
-	// Surface the embedded errorMessages so the caller sees a useful message.
 	if item.IsError {
-		if len(item.Debug.ErrorMessages) > 0 {
-			// Trim each message to 200 chars to keep logs readable.
-			msgs := make([]string, 0, len(item.Debug.ErrorMessages))
-			for _, m := range item.Debug.ErrorMessages {
-				m = strings.TrimSpace(m)
-				if len(m) > 200 {
-					m = m[:200] + "…"
-				}
-				msgs = append(msgs, m)
-			}
-			return 0, fmt.Errorf("apify: actor framework error for %s: %s",
-				item.URL, strings.Join(msgs, " | "))
-		}
-		return 0, fmt.Errorf("apify: actor framework error for %s (no details)", item.URL)
+		return 0, apifyFrameworkError(item)
 	}
-
-	// Our own pageFunction sets error when it cannot find the listener text.
 	if item.Error != "" {
 		return 0, fmt.Errorf("apify: actor reported error: %s", item.Error)
 	}
+	return resolveListenerCount(item)
+}
 
-	if item.MonthlyListenersRaw != "" {
-		rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
-		if err != nil {
-			return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
+// apifyFrameworkError builds an error from an Apify #error sentinel item,
+// surfacing any embedded errorMessages so callers see a useful message.
+func apifyFrameworkError(item apifyDatasetItem) error {
+	if len(item.Debug.ErrorMessages) == 0 {
+		return fmt.Errorf("apify: actor framework error for %s (no details)", item.URL)
+	}
+	msgs := make([]string, 0, len(item.Debug.ErrorMessages))
+	for _, m := range item.Debug.ErrorMessages {
+		m = strings.TrimSpace(m)
+		if len(m) > 200 {
+			m = m[:200] + "…"
 		}
-		// Prefer reparsing the raw text ourselves. The actor's numeric field has
-		// occasionally been observed to over-apply the M suffix and inflate values
-		// by 1,000,000. Raw text from the page is the safer source of truth.
-		if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
-			log.Printf(
-				"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
-				item.URL,
-				*item.MonthlyListeners,
-				rawCount,
-				item.MonthlyListenersRaw,
-			)
+		msgs = append(msgs, m)
+	}
+	return fmt.Errorf("apify: actor framework error for %s: %s", item.URL, strings.Join(msgs, " | "))
+}
+
+// resolveListenerCount picks the listener value from a dataset item, preferring
+// the raw text field (re-parsed locally) over the pre-parsed integer to avoid
+// actor-side M-suffix inflation.
+func resolveListenerCount(item apifyDatasetItem) (int, error) {
+	if item.MonthlyListenersRaw == "" {
+		if item.MonthlyListeners != nil {
+			return *item.MonthlyListeners, nil
 		}
-		return rawCount, nil
+		return 0, fmt.Errorf("apify: dataset item contained no listener data")
 	}
 
-	// Fall back to the already-parsed integer field when raw text is absent.
-	if item.MonthlyListeners != nil {
-		return *item.MonthlyListeners, nil
+	rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+	if err != nil {
+		return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
 	}
-
-	return 0, fmt.Errorf("apify: dataset item contained no listener data")
+	// Prefer reparsing the raw text ourselves. The actor's numeric field has
+	// occasionally been observed to over-apply the M suffix and inflate values
+	// by 1,000,000. Raw text from the page is the safer source of truth.
+	if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
+		log.Printf(
+			"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+			item.URL, *item.MonthlyListeners, rawCount, item.MonthlyListenersRaw,
+		)
+	}
+	return rawCount, nil
 }
 
 // FetchApifyBatch sends a slice of Spotify artist IDs to a single Apify Actor
@@ -297,10 +299,13 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		return nil, fmt.Errorf("apify batch: failed to marshal input: %w", err)
 	}
 
-	endpoint := buildApifyEndpoint(
-		c.config.ApifyEndpoint, c.config.ApifyActorID, c.config.ApifyToken,
-		c.config.ApifyMemoryMB, actorTimeoutSec,
-	)
+	endpoint := buildApifyEndpoint(apifyEndpointParams{
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: actorTimeoutSec,
+	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -357,56 +362,39 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	}
 
 	results := make(map[string]int, len(items))
-
 	for _, item := range items {
 		artistID := extractArtistIDFromSpotifyURL(item.URL)
 		if artistID == "" {
 			continue
 		}
-
 		if item.IsError {
-			msgs := item.Debug.ErrorMessages
-			if len(msgs) > 0 {
-				first := msgs[0]
-				if len(first) > 120 {
-					first = first[:120] + "…"
-				}
-				log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
-			} else {
-				log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
-			}
+			logApifyItemError(artistID, item.Debug.ErrorMessages)
 			continue
 		}
-
 		if item.Error != "" {
 			log.Printf("[apify] batch: pageFunction error for artist %s: %s", artistID, item.Error)
 			continue
 		}
-
-		if item.MonthlyListenersRaw != "" {
-			rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
-			if err != nil {
-				return nil, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
-			}
-			if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
-				log.Printf(
-					"[apify] batch: listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
-					item.URL,
-					*item.MonthlyListeners,
-					rawCount,
-					item.MonthlyListenersRaw,
-				)
-			}
-			results[artistID] = rawCount
-			continue
+		count, err := resolveListenerCount(item)
+		if err != nil {
+			return nil, fmt.Errorf("batch item %s: %w", item.URL, err)
 		}
-
-		if item.MonthlyListeners != nil {
-			results[artistID] = *item.MonthlyListeners
-		}
+		results[artistID] = count
 	}
-
 	return results, nil
+}
+
+// logApifyItemError logs the first error message from an Apify #error sentinel item.
+func logApifyItemError(artistID string, msgs []string) {
+	if len(msgs) == 0 {
+		log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
+		return
+	}
+	first := msgs[0]
+	if len(first) > 120 {
+		first = first[:120] + "…"
+	}
+	log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
 }
 
 // extractArtistIDFromSpotifyURL returns the artist ID from a URL of the form
@@ -421,12 +409,21 @@ func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 	return trimmed[idx+1:]
 }
 
-// buildApifyEndpoint constructs the run-sync-get-dataset-items URL with the
-// given token, memory allocation (MB), and Actor timeout in seconds.
-func buildApifyEndpoint(baseEndpoint, actorID, token string, memoryMB, actorTimeoutSec int) string {
+// apifyEndpointParams bundles the parameters needed to construct a
+// run-sync-get-dataset-items URL, avoiding an excess-argument function.
+type apifyEndpointParams struct {
+	BaseEndpoint   string
+	ActorID        string
+	Token          string
+	MemoryMB       int
+	TimeoutSeconds int
+}
+
+// buildApifyEndpoint constructs the run-sync-get-dataset-items URL.
+func buildApifyEndpoint(p apifyEndpointParams) string {
 	return fmt.Sprintf(
 		"%s/%s/run-sync-get-dataset-items?token=%s&timeout=%d&memory=%d",
-		baseEndpoint, actorID, token, actorTimeoutSec, memoryMB,
+		p.BaseEndpoint, p.ActorID, p.Token, p.TimeoutSeconds, p.MemoryMB,
 	)
 }
 
@@ -449,32 +446,10 @@ func parseListenersFromRawText(raw string) (int, error) {
 	}
 
 	numberStr := strings.ReplaceAll(parts[1], ",", "")
-	multiplierStr := strings.ToUpper(parts[2])
-
-	var count int
-	switch multiplierStr {
-	case "M":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse M float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000000))
-	case "K":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse K float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000))
-	default:
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val))
-	}
-
-	return count, nil
+	return parseListenerCountFromSuffix(numberStr, strings.ToUpper(parts[2]), "apify")
 }
+
+
 
 // buildApifyPageFunction returns the JavaScript page function that the Apify
 // puppeteer-scraper Actor will execute inside each page to extract monthly listeners.

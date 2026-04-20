@@ -61,6 +61,13 @@ type resolutionHints struct {
 	Notes         []string
 }
 
+type tidalCredentials struct {
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	HTTPTimeout  time.Duration
+}
+
 var trailingDotEllipsisPattern = regexp.MustCompile(`(?i)(?:,\s*|\s+)(\.{2,})\s*$`)
 
 func main() {
@@ -124,29 +131,12 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: *httpTimeout}
-	resolvedTidalToken := strings.TrimSpace(*tidalToken)
-	if resolvedTidalToken == "" {
-		resolvedTidalToken = strings.TrimSpace(os.Getenv("TIDAL_TOKEN"))
-	}
-	resolvedTidalClientID := strings.TrimSpace(*tidalClientID)
-	if resolvedTidalClientID == "" {
-		resolvedTidalClientID = strings.TrimSpace(os.Getenv("TIDAL_CLIENT_ID"))
-	}
-	resolvedTidalClientSecret := strings.TrimSpace(*tidalClientSecret)
-	if resolvedTidalClientSecret == "" {
-		resolvedTidalClientSecret = strings.TrimSpace(os.Getenv("TIDAL_CLIENT_SECRET"))
-	}
-	if resolvedTidalToken == "" && resolvedTidalClientID != "" && resolvedTidalClientSecret != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), *httpTimeout)
-		var err error
-		resolvedTidalToken, err = fetchTidalAccessToken(ctx, httpClient, *tidalTokenURL, resolvedTidalClientID, resolvedTidalClientSecret)
-		cancel()
-		if err != nil {
-			log.Printf("[backfill_song_artists] warning: failed to obtain TIDAL access token: %v", err)
-		} else {
-			log.Printf("[backfill_song_artists] obtained TIDAL access token via client credentials")
-		}
-	}
+	resolvedTidalToken := resolveTidalToken(httpClient, tidalCredentials{
+		TokenURL:     *tidalTokenURL,
+		ClientID:     *tidalClientID,
+		ClientSecret: *tidalClientSecret,
+		HTTPTimeout:  *httpTimeout,
+	}, *tidalToken)
 	resolver := songbackfill.NewResolver(artists, songbackfill.Options{
 		NamePrefillLookup: &songbackfill.TidalLookup{
 			BaseURL:     *tidalBase,
@@ -171,49 +161,21 @@ func main() {
 	})
 
 	resolutions := make([]songbackfill.Resolution, 0, len(songs))
-	applied := 0
-	artistNameChanges := 0
+	var applied, artistNameChanges int
 
 	for _, song := range songs {
 		song = prepareSongForResolution(song)
 		ctx, cancel := context.WithTimeout(context.Background(), *httpTimeout)
 		resolution := resolver.Resolve(ctx, song)
 		cancel()
-
 		resolutions = append(resolutions, resolution)
-		if !resolution.Approved(*minConfidence) && !resolution.NamePrefillApproved(*minConfidence) {
-			continue
-		}
-
-		if resolution.UpdatedArtistName != resolution.OriginalArtistName {
-			artistNameChanges++
-		}
-
-		if !*apply {
-			continue
-		}
-
-		record, err := app.FindRecordById("songs", song.ID)
-		if err != nil {
-			log.Printf("[backfill_song_artists] warning: failed to load song %s for update: %v", song.ID, err)
-			continue
-		}
-
-		record.Set("artist_name", resolution.UpdatedArtistName)
-		if resolution.UpdatedArtistSpotifyIDs != "" {
-			record.Set("artist_spotify_ids", resolution.UpdatedArtistSpotifyIDs)
-		}
-		if err := app.Save(record); err != nil {
-			log.Printf("[backfill_song_artists] warning: failed to save song %s: %v", song.ID, err)
-			continue
-		}
-
-		applied++
 	}
+	applied, artistNameChanges = applyApprovedResolutions(app, resolutions, *minConfidence, *apply)
 
 	summary := buildSummary(resolutions, *minConfidence)
 	summary.UpdatesApplied = applied
 	summary.ArtistNameChanges = artistNameChanges
+
 
 	if err := os.MkdirAll(*reportDir, 0o755); err != nil {
 		log.Fatalf("[backfill_song_artists] failed to create report directory: %v", err)
@@ -221,21 +183,7 @@ func main() {
 
 	timestamp := time.Now().UTC().Format("20060102_150405")
 	reportPath := filepath.Join(*reportDir, fmt.Sprintf("song_artist_backfill_%s.json", timestamp))
-	reviewQueue := buildReviewQueue(reportPath, resolutions, artists)
-	reviewQueueJSONPath := ""
-	reviewQueueCSVPath := ""
-	if len(reviewQueue.ReviewEntries) > 0 {
-		reviewQueueJSONPath = filepath.Join(*reportDir, fmt.Sprintf("song_artist_review_queue_%s.json", timestamp))
-		reviewQueueCSVPath = filepath.Join(*reportDir, fmt.Sprintf("song_artist_review_queue_%s.csv", timestamp))
-		reviewQueue.JSONPath = reviewQueueJSONPath
-		reviewQueue.CSVPath = reviewQueueCSVPath
-		if err := writeReviewQueueJSON(reviewQueueJSONPath, reviewQueue); err != nil {
-			log.Fatalf("[backfill_song_artists] failed to write review queue json: %v", err)
-		}
-		if err := writeReviewQueueCSV(reviewQueueCSVPath, reviewQueue); err != nil {
-			log.Fatalf("[backfill_song_artists] failed to write review queue csv: %v", err)
-		}
-	}
+	reviewQueue, reviewQueueJSONPath, reviewQueueCSVPath := writeReviewOutputs(*reportDir, timestamp, reportPath, resolutions, artists)
 	reportPayload := report{
 		GeneratedAt:       time.Now().UTC(),
 		ApplyRequested:    *apply,
@@ -535,20 +483,98 @@ func writeReport(path string, payload report) error {
 	return os.WriteFile(path, raw, 0o644)
 }
 
+// resolveTidalToken returns a bearer token for TIDAL, trying (in order):
+// an explicit flag value, the TIDAL_TOKEN env var, and finally a
+// client-credentials fetch using the supplied tidalCredentials.
+func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToken string) string {
+	token := strings.TrimSpace(flagToken)
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("TIDAL_TOKEN"))
+	}
+	clientID := strings.TrimSpace(creds.ClientID)
+	if clientID == "" {
+		clientID = strings.TrimSpace(os.Getenv("TIDAL_CLIENT_ID"))
+	}
+	clientSecret := strings.TrimSpace(creds.ClientSecret)
+	if clientSecret == "" {
+		clientSecret = strings.TrimSpace(os.Getenv("TIDAL_CLIENT_SECRET"))
+	}
+	if token != "" || clientID == "" || clientSecret == "" {
+		return token
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), creds.HTTPTimeout)
+	defer cancel()
+	t, err := fetchTidalAccessToken(ctx, httpClient, creds.TokenURL, clientID, clientSecret)
+	if err != nil {
+		log.Printf("[backfill_song_artists] warning: failed to obtain TIDAL access token: %v", err)
+		return ""
+	}
+	log.Printf("[backfill_song_artists] obtained TIDAL access token via client credentials")
+	return t
+}
+
+// applyApprovedResolutions iterates resolutions, counts name changes, and
+// (when doApply is true) persists approved updates to the database.
+func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songbackfill.Resolution, minConf float64, doApply bool) (applied, nameChanges int) {
+	for _, resolution := range resolutions {
+		if !resolution.Approved(minConf) && !resolution.NamePrefillApproved(minConf) {
+			continue
+		}
+		if resolution.UpdatedArtistName != resolution.OriginalArtistName {
+			nameChanges++
+		}
+		if !doApply {
+			continue
+		}
+		record, err := app.FindRecordById("songs", resolution.SongID)
+		if err != nil {
+			log.Printf("[backfill_song_artists] warning: failed to load song %s for update: %v", resolution.SongID, err)
+			continue
+		}
+		record.Set("artist_name", resolution.UpdatedArtistName)
+		if resolution.UpdatedArtistSpotifyIDs != "" {
+			record.Set("artist_spotify_ids", resolution.UpdatedArtistSpotifyIDs)
+		}
+		if err := app.Save(record); err != nil {
+			log.Printf("[backfill_song_artists] warning: failed to save song %s: %v", resolution.SongID, err)
+			continue
+		}
+		applied++
+	}
+	return
+}
+
+// writeReviewOutputs builds the review queue and writes JSON + CSV files.
+// Returns the queue, and the two output paths (empty if no review entries).
+func writeReviewOutputs(reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string) {
+	queue := buildReviewQueue(reportPath, resolutions, artists)
+	if len(queue.ReviewEntries) == 0 {
+		return queue, "", ""
+	}
+	jsonPath := filepath.Join(reportDir, fmt.Sprintf("song_artist_review_queue_%s.json", timestamp))
+	csvPath := filepath.Join(reportDir, fmt.Sprintf("song_artist_review_queue_%s.csv", timestamp))
+	queue.JSONPath = jsonPath
+	queue.CSVPath = csvPath
+	if err := writeReviewQueueJSON(jsonPath, queue); err != nil {
+		log.Fatalf("[backfill_song_artists] failed to write review queue json: %v", err)
+	}
+	if err := writeReviewQueueCSV(csvPath, queue); err != nil {
+		log.Fatalf("[backfill_song_artists] failed to write review queue csv: %v", err)
+	}
+	return queue, jsonPath, csvPath
+}
+
 func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret string) (string, error) {
 	tokenURL = strings.TrimSpace(tokenURL)
 	if tokenURL == "" {
 		tokenURL = "https://auth.tidal.com/v1/oauth2/token"
 	}
-	clientID = strings.TrimSpace(clientID)
-	clientSecret = strings.TrimSpace(clientSecret)
-	if clientID == "" || clientSecret == "" {
+	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(clientSecret) == "" {
 		return "", fmt.Errorf("missing TIDAL client credentials")
 	}
 
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
@@ -569,8 +595,6 @@ func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, c
 
 	var payload struct {
 		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   int    `json:"expires_in"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return "", fmt.Errorf("failed to decode tidal token response: %w", err)
@@ -578,6 +602,5 @@ func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, c
 	if strings.TrimSpace(payload.AccessToken) == "" {
 		return "", fmt.Errorf("tidal token response did not include access_token")
 	}
-
 	return strings.TrimSpace(payload.AccessToken), nil
 }

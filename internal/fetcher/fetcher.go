@@ -238,46 +238,61 @@ func (s *Service) fetchAllBatch(ctx context.Context, artistIDs []string, bf spot
 
 		log.Printf("[fetcher] apify batch %d–%d of %d", i+1, end, len(artistIDs))
 
-		batchResults, err := bf.FetchApifyBatch(ctx, batch)
-		if err != nil {
-			log.Printf("[fetcher] apify batch error (artists %d–%d): %v — marking all as missed", i+1, end, err)
-			finalMissed = append(finalMissed, batch...)
-			continue
-		}
-
-		// Collect per-artist misses from within the batch for single-artist retry.
-		var batchMissed []string
-		for _, id := range batch {
-			if count, ok := batchResults[id]; ok {
-				results[id] = count
-			} else {
-				batchMissed = append(batchMissed, id)
-			}
-		}
-
-		if len(batchMissed) == 0 {
-			continue
-		}
-
-		// Retry each miss individually via the standard single-artist path.
-		log.Printf("[fetcher] retrying %d missed artists from batch individually", len(batchMissed))
-		for _, id := range batchMissed {
-			if ctx.Err() != nil {
-				finalMissed = append(finalMissed, batchMissed...)
-				break
-			}
-			count, retryErr := s.fetchWithRetry(ctx, id, spotify.ProviderApify)
-			if retryErr != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "[fetcher] apify retry failed for %s: %v\n", id, retryErr)
-				finalMissed = append(finalMissed, id)
-			} else {
-				results[id] = count
-			}
-		}
+		missed := s.processBatch(ctx, batch, bf, results)
+		finalMissed = append(finalMissed, missed...)
 	}
 
 	return results, finalMissed
 }
+
+// processBatch sends one Apify batch run and merges results into the shared map.
+// It returns the artist IDs that were missed (not returned by Apify), after
+// attempting a single-artist retry for each one.
+func (s *Service) processBatch(ctx context.Context, batch []string, bf spotify.BatchFetcher, results map[string]int) []string {
+	batchResults, err := bf.FetchApifyBatch(ctx, batch)
+	if err != nil {
+		log.Printf("[fetcher] apify batch error: %v — marking all as missed", err)
+		return batch
+	}
+
+	var batchMissed []string
+	for _, id := range batch {
+		if count, ok := batchResults[id]; ok {
+			results[id] = count
+		} else {
+			batchMissed = append(batchMissed, id)
+		}
+	}
+
+	if len(batchMissed) == 0 {
+		return nil
+	}
+
+	log.Printf("[fetcher] retrying %d missed artists from batch individually", len(batchMissed))
+	return s.retryBatchMissed(ctx, batchMissed, results)
+}
+
+// retryBatchMissed individually retries each artist ID that was absent from an
+// Apify batch result. Successfully retried IDs are merged into results; the
+// rest are returned as still-missed.
+func (s *Service) retryBatchMissed(ctx context.Context, missed []string, results map[string]int) []string {
+	var stillMissed []string
+	for _, id := range missed {
+		if ctx.Err() != nil {
+			stillMissed = append(stillMissed, missed...)
+			break
+		}
+		count, retryErr := s.fetchWithRetry(ctx, id, spotify.ProviderApify)
+		if retryErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "[fetcher] apify retry failed for %s: %v\n", id, retryErr)
+			stillMissed = append(stillMissed, id)
+		} else {
+			results[id] = count
+		}
+	}
+	return stillMissed
+}
+
 
 // Close closes the underlying client
 func (s *Service) Close() error {

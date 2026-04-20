@@ -22,86 +22,138 @@ import (
 	"ListenLedger/templates"
 )
 
-func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
-	if err := e.Request.ParseForm(); err != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid form data"})
+// songFormInput holds validated fields parsed from the create-song form.
+type songFormInput struct {
+	SongName         string
+	AlbumName        string
+	ReleaseType      string
+	ReleaseDateRaw   string
+	ReleaseYear      int
+	TotalSongsOnAlbum int
+	NewArtistGenre   string
+	ArtistSpotifyIDs []string
+}
+
+// validateSongForm parses and validates the create-song HTTP form, returning a
+// populated songFormInput or an HTTP status + error message on failure.
+// parseTotalSongs parses the "total_songs" form field. Returns 0 if absent or invalid.
+func parseTotalSongs(r *http.Request) int {
+	ts := strings.TrimSpace(r.FormValue("total_songs"))
+	if ts == "" {
+		return 0
+	}
+	if parsed, err := strconv.Atoi(ts); err == nil && parsed > 0 {
+		return parsed
+	}
+	return 0
+}
+
+// parseArtistIDsField reads artist_spotify_ids (falling back to "artists") and
+// validates each Spotify ID. Returns an error and status code on failure.
+func parseArtistIDsField(r *http.Request) ([]string, int, string) {
+	raw := r.FormValue("artist_spotify_ids")
+	if strings.TrimSpace(raw) == "" {
+		raw = r.FormValue("artists")
+	}
+	ids, err := parseSpotifyIDs(raw)
+	if err != nil {
+		return nil, http.StatusBadRequest, err.Error()
+	}
+	return ids, 0, ""
+}
+
+func validateSongForm(r *http.Request) (songFormInput, int, string) {
+	if err := r.ParseForm(); err != nil {
+		return songFormInput{}, http.StatusBadRequest, "invalid form data"
 	}
 
-	songName := strings.TrimSpace(e.Request.FormValue("name"))
+	songName := strings.TrimSpace(r.FormValue("name"))
 	if songName == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "song name is required"})
+		return songFormInput{}, http.StatusBadRequest, "song name is required"
 	}
-
-	albumName := strings.TrimSpace(e.Request.FormValue("album"))
+	albumName := strings.TrimSpace(r.FormValue("album"))
 	if albumName == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "album is required"})
+		return songFormInput{}, http.StatusBadRequest, "album is required"
 	}
-
-	// Release type: album, ep, or single.
-	releaseType := strings.TrimSpace(e.Request.FormValue("release_type"))
-	if releaseType == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "release type is required"})
-	}
+	releaseType := strings.TrimSpace(r.FormValue("release_type"))
 	switch releaseType {
 	case "album", "ep", "single":
-		// valid
+	case "":
+		return songFormInput{}, http.StatusBadRequest, "release type is required"
 	default:
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "release_type must be album, ep, or single"})
+		return songFormInput{}, http.StatusBadRequest, "release_type must be album, ep, or single"
 	}
-
-	// Full release date (YYYY-MM-DD). Extract year automatically.
-	releaseDateRaw := strings.TrimSpace(e.Request.FormValue("release_date"))
+	releaseDateRaw := strings.TrimSpace(r.FormValue("release_date"))
 	if releaseDateRaw == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "release date is required"})
+		return songFormInput{}, http.StatusBadRequest, "release date is required"
 	}
-	parsedDate, dateErr := time.Parse("2006-01-02", releaseDateRaw)
-	if dateErr != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "release_date must be in YYYY-MM-DD format"})
-	}
-	releaseYear := parsedDate.Year()
-
-	// Total songs on the album/EP/single (user-provided).
-	totalSongsOnAlbum := 0
-	if ts := strings.TrimSpace(e.Request.FormValue("total_songs")); ts != "" {
-		if parsed, parseErr := strconv.Atoi(ts); parseErr == nil && parsed > 0 {
-			totalSongsOnAlbum = parsed
-		}
+	parsedDate, err := time.Parse("2006-01-02", releaseDateRaw)
+	if err != nil {
+		return songFormInput{}, http.StatusBadRequest, "release_date must be in YYYY-MM-DD format"
 	}
 
-	newArtistGenre := strings.TrimSpace(e.Request.FormValue("new_artist_genre"))
+	newArtistGenre := strings.TrimSpace(r.FormValue("new_artist_genre"))
 	if newArtistGenre == "" {
 		newArtistGenre = "rock_metal"
 	}
 	if !isValidGenreGroup(newArtistGenre) {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "new_artist_genre must be rock_metal or everything_else"})
+		return songFormInput{}, http.StatusBadRequest, "new_artist_genre must be rock_metal or everything_else"
 	}
 
-	artistSpotifyIDsRaw := e.Request.FormValue("artist_spotify_ids")
-	if strings.TrimSpace(artistSpotifyIDsRaw) == "" {
-		artistSpotifyIDsRaw = e.Request.FormValue("artists")
+	artistSpotifyIDs, status, errMsg := parseArtistIDsField(r)
+	if errMsg != "" {
+		return songFormInput{}, status, errMsg
 	}
 
-	artistSpotifyIDs, err := parseSpotifyIDs(artistSpotifyIDsRaw)
-	if err != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
+	return songFormInput{
+		SongName:          songName,
+		AlbumName:         albumName,
+		ReleaseType:       releaseType,
+		ReleaseDateRaw:    releaseDateRaw,
+		ReleaseYear:       parsedDate.Year(),
+		TotalSongsOnAlbum: parseTotalSongs(r),
+		NewArtistGenre:    newArtistGenre,
+		ArtistSpotifyIDs:  artistSpotifyIDs,
+	}, 0, ""
+}
 
-	artists := make([]string, 0, len(artistSpotifyIDs))
-	for _, artistSpotifyID := range artistSpotifyIDs {
-		ctx, cancel := context.WithTimeout(e.Request.Context(), 8*time.Second)
-		artistName, statusCode, inferErr := h.inferArtistNameFromSpotifyID(ctx, artistSpotifyID)
+// resolveArtistNames looks up each Spotify ID and returns the ordered artist
+// display names. Returns an HTTP status and error on the first failure.
+func (h *Handler) resolveArtistNames(ctx context.Context, spotifyIDs []string) ([]string, int, error) {
+	artists := make([]string, 0, len(spotifyIDs))
+	for _, id := range spotifyIDs {
+		tctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		name, code, err := h.inferArtistNameFromSpotifyID(tctx, id)
 		cancel()
-		if inferErr != nil {
-			return e.JSON(statusCode, map[string]string{"error": inferErr.Error()})
+		if err != nil {
+			return nil, code, err
 		}
-		artists = append(artists, artistName)
+		artists = append(artists, name)
+	}
+	return artists, 0, nil
+}
+
+func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
+	input, status, errMsg := validateSongForm(e.Request)
+	if errMsg != "" {
+		return e.JSON(status, map[string]string{"error": errMsg})
 	}
 
-	if err := h.upsertAlbumForSong(albumName, artists[0], releaseType, totalSongsOnAlbum); err != nil {
+	artists, code, err := h.resolveArtistNames(e.Request.Context(), input.ArtistSpotifyIDs)
+	if err != nil {
+		return e.JSON(code, map[string]string{"error": err.Error()})
+	}
+
+	if err := h.upsertAlbumForSong(albumUpsertParams{
+		AlbumName:     input.AlbumName,
+		PrimaryArtist: artists[0],
+		ReleaseType:   input.ReleaseType,
+		TotalSongs:    input.TotalSongsOnAlbum,
+	}); err != nil {
 		log.Printf("[handleCreateSong] upsertAlbumForSong failed: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album metadata"})
 	}
-	newArtists, err := h.upsertArtistsForSong(artists, artistSpotifyIDs, newArtistGenre)
+	newArtists, err := h.upsertArtistsForSong(artists, input.ArtistSpotifyIDs, input.NewArtistGenre)
 	if err != nil {
 		log.Printf("[handleCreateSong] upsertArtistsForSong failed: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist metadata"})
@@ -112,38 +164,15 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 		}
 	}
 
-	collection, err := h.app.FindCollectionByNameOrId("songs")
-	if err != nil {
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "songs collection not found"})
-	}
-
-	record := core.NewRecord(collection)
-	record.Set("title", songName)
-	record.Set("artist_name", strings.Join(artists, ", "))
-	record.Set("album", albumName)
-	record.Set("release_type", releaseType)
-	record.Set("release_year", releaseYear)
-	record.Set("release_date", releaseDateRaw)
-	record.Set("artist_spotify_ids", strings.Join(artistSpotifyIDs, ","))
-	record.Set("spotify_id", "")
-	record.Set("is_recent", true)
-	batchSeq, batchPos, err := h.nextRecentBatchAssignment(time.Now())
-	if err != nil {
-		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to assign recent batch"})
-	}
-	record.Set("recent_batch_seq", batchSeq)
-	record.Set("recent_batch_pos", batchPos)
-
-	if err := h.app.Save(record); err != nil {
-		log.Printf("[handleCreateSong] song save failed: %v", err)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create song"})
+	record, saveErr := h.createSongRecord(input, artists)
+	if saveErr != nil {
+		return e.JSON(saveErr.status, map[string]string{"error": saveErr.Error()})
 	}
 
 	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, err := h.buildSongPageData(playlistSort)
-	if err != nil {
-		log.Printf("[handleCreateSong] buildSongPageData failed: %v", err)
+	pageData, buildErr := h.buildSongPageData(playlistSort)
+	if buildErr != nil {
+		log.Printf("[handleCreateSong] buildSongPageData failed: %v", buildErr)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to load songs"})
 	}
 
@@ -154,6 +183,47 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 		pageData.NotRecentCount,
 		pageData.PlaylistSort,
 	))
+}
+
+// songSaveError carries an HTTP status alongside a standard error for use
+// within createSongRecord.
+type songSaveError struct {
+	status int
+	msg    string
+}
+
+func (e *songSaveError) Error() string { return e.msg }
+
+// createSongRecord builds and saves the songs record, assigning a recent batch.
+func (h *Handler) createSongRecord(input songFormInput, artists []string) (*core.Record, *songSaveError) {
+	collection, err := h.app.FindCollectionByNameOrId("songs")
+	if err != nil {
+		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}
+	}
+	batchSeq, batchPos, err := h.nextRecentBatchAssignment(time.Now())
+	if err != nil {
+		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
+		return nil, &songSaveError{http.StatusInternalServerError, "failed to assign recent batch"}
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("title", input.SongName)
+	record.Set("artist_name", strings.Join(artists, ", "))
+	record.Set("album", input.AlbumName)
+	record.Set("release_type", input.ReleaseType)
+	record.Set("release_year", input.ReleaseYear)
+	record.Set("release_date", input.ReleaseDateRaw)
+	record.Set("artist_spotify_ids", strings.Join(input.ArtistSpotifyIDs, ","))
+	record.Set("spotify_id", "")
+	record.Set("is_recent", true)
+	record.Set("recent_batch_seq", batchSeq)
+	record.Set("recent_batch_pos", batchPos)
+
+	if err := h.app.Save(record); err != nil {
+		log.Printf("[handleCreateSong] song save failed: %v", err)
+		return nil, &songSaveError{http.StatusInternalServerError, "failed to create song"}
+	}
+	return record, nil
 }
 
 func parseSpotifyIDs(raw string) ([]string, error) {
@@ -360,39 +430,78 @@ func (h *Handler) sortNotRecentSongEntries(entries []songListEntry) {
 	})
 }
 
+// compareByReleaseDateAsc returns true when left should sort before right by
+// ascending release date, falling through to createdAt then title then ID.
+func compareByReleaseDateAsc(left, right songListEntry) bool {
+	if !left.releaseDate.Equal(right.releaseDate) {
+		return left.releaseDate.Before(right.releaseDate)
+	}
+	if !left.createdAt.Equal(right.createdAt) {
+		return left.createdAt.Before(right.createdAt)
+	}
+	return compareTitleThenID(left, right)
+}
+
+// compareByBatchSeq sorts by batch seq (desc when descending=true, else asc),
+// then pos ascending, then createdAt (desc/asc), then song ID ascending.
+func compareByBatchSeq(left, right songListEntry, descending bool) bool {
+	if left.song.BatchSeq != right.song.BatchSeq {
+		if descending {
+			return left.song.BatchSeq > right.song.BatchSeq
+		}
+		return left.song.BatchSeq < right.song.BatchSeq
+	}
+	if left.song.BatchPos != right.song.BatchPos {
+		return left.song.BatchPos < right.song.BatchPos
+	}
+	if !left.createdAt.Equal(right.createdAt) {
+		if descending {
+			return left.createdAt.After(right.createdAt)
+		}
+		return left.createdAt.Before(right.createdAt)
+	}
+	return left.song.ID < right.song.ID
+}
+
+// compareByBatchSeqDesc sorts by batch seq descending, pos ascending, then
+// createdAt descending — used for the current-playlist "added-desc" view.
+func compareByBatchSeqDesc(left, right songListEntry) bool {
+	return compareByBatchSeq(left, right, true)
+}
+
+// compareByBatchSeqAsc sorts by batch seq ascending, pos ascending, then
+// createdAt ascending — used for the waiting-removal "added-desc" view.
+func compareByBatchSeqAsc(left, right songListEntry) bool {
+	return compareByBatchSeq(left, right, false)
+}
+
+// compareByWaitingReleaseAsc sorts waiting-removal entries by release date asc,
+// then batch seq/pos asc, createdAt asc, title, ID.
+func compareByWaitingReleaseAsc(left, right songListEntry) bool {
+	if !left.releaseDate.Equal(right.releaseDate) {
+		return left.releaseDate.Before(right.releaseDate)
+	}
+	return compareByBatchSeqAsc(left, right)
+}
+
+func compareTitleThenID(left, right songListEntry) bool {
+	lt := strings.ToLower(left.song.Title)
+	rt := strings.ToLower(right.song.Title)
+	if lt != rt {
+		return lt < rt
+	}
+	return left.song.ID < right.song.ID
+}
+
 func (h *Handler) sortPlaylistEntries(entries []songListEntry, playlistSort string) {
 	switch normalizePlaylistSort(playlistSort) {
 	case playlistSortReleaseAsc:
 		sort.SliceStable(entries, func(i, j int) bool {
-			left := entries[i]
-			right := entries[j]
-			if !left.releaseDate.Equal(right.releaseDate) {
-				return left.releaseDate.Before(right.releaseDate)
-			}
-			if !left.createdAt.Equal(right.createdAt) {
-				return left.createdAt.Before(right.createdAt)
-			}
-			leftTitle := strings.ToLower(left.song.Title)
-			rightTitle := strings.ToLower(right.song.Title)
-			if leftTitle != rightTitle {
-				return leftTitle < rightTitle
-			}
-			return left.song.ID < right.song.ID
+			return compareByReleaseDateAsc(entries[i], entries[j])
 		})
 	default:
 		sort.SliceStable(entries, func(i, j int) bool {
-			left := entries[i]
-			right := entries[j]
-			if left.song.BatchSeq != right.song.BatchSeq {
-				return left.song.BatchSeq > right.song.BatchSeq
-			}
-			if left.song.BatchPos != right.song.BatchPos {
-				return left.song.BatchPos < right.song.BatchPos
-			}
-			if !left.createdAt.Equal(right.createdAt) {
-				return left.createdAt.After(right.createdAt)
-			}
-			return left.song.ID < right.song.ID
+			return compareByBatchSeqDesc(entries[i], entries[j])
 		})
 	}
 }
@@ -401,38 +510,43 @@ func (h *Handler) sortWaitingRemovalEntries(entries []songListEntry, playlistSor
 	switch normalizePlaylistSort(playlistSort) {
 	case playlistSortReleaseAsc:
 		sort.SliceStable(entries, func(i, j int) bool {
-			left := entries[i]
-			right := entries[j]
-			if !left.releaseDate.Equal(right.releaseDate) {
-				return left.releaseDate.Before(right.releaseDate)
-			}
-			if left.song.BatchSeq != right.song.BatchSeq {
-				return left.song.BatchSeq < right.song.BatchSeq
-			}
-			if left.song.BatchPos != right.song.BatchPos {
-				return left.song.BatchPos < right.song.BatchPos
-			}
-			if !left.createdAt.Equal(right.createdAt) {
-				return left.createdAt.Before(right.createdAt)
-			}
-			return left.song.ID < right.song.ID
+			return compareByWaitingReleaseAsc(entries[i], entries[j])
 		})
 	default:
 		sort.SliceStable(entries, func(i, j int) bool {
-			left := entries[i]
-			right := entries[j]
-			if left.song.BatchSeq != right.song.BatchSeq {
-				return left.song.BatchSeq < right.song.BatchSeq
-			}
-			if left.song.BatchPos != right.song.BatchPos {
-				return left.song.BatchPos < right.song.BatchPos
-			}
-			if !left.createdAt.Equal(right.createdAt) {
-				return left.createdAt.Before(right.createdAt)
-			}
-			return left.song.ID < right.song.ID
+			return compareByBatchSeqAsc(entries[i], entries[j])
 		})
 	}
+}
+
+
+// partitionRecentEntries splits entries into recent and not-recent slices.
+func partitionRecentEntries(entries []songListEntry) (recent, notRecent []songListEntry) {
+	recent = make([]songListEntry, 0, len(entries))
+	notRecent = make([]songListEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.song.IsRecent {
+			recent = append(recent, entry)
+		} else {
+			notRecent = append(notRecent, entry)
+		}
+	}
+	return
+}
+
+// splitPlaylistBuckets partitions sorted recent entries into current-playlist
+// and waiting-removal buckets based on songsCurrentPlaylistSize.
+func splitPlaylistBuckets(recent []songListEntry) (current, waiting []songListEntry) {
+	current = make([]songListEntry, 0, min(len(recent), songsCurrentPlaylistSize))
+	waiting = make([]songListEntry, 0, max(0, len(recent)-songsCurrentPlaylistSize))
+	for i, entry := range recent {
+		if i < songsCurrentPlaylistSize {
+			current = append(current, entry)
+		} else {
+			waiting = append(waiting, entry)
+		}
+	}
+	return
 }
 
 func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
@@ -443,35 +557,11 @@ func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
 		return songPageData{}, err
 	}
 
-	recent := make([]songListEntry, 0, len(entries))
-	notRecent := make([]songListEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.song.IsRecent {
-			recent = append(recent, entry)
-			continue
-		}
-		notRecent = append(notRecent, entry)
-	}
-
+	recent, notRecent := partitionRecentEntries(entries)
 	h.sortRecentSongEntries(recent)
 	h.sortNotRecentSongEntries(notRecent)
 
-	currentCount := len(recent)
-	if currentCount > songsCurrentPlaylistSize {
-		currentCount = songsCurrentPlaylistSize
-	}
-
-	currentPlaylistEntries := make([]songListEntry, 0, currentCount)
-	waitingRemovalEntries := make([]songListEntry, 0, max(0, len(recent)-songsCurrentPlaylistSize))
-
-	for i, entry := range recent {
-		if i < songsCurrentPlaylistSize {
-			currentPlaylistEntries = append(currentPlaylistEntries, entry)
-			continue
-		}
-		waitingRemovalEntries = append(waitingRemovalEntries, entry)
-	}
-
+	currentPlaylistEntries, waitingRemovalEntries := splitPlaylistBuckets(recent)
 	h.sortPlaylistEntries(currentPlaylistEntries, playlistSort)
 	h.sortWaitingRemovalEntries(waitingRemovalEntries, playlistSort)
 
@@ -571,13 +661,7 @@ func nextRecentBatchAssignmentFromEntries(entries []songListEntry, now time.Time
 		}
 
 		if seq == maxSeq {
-			maxSeqCount++
-			if pos := clampRecentBatchPos(entry.song.BatchPos); pos < maxSeqMinPos {
-				maxSeqMinPos = pos
-			}
-			if entry.createdAt.After(latestInMaxSeq) {
-				latestInMaxSeq = entry.createdAt
-			}
+			maxSeqCount, maxSeqMinPos, latestInMaxSeq = updateMaxSeqStats(maxSeqCount, maxSeqMinPos, latestInMaxSeq, entry)
 		}
 	}
 
@@ -597,6 +681,19 @@ func nextRecentBatchAssignmentFromEntries(entries []songListEntry, now time.Time
 	}
 
 	return maxSeq, nextPos
+}
+
+// updateMaxSeqStats accumulates count, minimum batch position, and latest
+// created-at for all entries sharing the current maxSeq.
+func updateMaxSeqStats(count, minPos int, latest time.Time, entry songListEntry) (int, int, time.Time) {
+	count++
+	if pos := clampRecentBatchPos(entry.song.BatchPos); pos < minPos {
+		minPos = pos
+	}
+	if entry.createdAt.After(latest) {
+		latest = entry.createdAt
+	}
+	return count, minPos, latest
 }
 
 func clampRecentBatchPos(pos int) int {
@@ -666,7 +763,17 @@ func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID st
 	return artistName, 0, nil
 }
 
-func (h *Handler) upsertAlbumForSong(albumName, primaryArtist, releaseType string, totalSongsFromUI int) error {
+// albumUpsertParams bundles the fields needed to upsert an album record,
+// replacing the former 4-argument function signature.
+type albumUpsertParams struct {
+	AlbumName     string
+	PrimaryArtist string
+	ReleaseType   string
+	TotalSongs    int
+}
+
+func (h *Handler) upsertAlbumForSong(p albumUpsertParams) error {
+	albumName, primaryArtist, releaseType, totalSongsFromUI := p.AlbumName, p.PrimaryArtist, p.ReleaseType, p.TotalSongs
 	records, err := h.app.FindRecordsByFilter(
 		"albums",
 		"title ~ {:title} && artist_name ~ {:artist_name}",
@@ -738,67 +845,74 @@ func (h *Handler) upsertArtistsForSong(artists []string, artistSpotifyIDs []stri
 	newArtists := make([]songNewArtistTarget, 0, len(artists))
 	for i, artistName := range artists {
 		artistSpotifyID := artistSpotifyIDs[i]
-
-		records, findErr := h.app.FindRecordsByFilter(
-			"artists",
-			"spotify_id = {:spotify_id}",
-			"",
-			1,
-			0,
-			dbx.Params{"spotify_id": artistSpotifyID},
-		)
-		if findErr != nil {
-			return nil, findErr
-		}
-
-		if len(records) == 0 {
-			records, findErr = h.app.FindRecordsByFilter(
-				"artists",
-				"name ~ {:name}",
-				"",
-				1,
-				0,
-				dbx.Params{"name": artistName},
-			)
-			if findErr != nil {
-				return nil, findErr
-			}
-		}
-
-		if len(records) > 0 {
-			record := records[0]
-			record.Set("collection_songs", record.GetInt("collection_songs")+1)
-			if record.GetString("spotify_id") == "" {
-				record.Set("spotify_id", artistSpotifyID)
-			}
-			if err := h.app.Save(record); err != nil {
-				return nil, err
-			}
-			continue
-		}
-
-		record := core.NewRecord(collection)
-		record.Set("name", artistName)
-		record.Set("spotify_id", artistSpotifyID)
-		record.Set("monthly_listeners", 0)
-		record.Set("genre_group", newArtistGenre)
-		record.Set("list_status", "not_added")
-		record.Set("fetch_status", "idle")
-		record.Set("collection_songs", 1)
-		record.Set("total_songs", 0)
-		record.Set("last_updated", time.Now())
-
-		if err := h.app.Save(record); err != nil {
+		target, isNew, err := h.findOrCreateArtist(collection, artistName, artistSpotifyID, newArtistGenre)
+		if err != nil {
 			return nil, err
 		}
-		newArtists = append(newArtists, songNewArtistTarget{
-			ID:        record.Id,
-			Name:      artistName,
-			SpotifyID: artistSpotifyID,
-		})
+		if isNew {
+			newArtists = append(newArtists, target)
+		}
+	}
+	return newArtists, nil
+}
+
+// findOrCreateArtist looks up an artist by spotify_id (then by name) and
+// increments its collection_songs count. If no record exists it creates one.
+// Returns the target, a flag indicating whether the record was newly created,
+// and any error.
+// lookupArtistRecord searches for an existing artist first by spotify_id,
+// then by name. Returns nil records (and no error) if not found.
+func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*core.Record, error) {
+	records, err := h.app.FindRecordsByFilter(
+		"artists", "spotify_id = {:spotify_id}", "", 1, 0,
+		dbx.Params{"spotify_id": artistSpotifyID},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) > 0 {
+		return records, nil
+	}
+	return h.app.FindRecordsByFilter(
+		"artists", "name ~ {:name}", "", 1, 0,
+		dbx.Params{"name": artistName},
+	)
+}
+
+// updateExistingArtist increments collection_songs and back-fills spotify_id
+// if missing, then persists the record.
+func (h *Handler) updateExistingArtist(record *core.Record, artistSpotifyID string) error {
+	record.Set("collection_songs", record.GetInt("collection_songs")+1)
+	if record.GetString("spotify_id") == "" {
+		record.Set("spotify_id", artistSpotifyID)
+	}
+	return h.app.Save(record)
+}
+
+func (h *Handler) findOrCreateArtist(collection *core.Collection, artistName, artistSpotifyID, newArtistGenre string) (songNewArtistTarget, bool, error) {
+	records, err := h.lookupArtistRecord(artistName, artistSpotifyID)
+	if err != nil {
+		return songNewArtistTarget{}, false, err
 	}
 
-	return newArtists, nil
+	if len(records) > 0 {
+		return songNewArtistTarget{}, false, h.updateExistingArtist(records[0], artistSpotifyID)
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("name", artistName)
+	record.Set("spotify_id", artistSpotifyID)
+	record.Set("monthly_listeners", 0)
+	record.Set("genre_group", newArtistGenre)
+	record.Set("list_status", "not_added")
+	record.Set("fetch_status", "idle")
+	record.Set("collection_songs", 1)
+	record.Set("total_songs", 0)
+	record.Set("last_updated", time.Now())
+	if err := h.app.Save(record); err != nil {
+		return songNewArtistTarget{}, false, err
+	}
+	return songNewArtistTarget{ID: record.Id, Name: artistName, SpotifyID: artistSpotifyID}, true, nil
 }
 
 func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNewArtistTarget) error {
@@ -840,14 +954,26 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	return nil
 }
 
-func (h *Handler) handleSongs(e *core.RequestEvent) error {
+// loadSongPageData builds song page data for the given sort key, returning an
+// HTTP 500 response on error. The bool return is false on failure.
+func (h *Handler) loadSongPageData(e *core.RequestEvent, caller string) (songPageData, bool) {
 	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
 	pageData, err := h.buildSongPageData(playlistSort)
 	if err != nil {
-		log.Printf("[handleSongs] buildSongPageData failed: %v", err)
-		return e.String(http.StatusInternalServerError, "Failed to load songs")
+		if caller != "" {
+			log.Printf("[%s] buildSongPageData failed: %v", caller, err)
+		}
+		_ = e.String(http.StatusInternalServerError, "Failed to load songs")
+		return songPageData{}, false
 	}
+	return pageData, true
+}
 
+func (h *Handler) handleSongs(e *core.RequestEvent) error {
+	pageData, ok := h.loadSongPageData(e, "handleSongs")
+	if !ok {
+		return nil
+	}
 	return renderTempl(e, templates.SongsPage(
 		pageData.CurrentPlaylist,
 		pageData.WaitingRemoval,
@@ -882,17 +1008,15 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 
 	oldRecent := record.GetBool("is_recent")
 	record.Set("is_recent", isRecent)
-	if isRecent {
-		if !oldRecent || record.GetInt("recent_batch_seq") <= 0 || record.GetInt("recent_batch_pos") <= 0 {
-			batchSeq, batchPos, batchErr := h.nextRecentBatchAssignment(time.Now())
-			if batchErr != nil {
-				log.Printf("[handleUpdateSongRecent] nextRecentBatchAssignment failed: %v", batchErr)
-				return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to assign recent batch"})
-			}
-			record.Set("recent_batch_seq", batchSeq)
-			record.Set("recent_batch_pos", batchPos)
+	if isRecent && needsBatchAssignment(oldRecent, record) {
+		batchSeq, batchPos, batchErr := h.nextRecentBatchAssignment(time.Now())
+		if batchErr != nil {
+			log.Printf("[handleUpdateSongRecent] nextRecentBatchAssignment failed: %v", batchErr)
+			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to assign recent batch"})
 		}
-	} else {
+		record.Set("recent_batch_seq", batchSeq)
+		record.Set("recent_batch_pos", batchPos)
+	} else if !isRecent {
 		record.Set("recent_batch_seq", 0)
 		record.Set("recent_batch_pos", 0)
 	}
@@ -915,12 +1039,10 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 }
 
 func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, err := h.buildSongPageData(playlistSort)
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load songs")
+	pageData, ok := h.loadSongPageData(e, "")
+	if !ok {
+		return nil
 	}
-
 	return renderDatastar(e, templates.CurrentPlaylistSection(
 		pageData.CurrentPlaylist,
 		pageData.PlaylistSort,
@@ -928,12 +1050,10 @@ func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
 }
 
 func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, err := h.buildSongPageData(playlistSort)
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load songs")
+	pageData, ok := h.loadSongPageData(e, "")
+	if !ok {
+		return nil
 	}
-
 	return renderDatastar(e, templates.SongsSections(
 		pageData.CurrentPlaylist,
 		pageData.WaitingRemoval,
@@ -942,22 +1062,30 @@ func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {
 	))
 }
 
+// needsBatchAssignment reports whether a song being marked recent requires a
+// fresh batch sequence/position assignment.
+func needsBatchAssignment(wasRecent bool, record *core.Record) bool {
+	return !wasRecent || record.GetInt("recent_batch_seq") <= 0 || record.GetInt("recent_batch_pos") <= 0
+}
+
+// parseQueryIntParam reads an integer query parameter by name. Returns
+// defaultVal when the param is absent, zero, or out of [min, max].
+func parseQueryIntParam(r *http.Request, name string, defaultVal, min, max int) int {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return defaultVal
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < min || (max > 0 && parsed > max) {
+		return defaultVal
+	}
+	return parsed
+}
+
 func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-
-	offset := 0
-	if raw := e.Request.URL.Query().Get("offset"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
-			offset = parsed
-		}
-	}
-
-	limit := songsDefaultPageSize
-	if raw := e.Request.URL.Query().Get("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= songsMaxPageSize {
-			limit = parsed
-		}
-	}
+	offset := parseQueryIntParam(e.Request, "offset", 0, 0, 0)
+	limit := parseQueryIntParam(e.Request, "limit", songsDefaultPageSize, 1, songsMaxPageSize)
 
 	songs, totalCount, err := h.listNotRecentSongs(offset, limit)
 	if err != nil {
