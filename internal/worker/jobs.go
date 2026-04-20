@@ -211,82 +211,93 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 	log.Printf("[worker] Sweeping %d stale scrape job(s) older than %s", len(records), staleJobThreshold)
 
 	for _, job := range records {
-		if err := ctx.Err(); err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-
 		artistID := job.GetString("artist")
 		requestID := job.GetString("request_id")
-		jobUpdated := false
 
-		err := w.app.RunInTransaction(func(txApp core.App) error {
-			freshJob, refreshErr := txApp.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
-				q.WithContext(ctx)
-				return nil
-			})
-			if refreshErr != nil {
-				return fmt.Errorf("failed to reload job %s: %w", job.Id, refreshErr)
-			}
-
-			// Re-check status and started_at cutoff from a fresh read to avoid
-			// clobbering a job that was restarted after the initial scan.
-			guard := make([]*core.Record, 0, 1)
-			guardErr := txApp.RecordQuery("scrape_jobs").
-				WithContext(ctx).
-				AndWhere(dbx.NewExp("id = {:id} AND status = {:status} AND started_at < {:cutoff}", dbx.Params{"id": freshJob.Id, "status": "processing", "cutoff": cutoff})).
-				Limit(1).
-				All(&guard)
-			if guardErr != nil {
-				return fmt.Errorf("failed to re-check stale guard for job %s: %w", job.Id, guardErr)
-			}
-			if len(guard) == 0 {
-				return nil
-			}
-
-			freshJob.Set("status", "failed")
-			freshJob.Set("finished_at", time.Now())
-			freshJob.Set("error", "stale_timeout")
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if saveErr := txApp.Save(freshJob); saveErr != nil {
-				return fmt.Errorf("failed to save job %s: %w", job.Id, saveErr)
-			}
-			jobUpdated = true
-
-			if artistID == "" {
-				return nil
-			}
-
-			artist, loadArtistErr := txApp.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
-				q.WithContext(ctx)
-				return nil
-			})
-			if loadArtistErr != nil {
-				return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, job.Id, loadArtistErr)
-			}
-			if artist.GetString("fetch_status") != "pending" {
-				return nil
-			}
-
-			artist.Set("fetch_status", "failed")
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if saveArtistErr := txApp.Save(artist); saveArtistErr != nil {
-				return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, job.Id, saveArtistErr)
-			}
-
-			return nil
-		})
+		updated, err := w.markSingleStaleJob(ctx, job, cutoff)
 		if err != nil {
 			log.Printf("[worker] Warning: failed to mark stale job %s (request_id=%s) as failed: %v", job.Id, requestID, err)
 			continue
 		}
-		if !jobUpdated {
-			continue
+		if updated {
+			log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
 		}
-
-		log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
 	}
 }
+
+// markSingleStaleJob runs a transaction that re-checks the guard condition and,
+// if still valid, marks the job failed and sets the artist fetch_status to failed.
+// Returns (true, nil) when the job was updated, (false, nil) when the guard
+// prevented an update, or (false, err) on any DB error.
+func (w *Worker) markSingleStaleJob(ctx context.Context, job *core.Record, cutoff string) (bool, error) {
+	var jobUpdated bool
+	err := w.app.RunInTransaction(func(txApp core.App) error {
+		freshJob, err := txApp.FindRecordById("scrape_jobs", job.Id, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to reload job %s: %w", job.Id, err)
+		}
+
+		// Re-check status and started_at under the transaction to avoid clobbering
+		// a job that was restarted after the initial scan.
+		guard := make([]*core.Record, 0, 1)
+		guardErr := txApp.RecordQuery("scrape_jobs").
+			WithContext(ctx).
+			AndWhere(dbx.NewExp("id = {:id} AND status = {:status} AND started_at < {:cutoff}",
+				dbx.Params{"id": freshJob.Id, "status": "processing", "cutoff": cutoff})).
+			Limit(1).
+			All(&guard)
+		if guardErr != nil {
+			return fmt.Errorf("failed to re-check stale guard for job %s: %w", job.Id, guardErr)
+		}
+		if len(guard) == 0 {
+			return nil
+		}
+
+		freshJob.Set("status", "failed")
+		freshJob.Set("finished_at", time.Now())
+		freshJob.Set("error", "stale_timeout")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := txApp.Save(freshJob); err != nil {
+			return fmt.Errorf("failed to save job %s: %w", job.Id, err)
+		}
+		jobUpdated = true
+
+		return w.markStaleJobArtistFailed(ctx, txApp, job, freshJob.GetString("artist"))
+	})
+	return jobUpdated, err
+}
+
+// markStaleJobArtistFailed updates the artist's fetch_status to "failed" if it
+// is currently "pending". It is called inside the same transaction as the job update.
+func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, job *core.Record, artistID string) error {
+	if artistID == "" {
+		return nil
+	}
+	artist, err := txApp.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, job.Id, err)
+	}
+	if artist.GetString("fetch_status") != "pending" {
+		return nil
+	}
+	artist.Set("fetch_status", "failed")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := txApp.Save(artist); err != nil {
+		return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, job.Id, err)
+	}
+	return nil
+}
+

@@ -153,15 +153,8 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 		return resolution
 	}
 
-	if matches, ambiguous, notes, ok := r.matchNames(parsed.Names); ok {
-		resolution.Notes = append(resolution.Notes, notes...)
-		resolution.applyMatches(matches, "stored_artist_name", confidenceForMatches(matches))
+	if done := r.applyStoredNameResolution(&resolution, parsed.Names); done {
 		return resolution
-	} else {
-		resolution.Notes = append(resolution.Notes, notes...)
-		if ambiguous {
-			resolution.Action = ActionSkipAmbiguous
-		}
 	}
 
 	if prefilled, ok := r.resolveViaNamePrefill(ctx, song, parsed, resolution); ok {
@@ -203,18 +196,9 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 		return resolution
 	}
 
-	if parsed.HasEllipsis {
-		candidates = filterCandidatesWithAdditionalArtists(candidates)
-		if len(candidates) == 0 {
-			resolution.Notes = append(
-				resolution.Notes,
-				"external lookup did not find a confident multi-artist credit for an ellipsis-based song",
-			)
-			return resolution
-		}
+	if done := applyExternalEllipsisFilter(&resolution, parsed.HasEllipsis, candidates); done {
+		return resolution
 	}
-
-	resolution.ExternalCandidates = summarizeCandidates(candidates)
 
 	candidate, ambiguous, notes, ok := selectTrackCandidate(candidates)
 	resolution.Notes = append(resolution.Notes, notes...)
@@ -231,29 +215,68 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 		resolution.Action = ActionSkipAmbiguous
 	}
 	if !ok {
-		partialMatches, partialNotes, partialAmbiguous := r.matchNamesAllowPartial(candidate.ArtistNames)
-		resolution.Notes = append(resolution.Notes, partialNotes...)
-		if partialAmbiguous {
-			resolution.Action = ActionSkipAmbiguous
-			return resolution
-		}
-		if len(partialMatches) > 0 && candidate.Confidence >= r.minimumConfidence {
-			resolution.Action = ActionUpdateNameOnly
-			resolution.Strategy = candidate.Source
-			resolution.Confidence = candidate.Confidence
-			resolution.MatchedArtists = partialMatches
-			resolution.UpdatedArtistName = strings.Join(dedupeArtistNames(candidate.ArtistNames), ", ")
-			resolution.UpdatedArtistSpotifyIDs = ""
-			resolution.Notes = append(
-				resolution.Notes,
-				fmt.Sprintf("matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(dedupeArtistNames(candidate.ArtistNames))),
-			)
-			return resolution
-		}
-		return resolution
+		return r.applyPartialMatchUpdate(resolution, candidate)
 	}
 
 	resolution.applyMatches(matches, candidate.Source, candidate.Confidence)
+	return resolution
+}
+
+// applyStoredNameResolution tries to resolve all artist names from the stored
+// artist index. Returns true when the resolution is complete (either matched or
+// unambiguously unresolvable from stored data alone).
+func (r *Resolver) applyStoredNameResolution(resolution *Resolution, names []string) bool {
+	matches, ambiguous, notes, ok := r.matchNames(names)
+	resolution.Notes = append(resolution.Notes, notes...)
+	if ok {
+		resolution.applyMatches(matches, "stored_artist_name", confidenceForMatches(matches))
+		return true
+	}
+	if ambiguous {
+		resolution.Action = ActionSkipAmbiguous
+	}
+	return false
+}
+
+// applyExternalEllipsisFilter filters candidates when the artist name uses an
+// ellipsis and stores ExternalCandidates on the resolution. Returns true when
+// processing should stop (no candidates survive the filter).
+func applyExternalEllipsisFilter(resolution *Resolution, hasEllipsis bool, candidates []TrackCandidate) bool {
+	if hasEllipsis {
+		candidates = filterCandidatesWithAdditionalArtists(candidates)
+		if len(candidates) == 0 {
+			resolution.Notes = append(
+				resolution.Notes,
+				"external lookup did not find a confident multi-artist credit for an ellipsis-based song",
+			)
+			return true
+		}
+	}
+	resolution.ExternalCandidates = summarizeCandidates(candidates)
+	return false
+}
+
+// applyPartialMatchUpdate attempts a partial artist match when a full match
+// fails, and applies ActionUpdateNameOnly when enough artists are found.
+func (r *Resolver) applyPartialMatchUpdate(resolution Resolution, candidate TrackCandidate) Resolution {
+	partialMatches, partialNotes, partialAmbiguous := r.matchNamesAllowPartial(candidate.ArtistNames)
+	resolution.Notes = append(resolution.Notes, partialNotes...)
+	if partialAmbiguous {
+		resolution.Action = ActionSkipAmbiguous
+		return resolution
+	}
+	if len(partialMatches) > 0 && candidate.Confidence >= r.minimumConfidence {
+		resolution.Action = ActionUpdateNameOnly
+		resolution.Strategy = candidate.Source
+		resolution.Confidence = candidate.Confidence
+		resolution.MatchedArtists = partialMatches
+		resolution.UpdatedArtistName = strings.Join(dedupeArtistNames(candidate.ArtistNames), ", ")
+		resolution.UpdatedArtistSpotifyIDs = ""
+		resolution.Notes = append(
+			resolution.Notes,
+			fmt.Sprintf("matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(dedupeArtistNames(candidate.ArtistNames))),
+		)
+	}
 	return resolution
 }
 
@@ -439,6 +462,13 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 		resolution.Action = ActionSkipAmbiguous
 		return resolution, true
 	}
+
+	return r.applyPrefillNameOnly(resolution, candidate, prefilledNames, partialMatches), true
+}
+
+// applyPrefillNameOnly applies ActionUpdateNameOnly when a prefill candidate
+// has enough confidence but only partial (or no) artist matches.
+func (r *Resolver) applyPrefillNameOnly(resolution Resolution, candidate TrackCandidate, prefilledNames []string, partialMatches []ArtistMatch) Resolution {
 	if len(partialMatches) > 0 && candidate.Confidence >= r.minimumConfidence {
 		resolution.Action = ActionUpdateNameOnly
 		resolution.UpdatedArtistSpotifyIDs = ""
@@ -447,18 +477,16 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 			resolution.Notes,
 			fmt.Sprintf("prefill matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(prefilledNames)),
 		)
-		return resolution, true
+		return resolution
 	}
-
 	if candidate.Confidence >= r.minimumConfidence {
 		resolution.Action = ActionUpdateNameOnly
 		resolution.UpdatedArtistSpotifyIDs = ""
-		return resolution, true
+		return resolution
 	}
-
 	resolution.Action = ActionSkipAmbiguous
 	resolution.Notes = append(resolution.Notes, "tidal prefill candidate requires manual review before updating artist_name")
-	return resolution, true
+	return resolution
 }
 
 type parsedArtists struct {
@@ -1195,21 +1223,29 @@ func (l *MusicBrainzLookup) doRequest(ctx context.Context, client *http.Client, 
 			return resp, nil
 		}
 
-		if !musicBrainzRetryableStatus(resp.StatusCode) || attempt >= maxRetries {
-			status := resp.Status
-			_ = resp.Body.Close()
-			if attempt > 0 {
-				return nil, fmt.Errorf("musicbrainz returned %s after %d retries", status, attempt)
-			}
-			return nil, fmt.Errorf("musicbrainz returned %s", status)
-		}
-
-		delay := l.retryDelay(resp, attempt)
-		_ = resp.Body.Close()
-		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-			return nil, sleepErr
+		if retryErr := l.handleHTTPRetry(ctx, resp, attempt, maxRetries); retryErr != nil {
+			return nil, retryErr
 		}
 	}
+}
+
+// handleHTTPRetry handles a non-200 HTTP response for the MusicBrainz retry
+// loop. Returns an error when the caller should stop retrying, nil to continue.
+func (l *MusicBrainzLookup) handleHTTPRetry(ctx context.Context, resp *http.Response, attempt, maxRetries int) error {
+	if !musicBrainzRetryableStatus(resp.StatusCode) || attempt >= maxRetries {
+		status := resp.Status
+		_ = resp.Body.Close()
+		if attempt > 0 {
+			return fmt.Errorf("musicbrainz returned %s after %d retries", status, attempt)
+		}
+		return fmt.Errorf("musicbrainz returned %s", status)
+	}
+	delay := l.retryDelay(resp, attempt)
+	_ = resp.Body.Close()
+	if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+		return sleepErr
+	}
+	return nil
 }
 
 func (l *MusicBrainzLookup) waitTurn(ctx context.Context) error {
@@ -1269,16 +1305,20 @@ func (l *MusicBrainzLookup) retryDelay(resp *http.Response, attempt int) time.Du
 			return retryAfter
 		}
 	}
+	return cappedExponentialDelay(l.retryBaseDelay(), attempt, 30*time.Second)
+}
 
-	delay := l.retryBaseDelay()
+// cappedExponentialDelay returns base<<attempt capped at maxDelay.
+func cappedExponentialDelay(base time.Duration, attempt int, maxDelay time.Duration) time.Duration {
+	delay := base
 	for i := 0; i < attempt; i++ {
 		delay *= 2
-		if delay >= 30*time.Second {
-			return 30 * time.Second
+		if delay >= maxDelay {
+			return maxDelay
 		}
 	}
-	if delay > 30*time.Second {
-		return 30 * time.Second
+	if delay > maxDelay {
+		return maxDelay
 	}
 	return delay
 }
@@ -1683,6 +1723,21 @@ func deezerContributorNames(detail deezerTrackDetail) []string {
 	return names
 }
 
+// yearMatchAdjustment returns a confidence delta based on how closely
+// recordingYear and songYear match. Both must be non-zero to have any effect.
+func yearMatchAdjustment(recordingYear, songYear int, matchBonus, mismatchPenalty float64) float64 {
+	if recordingYear == 0 || songYear == 0 {
+		return 0
+	}
+	switch {
+	case recordingYear == songYear:
+		return matchBonus
+	case absInt(recordingYear-songYear) > 1:
+		return -mismatchPenalty
+	}
+	return 0
+}
+
 func deezerConfidence(song SongInput, primaryArtistPrefix string, detail deezerTrackDetail, artistNames []string) float64 {
 	titleBonus, ok := titleMatchBonus(song.Title, detail.Title)
 	if !ok {
@@ -1707,14 +1762,7 @@ func deezerConfidence(song SongInput, primaryArtistPrefix string, detail deezerT
 
 	recordingYear := parseReleaseYear(detail.ReleaseDate)
 	songYear := parseReleaseYear(song.ReleaseDate)
-	if recordingYear != 0 && songYear != 0 {
-		switch {
-		case recordingYear == songYear:
-			confidence += 0.03
-		case absInt(recordingYear-songYear) > 1:
-			confidence -= 0.03
-		}
-	}
+	confidence += yearMatchAdjustment(recordingYear, songYear, 0.03, 0.03)
 
 	if confidence > 0.98 {
 		confidence = 0.98
@@ -1842,14 +1890,7 @@ func tidalConfidence(song SongInput, primaryArtistPrefix string, item tidalSearc
 
 	recordingYear := parseReleaseYear(item.Attributes.ReleaseDate)
 	songYear := parseReleaseYear(song.ReleaseDate)
-	if recordingYear != 0 && songYear != 0 {
-		switch {
-		case recordingYear == songYear:
-			confidence += 0.03
-		case absInt(recordingYear-songYear) > 1:
-			confidence -= 0.04
-		}
-	}
+	confidence += yearMatchAdjustment(recordingYear, songYear, 0.03, 0.04)
 
 	if strings.Contains(normalizeEllipsis(strings.TrimSpace(song.ArtistName)), "...") && distinctArtistCount(artistNames) > 1 {
 		confidence += 0.02

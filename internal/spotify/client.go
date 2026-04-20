@@ -265,6 +265,16 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	return client, nil
 }
 
+// providerEntry associates a provider's enabled-flag, semaphore, fetch func,
+// and label so ProviderAny can dispatch through a table rather than 7 if-blocks.
+type providerEntry struct {
+	enabled   bool
+	sem       chan struct{}
+	fetchFunc func(context.Context, string) (int, error)
+	label     string
+	ctxWith   func(context.Context) (context.Context, context.CancelFunc)
+}
+
 // FetchListenerCount fetches the monthly listener count for an artist.
 // It uses the specified provider or falls back to the default strategy if ProviderAny is used.
 func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provider Provider) (int, error) {
@@ -306,82 +316,53 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 		return c.fetchWithProvider(ctx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
 
 	case ProviderAny:
-		// Default strategy: Local headless -> Local Browserless -> Browserless -> ScrapingAnt -> ScraperAPI -> Apify
-		providerErrors := make([]string, 0, 6)
-
-		if c.useLocal.Load() {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semLocal, c.fetchViaLocalHeadless, "local")
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("local: %v", err))
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
-		}
-
-		if c.useLocalBrowserless {
-			localBrowserlessCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			count, err := c.fetchWithProvider(localBrowserlessCtx, artistID, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless")
-			cancel()
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("local-browserless: %v", err))
-			if localBrowserlessCtx.Err() != nil {
-				return 0, localBrowserlessCtx.Err()
-			}
-		}
-
-		if c.useBrowserless {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semBrowserless, c.fetchViaBrowserless, "browserless")
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("browserless: %v", err))
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
-		}
-
-		if c.useScrapingAnt {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant")
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("scrapingant: %v", err))
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
-		}
-
-		if c.useScraperAPI {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi")
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("scraperapi: %v", err))
-			if ctx.Err() != nil {
-				return 0, ctx.Err()
-			}
-		}
-
-		if c.useApify {
-			count, err := c.fetchWithProvider(ctx, artistID, c.semApify, c.fetchViaApify, "apify")
-			if err == nil {
-				return count, nil
-			}
-			providerErrors = append(providerErrors, fmt.Sprintf("apify: %v", err))
-		}
-
-		if len(providerErrors) > 0 {
-			return 0, fmt.Errorf("all providers failed (%s)", strings.Join(providerErrors, "; "))
-		}
-		return 0, fmt.Errorf("no scraping provider configured")
+		return c.tryEachProvider(ctx, artistID)
 
 	default:
 		return 0, fmt.Errorf("unknown provider strategy")
 	}
+}
+
+// tryEachProvider tries each configured provider in order and returns the
+// first successful result. It stops early on context cancellation.
+func (c *Client) tryEachProvider(ctx context.Context, artistID string) (int, error) {
+	lbCtxWith := func(parent context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(parent, 60*time.Second)
+	}
+	noCtx := func(parent context.Context) (context.Context, context.CancelFunc) {
+		return parent, func() {}
+	}
+
+	providers := []providerEntry{
+		{c.useLocal.Load(), c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
+		{c.useLocalBrowserless, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", lbCtxWith},
+		{c.useBrowserless, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
+		{c.useScrapingAnt, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
+		{c.useScraperAPI, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
+		{c.useApify, c.semApify, c.fetchViaApify, "apify", noCtx},
+	}
+
+	var providerErrors []string
+	for _, p := range providers {
+		if !p.enabled {
+			continue
+		}
+		pCtx, cancel := p.ctxWith(ctx)
+		count, err := c.fetchWithProvider(pCtx, artistID, p.sem, p.fetchFunc, p.label)
+		cancel()
+		if err == nil {
+			return count, nil
+		}
+		providerErrors = append(providerErrors, fmt.Sprintf("%s: %v", p.label, err))
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+	}
+
+	if len(providerErrors) > 0 {
+		return 0, fmt.Errorf("all providers failed (%s)", strings.Join(providerErrors, "; "))
+	}
+	return 0, fmt.Errorf("no scraping provider configured")
 }
 
 func (c *Client) fetchWithProvider(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
@@ -586,15 +567,7 @@ func (c *Client) fetchViaLocalBrowserless(ctx context.Context, artistID string) 
 		return 0, fmt.Errorf("local browserless billing/quota failure (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK {
-		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		snippet := strings.TrimSpace(string(snippetBytes))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "..."
-		}
-		if snippet != "" {
-			return 0, fmt.Errorf("local browserless unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
-		}
-		return 0, fmt.Errorf("local browserless unexpected status code: %d", resp.StatusCode)
+		return 0, fmt.Errorf("local browserless unexpected status code: %d%s", resp.StatusCode, readBodySnippet(resp.Body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -639,24 +612,35 @@ func normalizeLocalBrowserlessEndpoint(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("parse local browserless endpoint: %w", err)
 	}
 
-	if strings.EqualFold(parsed.Hostname(), "localhost") {
-		port := parsed.Port()
-		if port == "" {
-			port = "3001"
-			log.Printf("[spotify] local browserless: no port for host=%q, defaulting to port=%s", parsed.Hostname(), port)
-		}
-		parsed.Host = "127.0.0.1:" + port
-	}
+	applyLocalhostPort(parsed)
+	fixLocalBrowserlessPath(parsed)
+	return parsed, nil
+}
 
-	if parsed.Path == "" || parsed.Path == "/" || strings.HasSuffix(parsed.Path, "/chromium/bql") {
-		basePath := strings.TrimSuffix(parsed.Path, "/chromium/bql")
+// applyLocalhostPort normalises a "localhost" hostname to 127.0.0.1 and
+// fills in port 3001 when no port is specified.
+func applyLocalhostPort(u *url.URL) {
+	if !strings.EqualFold(u.Hostname(), "localhost") {
+		return
+	}
+	port := u.Port()
+	if port == "" {
+		port = "3001"
+		log.Printf("[spotify] local browserless: no port for host=%q, defaulting to port=%s", u.Hostname(), port)
+	}
+	u.Host = "127.0.0.1:" + port
+}
+
+// fixLocalBrowserlessPath rewrites a BQL path (or bare root) to the
+// /chromium/content endpoint used by the open-source Browserless v2 image.
+func fixLocalBrowserlessPath(u *url.URL) {
+	if u.Path == "" || u.Path == "/" || strings.HasSuffix(u.Path, "/chromium/bql") {
+		basePath := strings.TrimSuffix(u.Path, "/chromium/bql")
 		if basePath == "/" {
 			basePath = ""
 		}
-		parsed.Path = basePath + "/chromium/content"
+		u.Path = basePath + "/chromium/content"
 	}
-
-	return parsed, nil
 }
 
 // buildBrowserlessRequest creates an HTTP request for fetching listener data via Browserless/BQL.
@@ -736,40 +720,22 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 		return 0, fmt.Errorf("browserless: 'monthly listeners' text not found in %q", raw)
 	}
 
-	// Format could be "10,000 monthly listeners", "2.4M monthly listeners", "44K monthly listeners"
-	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly`)
+	re := regexp.MustCompile(`(?i)([\.\d,]+)\s*([mMkK]?)\s*monthly`)
 	m := re.FindStringSubmatch(raw)
 	if len(m) == 0 {
 		return 0, fmt.Errorf("browserless: unexpected format %q", raw)
 	}
 
-	numberStr := m[1]
-	multiplierStr := strings.ToUpper(m[2])
-	numberStr = strings.ReplaceAll(numberStr, ",", "")
+	numberStr := strings.ReplaceAll(m[1], ",", "")
+	return parseListenerCountFromSuffix(numberStr, strings.ToUpper(m[2]), "browserless")
+}
 
-	var count int
-	switch multiplierStr {
-	case "M":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("browserless: failed to parse M float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000000))
-	case "K":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("browserless: failed to parse K float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000))
-	default:
-		val, err := strconv.ParseFloat(numberStr, 64) // Parse float safely to throw away any stray decimals
-		if err != nil {
-			return 0, fmt.Errorf("browserless: failed to parse number %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val))
-	}
-
-	return count, nil
+// isScrapingAntQuotaStatus reports whether the HTTP status indicates a
+// ScrapingAnt quota exhaustion or permanent rate-limit condition.
+func isScrapingAntQuotaStatus(code int) bool {
+	return code == http.StatusForbidden ||
+		code == http.StatusTooManyRequests ||
+		code == http.StatusPaymentRequired
 }
 
 // fetchViaScrapingAnt fetches the monthly listener count via ScrapingAnt HTML scraping.
@@ -807,22 +773,11 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 		}
 	}()
 
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusPaymentRequired {
+	if isScrapingAntQuotaStatus(resp.StatusCode) {
 		return 0, fmt.Errorf("scrapingant quota/rate limit exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Attempt to read a small snippet of the response body for debugging.
-		// Limit the read to avoid consuming large bodies; ignore read errors here.
-		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		snippet := strings.TrimSpace(string(snippetBytes))
-		if snippet != "" {
-			// Truncate snippet to a reasonable length in case it's still large.
-			if len(snippet) > 400 {
-				snippet = snippet[:400] + "..."
-			}
-			return 0, fmt.Errorf("scrapingant unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
-		}
-		return 0, fmt.Errorf("scrapingant unexpected status code: %d", resp.StatusCode)
+		return 0, fmt.Errorf("scrapingant unexpected status code: %d%s", resp.StatusCode, readBodySnippet(resp.Body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -877,6 +832,14 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 	return 0, fmt.Errorf("scraperapi request failed with no retryable profile remaining")
 }
 
+// isScraperAPIQuotaStatus reports whether the HTTP status indicates a
+// ScraperAPI quota exhaustion or authentication failure.
+func isScraperAPIQuotaStatus(code int) bool {
+	return code == http.StatusUnauthorized ||
+		code == http.StatusPaymentRequired ||
+		code == http.StatusForbidden
+}
+
 func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string, profile scraperAPIRequestProfile) (int, bool, error) {
 	req, err := c.buildScraperAPIRequest(ctx, artistID, profile)
 	if err != nil {
@@ -893,7 +856,7 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 		}
 	}()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusForbidden {
+	if isScraperAPIQuotaStatus(resp.StatusCode) {
 		return 0, false, fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -905,17 +868,8 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		snippet := strings.TrimSpace(string(snippetBytes))
-		if snippet != "" {
-			if len(snippet) > 400 {
-				snippet = snippet[:400] + "..."
-			}
-			err = fmt.Errorf("scraperapi unexpected status code: %d; body snippet: %q", resp.StatusCode, snippet)
-		} else {
-			err = fmt.Errorf("scraperapi unexpected status code: %d", resp.StatusCode)
-		}
-		return 0, isTransientScraperAPIStatus(resp.StatusCode), err
+		return 0, isTransientScraperAPIStatus(resp.StatusCode),
+			fmt.Errorf("scraperapi unexpected status code: %d%s", resp.StatusCode, readBodySnippet(resp.Body))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -991,7 +945,39 @@ func isTransientScraperAPIStatus(code int) bool {
 	}
 }
 
-// parseHTMLMonthlyListeners parses a rendered Spotify artist page HTML body
+// parseListenerCountFromSuffix converts a cleaned numeric string (no commas) and
+// an optional M/K suffix into an integer listener count. source names the caller
+// for error messages.
+func parseListenerCountFromSuffix(numberStr, suffix, source string) (int, error) {
+	val, err := strconv.ParseFloat(numberStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)
+	}
+	switch suffix {
+	case "M":
+		return int(math.Round(val * 1_000_000)), nil
+	case "K":
+		return int(math.Round(val * 1_000)), nil
+	default:
+		return int(math.Round(val)), nil
+	}
+}
+
+// readBodySnippet reads up to 1024 bytes from r, truncates to 400 characters,
+// and returns a formatted "; body snippet: \"...\"" suffix, or "" if empty.
+// It is intended for use in error messages when a non-200 response is received.
+func readBodySnippet(r io.Reader) string {
+	raw, _ := io.ReadAll(io.LimitReader(r, 1024))
+	snippet := strings.TrimSpace(string(raw))
+	if snippet == "" {
+		return ""
+	}
+	if len(snippet) > 400 {
+		snippet = snippet[:400] + "..."
+	}
+	return fmt.Sprintf("; body snippet: %q", snippet)
+}
+
 // parseHTMLMonthlyListeners parses Spotify HTML or embedded JSON and extracts the "monthly listeners" count.
 // It returns the numeric listener count parsed from either an embedded `"monthlyListeners":<number>` JSON blob
 // or from visible text like "2.4M monthly listeners" (supports M/K multipliers and comma/decimal formatting).
@@ -1003,8 +989,7 @@ func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 	// Fast path: Spotify JSON blobs often include "monthlyListeners":<number>.
 	jsonMatch := regexp.MustCompile(`"monthlyListeners"\s*:\s*(\d+)`).FindStringSubmatch(html)
 	if len(jsonMatch) == 2 {
-		count, err := strconv.Atoi(jsonMatch[1])
-		if err == nil && count >= 0 {
+		if count, err := strconv.Atoi(jsonMatch[1]); err == nil && count >= 0 {
 			return count, nil
 		}
 	}
@@ -1019,36 +1004,9 @@ func parseHTMLMonthlyListeners(body []byte, source string) (int, error) {
 		return 0, fmt.Errorf("%s: could not locate numeric listeners value", source)
 	}
 
-	// Get the last matched number sequence before the end of the document
 	lastMatch := matches[len(matches)-1]
-	numberStr := lastMatch[1]
-	multiplierStr := strings.ToUpper(lastMatch[2])
-
-	numberStr = strings.ReplaceAll(numberStr, ",", "")
-
-	var count int
-	switch multiplierStr {
-	case "M":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s: failed to parse M float %q: %w", source, numberStr, err)
-		}
-		count = int(math.Round(val * 1000000))
-	case "K":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s: failed to parse K float %q: %w", source, numberStr, err)
-		}
-		count = int(math.Round(val * 1000))
-	default:
-		val, err := strconv.ParseFloat(numberStr, 64) // parse as float just in case it contains a dot safely
-		if err != nil {
-			return 0, fmt.Errorf("%s: failed to parse listener count %q: %w", source, numberStr, err)
-		}
-		count = int(math.Round(val))
-	}
-
-	return count, nil
+	numberStr := strings.ReplaceAll(lastMatch[1], ",", "")
+	return parseListenerCountFromSuffix(numberStr, strings.ToUpper(lastMatch[2]), source)
 }
 
 // Close closes the HTTP client and releases resources.
