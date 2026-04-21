@@ -67,8 +67,9 @@ func TestParseArtistListParamsAppliesDefaultsAndBounds(t *testing.T) {
 	if params.page != defaultArtistPage {
 		t.Fatalf("page = %d, want %d", params.page, defaultArtistPage)
 	}
-	if params.limit != defaultArtistPageSize {
-		t.Fatalf("limit = %d, want %d", params.limit, defaultArtistPageSize)
+	// limit=999 exceeds maxArtistPageSize; parseBoundedPositiveInt clamps to max.
+	if params.limit != maxArtistPageSize {
+		t.Fatalf("limit = %d, want %d (clamped to max)", params.limit, maxArtistPageSize)
 	}
 	if params.genre != defaultArtistGenreGroup {
 		t.Fatalf("genre = %q, want %q", params.genre, defaultArtistGenreGroup)
@@ -82,8 +83,9 @@ func TestParseWaitingArtistListParamsAppliesDefaultsAndBounds(t *testing.T) {
 	if params.offset != 0 {
 		t.Fatalf("offset = %d, want 0", params.offset)
 	}
-	if params.limit != defaultWaitingArtistPageSize {
-		t.Fatalf("limit = %d, want %d", params.limit, defaultWaitingArtistPageSize)
+	// limit=25 exceeds maxWaitingArtistPageSize; parseBoundedPositiveInt clamps to max.
+	if params.limit != maxWaitingArtistPageSize {
+		t.Fatalf("limit = %d, want %d (clamped to max)", params.limit, maxWaitingArtistPageSize)
 	}
 }
 

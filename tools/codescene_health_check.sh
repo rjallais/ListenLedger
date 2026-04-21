@@ -5,6 +5,16 @@ set -euo pipefail
 CS_MCP="${CS_MCP:-$(command -v cs-mcp 2>/dev/null || echo 'npx @codescene/codehealth-mcp@latest cs-mcp')}"
 PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
+# json_escape safely embeds a filesystem path in a JSON string value by
+# escaping backslashes and double-quotes (the two characters that break raw
+# interpolation into JSON).
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"  # \ -> \\
+  s="${s//"/\\"}"
+  echo -n "$s"
+}
+
 # Files to check (relative paths)
 FILES=(
   "main.go"
@@ -55,7 +65,8 @@ MESSAGES+=$'\n'
 declare -A ID_TO_FILE
 for f in "${FILES[@]}"; do
   FULL_PATH="$PROJECT/$f"
-  MESSAGES+="{\"jsonrpc\":\"2.0\",\"id\":$ID,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":\"$FULL_PATH\"}}}"
+  ESCAPED_PATH="$(json_escape "$FULL_PATH")"
+  MESSAGES+="{\"jsonrpc\":\"2.0\",\"id\":$ID,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":\"$ESCAPED_PATH\"}}}"
   MESSAGES+=$'\n'
   ID_TO_FILE[$ID]="$f"
   ID=$((ID+1))
@@ -67,9 +78,12 @@ for id in "${!ID_TO_FILE[@]}"; do
   FILE_MAP+="$id:${ID_TO_FILE[$id]}"$'\n'
 done
 
-# Pass FILE_MAP in the command environment so python can read it
-FILE_MAP="$FILE_MAP" CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}" \
-  echo "$MESSAGES" | $CS_MCP 2>"${DEBUG:-/dev/null}" | \
+# Export FILE_MAP and CS_ACCESS_TOKEN so both $CS_MCP and python3 in the
+# pipeline inherit them (a per-command env prefix only applies to that one
+# command, not the whole pipeline).
+export FILE_MAP
+export CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}"
+echo "$MESSAGES" | $CS_MCP 2>"${DEBUG:-/dev/null}" | \
   python3 -c "
 import sys, json, os
 

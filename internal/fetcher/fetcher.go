@@ -248,6 +248,8 @@ func (s *Service) fetchAllBatch(ctx context.Context, artistIDs []string, bf spot
 // processBatch sends one Apify batch run and merges results into the shared map.
 // It returns the artist IDs that were missed (not returned by Apify), after
 // attempting a single-artist retry for each one.
+// results is mutated in place and is not safe for concurrent use; callers must
+// not call processBatch or retryBatchMissed concurrently on the same map.
 func (s *Service) processBatch(ctx context.Context, batch []string, bf spotify.BatchFetcher, results map[string]int) []string {
 	batchResults, err := bf.FetchApifyBatch(ctx, batch)
 	if err != nil {

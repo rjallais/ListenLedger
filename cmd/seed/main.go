@@ -1,5 +1,8 @@
 //go:build goexperiment.jsonv2
 
+// Package main implements the seed command, which reads CSV files of artists
+// and albums and upserts them into the ListenLedger PocketBase database.
+// Run with --dry-run to preview changes without writing.
 package main
 
 import (
@@ -327,7 +330,11 @@ func findArtistBySpotifyID(app *pocketbase.PocketBase, collection *core.Collecti
 
 func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
 	existing, err := findArtistBySpotifyID(app, collection, spotifyID)
-	if err == nil && existing != nil {
+	if err != nil {
+		log.Printf("[seed] Warning: lookup failed for artist %q (%s): %v", bandName, spotifyID, err)
+		return 0
+	}
+	if existing != nil {
 		log.Printf("[seed] Would update artist: %q (%d listeners)", bandName, listeners)
 		return 1
 	}
@@ -337,7 +344,11 @@ func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collecti
 
 func saveArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
 	existing, err := findArtistBySpotifyID(app, collection, spotifyID)
-	if err == nil && existing != nil {
+	if err != nil {
+		log.Printf("[seed] Warning: lookup failed for artist %q (%s): %v", bandName, spotifyID, err)
+		return 0
+	}
+	if existing != nil {
 		existing.Set("monthly_listeners", listeners)
 		if err := app.Save(existing); err != nil {
 			log.Printf("[seed] Warning: failed to update artist %q: %v", bandName, err)
