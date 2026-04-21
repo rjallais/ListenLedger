@@ -55,6 +55,69 @@ type waitingArtistListParams struct {
 	limit  int
 }
 
+// artistRankCache provides O(1) rank lookup for artists by genre.
+// Built once per request and reused to avoid O(N²) behavior.
+type artistRankCache struct {
+	totalCount int
+	ranks      map[string]int // record.ID -> rank (1-indexed)
+}
+
+// buildArtistRankMap creates a rank cache for the given genre by fetching all
+// non-waiting artists sorted by monthly_listeners descending.
+func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
+	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
+	if err != nil || totalCount == 0 {
+		return &artistRankCache{totalCount: totalCount, ranks: make(map[string]int)}, nil
+	}
+
+	filterParams := nonWaitingArtistParams(genre)
+
+	records, err := h.app.FindRecordsByFilter(
+		"artists",
+		nonWaitingArtistFilter,
+		"-monthly_listeners",
+		totalCount,
+		0,
+		filterParams,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch artists for rank map: %w", err)
+	}
+
+	ranks := make(map[string]int, len(records))
+	for i, record := range records {
+		ranks[record.Id] = i + 1 // 1-indexed rank
+	}
+
+	return &artistRankCache{totalCount: totalCount, ranks: ranks}, nil
+}
+
+// rank returns the 1-indexed position for the artist, or 0 if not found.
+func (c *artistRankCache) rank(recordID string) int {
+	return c.ranks[recordID]
+}
+
+// dynamicTotalSongs returns the dynamic total songs count using the rank cache.
+// If cache is nil, falls back to computing rank via query (for backward compatibility).
+func (h *Handler) dynamicTotalSongs(record *core.Record, cache *artistRankCache) int {
+	collectionSongs := record.GetInt("collection_songs")
+	if record.GetString("list_status") == waitingArtistStatus {
+		return collectionSongs
+	}
+
+	// Use cached rank if available (O(1))
+	if cache != nil {
+		r := cache.rank(record.Id)
+		if r > 0 {
+			return rankedArtistTotalSongs(cache.totalCount, 0, r-1)
+		}
+		return collectionSongs
+	}
+
+	// Fallback: compute rank via query (for backward compatibility)
+	return h.dynamicArtistTotalSongs(record)
+}
+
 func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
 	if err := r.ParseForm(); err != nil {
 		return artistCreateInput{}, fmt.Errorf("invalid form data")
@@ -209,10 +272,26 @@ func artistFromRecord(record *core.Record, totalSongs int) templates.Artist {
 	}
 }
 
-func artistsFromRecords(records []*core.Record, totalSongs func(index int, record *core.Record) int) []templates.Artist {
+// artistsFromRecords converts Records to Artist structs.
+// If cache is provided, uses O(1) rank lookup from the cache.
+// For backward compatibility when cache is nil, expects totalSongs closure.
+func artistsFromRecords(records []*core.Record, cache *artistRankCache) []templates.Artist {
 	artists := make([]templates.Artist, 0, len(records))
-	for i, record := range records {
-		artists = append(artists, artistFromRecord(record, totalSongs(i, record)))
+	for _, record := range records {
+		var total int
+		if cache != nil {
+			genre := record.GetString("genre_group")
+			if r := cache.rank(record.Id); r > 0 {
+				total = rankedArtistTotalSongs(cache.totalCount, 0, r-1)
+			} else {
+				total = record.GetInt("collection_songs")
+			}
+			_ = genre // cache is genre-scoped, already filtered
+		} else {
+			// Backward compatibility: should not reach here in normal usage
+			total = record.GetInt("collection_songs")
+		}
+		artists = append(artists, artistFromRecord(record, total))
 	}
 
 	return artists
@@ -244,10 +323,6 @@ func isWaitingListStatusTransition(oldStatus, newStatus string) bool {
 }
 
 const nonWaitingArtistFilter = "genre_group = {:genre} && list_status != {:waiting}"
-
-func nonWaitingArtistListFilter() string {
-	return nonWaitingArtistFilter
-}
 
 func nonWaitingArtistParams(genre string) dbx.Params {
 	return dbx.Params{
@@ -445,7 +520,6 @@ func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
 	}
 
 	genre := record.GetString("genre_group")
-	filter := nonWaitingArtistListFilter()
 	filterParams := nonWaitingArtistParams(genre)
 
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
@@ -455,7 +529,7 @@ func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
 
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
-		filter,
+		nonWaitingArtistFilter,
 		"-monthly_listeners",
 		totalCount,
 		0,

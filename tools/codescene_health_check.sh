@@ -2,17 +2,17 @@
 set -euo pipefail
 # Batch CodeScene code health check via MCP JSON-RPC
 # Usage: CS_ACCESS_TOKEN=pat_... bash tools/codescene_health_check.sh
-CS_MCP="${CS_MCP:-$(command -v cs-mcp 2>/dev/null || echo 'npx @codescene/codehealth-mcp@latest cs-mcp')}"
+if command -v cs-mcp &>/dev/null; then
+  CS_MCP=(cs-mcp)
+else
+  CS_MCP=(npx -y -p @codescene/codehealth-mcp@latest cs-mcp)
+fi
 PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
-# json_escape safely embeds a filesystem path in a JSON string value by
-# escaping backslashes and double-quotes (the two characters that break raw
-# interpolation into JSON).
+# json_escape safely embeds a filesystem path in a JSON string value using
+# Python's json.dumps to handle all control characters and special characters.
 json_escape() {
-  local s="$1"
-  s="${s//\\/\\\\}"  # \ -> \\
-  s="${s//"/\\"}"
-  echo -n "$s"
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
 # Files to check (relative paths)
@@ -78,12 +78,12 @@ for id in "${!ID_TO_FILE[@]}"; do
   FILE_MAP+="$id:${ID_TO_FILE[$id]}"$'\n'
 done
 
-# Export FILE_MAP and CS_ACCESS_TOKEN so both $CS_MCP and python3 in the
+# Export FILE_MAP and CS_ACCESS_TOKEN so both "${CS_MCP[@]}" and python3 in the
 # pipeline inherit them (a per-command env prefix only applies to that one
 # command, not the whole pipeline).
 export FILE_MAP
 export CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}"
-echo "$MESSAGES" | $CS_MCP 2>"${DEBUG:-/dev/null}" | \
+echo "$MESSAGES" | "${CS_MCP[@]}" 2>"${DEBUG:-/dev/null}" | \
   python3 -c "
 import sys, json, os
 

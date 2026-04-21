@@ -292,19 +292,20 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 		return 0, fmt.Errorf("local headless: browser was closed before request started")
 	}
 
-	resultChan, stopWork, err := c.setupPageInterception(reqCtx, b, lb)
+	resultChan, stopWork, cleanupDone, err := c.setupPageInterception(reqCtx, b, lb, artistURL)
 	if err != nil {
 		return 0, err
 	}
 
-	return c.navigateAndWait(reqCtx, lb, artistURL, resultChan, stopWork)
+	return c.navigateAndWait(reqCtx, resultChan, stopWork, cleanupDone)
 }
 
 // setupPageInterception creates an incognito page, enables CDP network events,
-// installs the pathfinder response listener, and starts the DOM poll. It
-// returns a channel that receives the listener count on success, a stop
-// function the caller must invoke when done, and any setup error.
-func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, lb *localBrowser) (<-chan int, context.CancelFunc, error) {
+// installs the pathfinder response listener, navigates to artistURL, and starts
+// the DOM poll. It returns a channel that receives the listener count on success,
+// a stop function the caller must invoke when done, a cleanup done signal, and
+// any setup error.
+func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, lb *localBrowser, artistURL string) (<-chan int, context.CancelFunc, <-chan struct{}, error) {
 	workCtx, stopWork := context.WithCancel(reqCtx)
 
 	browserCtx := b.Context(reqCtx)
@@ -312,7 +313,7 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	if err != nil {
 		stopWork()
 		c.evictDeadBrowser(reqCtx, lb)
-		return nil, nil, fmt.Errorf("local headless: failed to create incognito context: %w", err)
+		return nil, nil, nil, fmt.Errorf("local headless: failed to create incognito context: %w", err)
 	}
 
 	page, err := incognito.Context(reqCtx).Page(proto.TargetCreateTarget{URL: "about:blank"})
@@ -320,20 +321,23 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 		stopWork()
 		_ = incognito.Close()
 		c.evictDeadBrowser(reqCtx, lb)
-		return nil, nil, fmt.Errorf("local headless: failed to create page: %w", err)
+		return nil, nil, nil, fmt.Errorf("local headless: failed to create page: %w", err)
 	}
 
-	// Cleanup incognito and page when workCtx is cancelled.
+	// cleanupDone signals when page and incognito cleanup is complete.
+	cleanupDone := make(chan struct{})
+	// Cleanup incognito and page when workCtx is cancelled, then signal completion.
 	go func() {
 		<-workCtx.Done()
 		_ = page.Close()
 		_ = incognito.Close()
+		close(cleanupDone)
 	}()
 
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
 		stopWork()
 		c.evictDeadBrowser(reqCtx, lb)
-		return nil, nil, fmt.Errorf("local headless: network enable failed: %w", err)
+		return nil, nil, nil, fmt.Errorf("local headless: network enable failed: %w", err)
 	}
 
 	if err := (proto.NetworkSetBlockedURLs{Urls: blockedURLPatterns()}).Call(page); err != nil {
@@ -388,37 +392,31 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	)()
 
 	go c.pollLocalHeadlessDOM(workCtx, page, deliver)
-	return resultChan, stopWork, nil
+
+	// Navigate the incognito page to the artist URL.
+	if err := page.Navigate(artistURL); err != nil {
+		stopWork()
+		c.evictDeadBrowser(reqCtx, lb)
+		return nil, nil, nil, fmt.Errorf("local headless: failed to navigate: %w", err)
+	}
+
+	return resultChan, stopWork, cleanupDone, nil
 }
 
-// navigateAndWait navigates to artistURL and waits for a listener count result
-// or context cancellation.
-func (c *Client) navigateAndWait(reqCtx context.Context, lb *localBrowser, artistURL string, resultChan <-chan int, stopWork context.CancelFunc) (int, error) {
+// navigateAndWait waits for a listener count result or context cancellation,
+// and ensures page cleanup completes before returning.
+func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, stopWork context.CancelFunc, cleanupDone <-chan struct{}) (int, error) {
 	defer stopWork()
-	if err := c.navigatePage(reqCtx, lb, artistURL); err != nil {
-		return 0, err
-	}
+	defer func() {
+		// Wait for page and incognito cleanup to complete before returning.
+		<-cleanupDone
+	}()
 	select {
 	case val := <-resultChan:
 		return val, nil
 	case <-reqCtx.Done():
 		return 0, fmt.Errorf("local headless: waiting for listeners: %w", reqCtx.Err())
 	}
-}
-
-// navigatePage navigates the shared browser to artistURL, evicting it on error.
-func (c *Client) navigatePage(reqCtx context.Context, lb *localBrowser, artistURL string) error {
-	b := lb.snapshot()
-	if b == nil {
-		return fmt.Errorf("local headless: browser closed before navigation")
-	}
-	page, err := b.Context(reqCtx).Page(proto.TargetCreateTarget{URL: artistURL})
-	if err != nil {
-		c.evictDeadBrowser(reqCtx, lb)
-		return fmt.Errorf("local headless: failed to navigate: %w", err)
-	}
-	_ = page.Close()
-	return nil
 }
 
 func (c *Client) pollLocalHeadlessDOM(ctx context.Context, page *rod.Page, deliver func(int)) {

@@ -505,7 +505,7 @@ func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToke
 		return token
 	}
 	if clientID == "" || clientSecret == "" {
-		return token
+		return ""
 	}
 	timeout := creds.HTTPTimeout
 	if timeout <= 0 {
@@ -572,6 +572,7 @@ func writeReviewOutputs(reportDir, timestamp, reportPath string, resolutions []s
 		return queue, jsonPath, csvPath, fmt.Errorf("write review queue json: %w", err)
 	}
 	if err := writeReviewQueueCSV(csvPath, queue); err != nil {
+		_ = os.Remove(jsonPath)
 		return queue, jsonPath, csvPath, fmt.Errorf("write review queue csv: %w", err)
 	}
 	return queue, jsonPath, csvPath, nil

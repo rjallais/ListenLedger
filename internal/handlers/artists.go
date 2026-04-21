@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/pocketbase/dbx"
@@ -71,7 +72,6 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 
 func (h *Handler) handleArtists(e *core.RequestEvent) error {
 	params := parseArtistListParams(e.Request)
-	filter := nonWaitingArtistListFilter()
 	filterParams := nonWaitingArtistParams(params.genre)
 
 	// Get total count for pagination (excluding waiting).
@@ -85,7 +85,7 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 	offset := (params.page - 1) * params.limit
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
-		filter,
+		nonWaitingArtistFilter,
 		"-monthly_listeners",
 		params.limit,
 		offset,
@@ -111,10 +111,14 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 		return e.String(http.StatusInternalServerError, "Failed to load artists")
 	}
 
-	// Convert to type-safe structs
-	artists := artistsFromRecords(records, func(index int, _ *core.Record) int {
-		return rankedArtistTotalSongs(totalCount, offset, index)
-	})
+	// Build rank cache for O(1) lookup (avoids O(N) per artist)
+	rankCache, err := h.buildArtistRankMap(params.genre)
+	if err != nil {
+		log.Printf("[handlers] warning: failed to build rank cache: %v", err)
+	}
+
+	// Convert to type-safe structs using rank cache
+	artists := artistsFromRecords(records, rankCache)
 
 	pagination := templates.Pagination{
 		CurrentPage: params.page,
@@ -151,10 +155,8 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	}
 	hasMore := params.offset+len(records) < totalCount
 
-	// Convert to type-safe structs
-	artists := artistsFromRecords(records, func(_ int, record *core.Record) int {
-		return record.GetInt("collection_songs")
-	})
+	// Convert to type-safe structs (waiting artists don't need ranking)
+	artists := artistsFromRecords(records, nil)
 
 	// NOTE: WaitingArtistRows uses data-merge-mode="append" so previously shown artists remain visible.
 	return renderDatastar(e, templates.WaitingArtistRows(artists, params.offset+len(records), hasMore))

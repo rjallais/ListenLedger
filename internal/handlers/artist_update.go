@@ -37,7 +37,15 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 	}
 
 	currentGenre := currentGenreFromRequest(e.Request)
-	totalSongs := h.dynamicArtistTotalSongs(record)
+
+	// Build rank cache for O(1) lookup instead of O(N) query per artist
+	genre := record.GetString("genre_group")
+	rankCache, err := h.buildArtistRankMap(genre)
+	if err != nil {
+		log.Printf("[artist_update] warning: failed to build rank cache: %v", err)
+	}
+	totalSongs := h.dynamicTotalSongs(record, rankCache)
+
 	return renderUpdatedArtistStatus(e, oldStatus, newStatus, currentGenre, artistFromRecord(record, totalSongs))
 }
 
@@ -65,5 +73,13 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist"})
 	}
 
-	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, h.dynamicArtistTotalSongs(record))))
+	// Build rank cache for O(1) lookup instead of O(N) query per artist
+	genre := record.GetString("genre_group")
+	rankCache, err := h.buildArtistRankMap(genre)
+	if err != nil {
+		log.Printf("[artist_update] warning: failed to build rank cache: %v", err)
+	}
+	totalSongs := h.dynamicTotalSongs(record, rankCache)
+
+	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, totalSongs)))
 }

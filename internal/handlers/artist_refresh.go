@@ -25,11 +25,13 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 
 	record, err := h.findArtistRecord(artistID)
 	if err != nil {
+		log.Printf("[artist_refresh] findArtistRecord error: %v", err)
 		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
 	}
 
 	requestID, duplicate, err := h.queueArtistRefresh(e.Request.Context(), record)
 	if err != nil {
+		log.Printf("[artist_refresh] queueArtistRefresh error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to queue refresh"})
 	}
 	if duplicate {
