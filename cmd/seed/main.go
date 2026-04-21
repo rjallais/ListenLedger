@@ -126,11 +126,6 @@ func seedAlbumRow(app *pocketbase.PocketBase, collection *core.Collection, dryRu
 	return 1
 }
 
-// seedArtistsFromSheet1 reads artists from the given Sheet1 CSV and creates artist records for two genre groups ("rock_metal" and "everything_else").
-//
-// It extracts fields (name, spotify_id, monthly_listeners, collection_songs, total_songs) from two separate column ranges per row, deduplicates by spotify_id, and either logs the would-be actions when dryRun is true or saves new records to the "artists" collection.
-//
-// Returns an error if the CSV file cannot be opened or read, or if the "artists" collection cannot be located.
 type artistColumnMapping struct {
 	Name            int
 	SpotifyID       int
@@ -139,6 +134,11 @@ type artistColumnMapping struct {
 	TotalSongs      int
 }
 
+// seedArtistsFromSheet1 reads artists from the given Sheet1 CSV and creates artist records for two genre groups ("rock_metal" and "everything_else").
+//
+// It extracts fields (name, spotify_id, monthly_listeners, collection_songs, total_songs) from two separate column ranges per row, deduplicates by spotify_id, and either logs the would-be actions when dryRun is true or saves new records to the "artists" collection.
+//
+// Returns an error if the CSV file cannot be opened or read, or if the "artists" collection cannot be located.
 func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
 	file, err := os.Open(sheet1Path)
 	if err != nil {
@@ -320,7 +320,7 @@ func findArtistBySpotifyID(app *pocketbase.PocketBase, collection *core.Collecti
 		map[string]any{"spotifyId": spotifyID},
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to find artist by spotify id %s in collection %s: %w", spotifyID, collection.Id, err)
 	}
 	if len(records) == 0 {
 		return nil, nil

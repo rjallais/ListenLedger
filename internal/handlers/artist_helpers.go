@@ -33,6 +33,15 @@ const (
 	defaultWaitingArtistPageSize = 1
 	maxWaitingArtistPageSize     = 10
 	waitingArtistStatus          = "waiting"
+
+	// batchRefreshOverFetchFactor multiplies the requested limit when querying the DB,
+	// ensuring we fetch more records than needed so that prioritizeArtistJobs (which
+	// sorts by priority and monthly_listeners) can select the top `limit` after DB
+	// ordering. This compensates for cases where priority weighting may demote some
+	// records that would otherwise be in the top `limit` by monthly_listeners alone.
+	batchRefreshOverFetchFactor = 3
+	// batchRefreshMinDBLimit is the floor for dbLimit, preventing overly small fetches.
+	batchRefreshMinDBLimit = 150
 )
 
 type artistCreateInput struct {
@@ -58,6 +67,7 @@ type waitingArtistListParams struct {
 // artistRankCache provides O(1) rank lookup for artists by genre.
 // Built once per request and reused to avoid O(N²) behavior.
 type artistRankCache struct {
+	genre      string
 	totalCount int
 	ranks      map[string]int // record.ID -> rank (1-indexed)
 }
@@ -67,7 +77,7 @@ type artistRankCache struct {
 func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
 	if err != nil || totalCount == 0 {
-		return &artistRankCache{totalCount: totalCount, ranks: make(map[string]int)}, nil
+		return &artistRankCache{genre: genre, totalCount: totalCount, ranks: make(map[string]int)}, nil
 	}
 
 	filterParams := nonWaitingArtistParams(genre)
@@ -89,7 +99,7 @@ func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
 		ranks[record.Id] = i + 1 // 1-indexed rank
 	}
 
-	return &artistRankCache{totalCount: totalCount, ranks: ranks}, nil
+	return &artistRankCache{genre: genre, totalCount: totalCount, ranks: ranks}, nil
 }
 
 // rank returns the 1-indexed position for the artist, or 0 if not found.
@@ -107,6 +117,11 @@ func (h *Handler) dynamicTotalSongs(record *core.Record, cache *artistRankCache)
 
 	// Use cached rank if available (O(1))
 	if cache != nil {
+		genre := record.GetString("genre_group")
+		if genre != cache.genre {
+			log.Printf("[handlers] warning: record %s genre %q != cache genre %q, falling back to collection_songs", record.Id, genre, cache.genre)
+			return collectionSongs
+		}
 		r := cache.rank(record.Id)
 		if r > 0 {
 			return rankedArtistTotalSongs(cache.totalCount, 0, r-1)
@@ -281,12 +296,14 @@ func artistsFromRecords(records []*core.Record, cache *artistRankCache) []templa
 		var total int
 		if cache != nil {
 			genre := record.GetString("genre_group")
-			if r := cache.rank(record.Id); r > 0 {
+			if genre != cache.genre {
+				log.Printf("[handlers] warning: record %s genre %q != cache genre %q, falling back to collection_songs", record.Id, genre, cache.genre)
+				total = record.GetInt("collection_songs")
+			} else if r := cache.rank(record.Id); r > 0 {
 				total = rankedArtistTotalSongs(cache.totalCount, 0, r-1)
 			} else {
 				total = record.GetInt("collection_songs")
 			}
-			_ = genre // cache is genre-scoped, already filtered
 		} else {
 			// Backward compatibility: should not reach here in normal usage
 			total = record.GetInt("collection_songs")
@@ -418,9 +435,9 @@ func limitPriorityJobs(jobs []priority.Job, count int) []priority.Job {
 }
 
 func (h *Handler) batchRefreshJobs(cutoff string, limit int) ([]priority.Job, error) {
-	dbLimit := limit * 3
+	dbLimit := limit * batchRefreshOverFetchFactor
 	if dbLimit <= 0 {
-		dbLimit = 150
+		dbLimit = batchRefreshMinDBLimit
 	}
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
