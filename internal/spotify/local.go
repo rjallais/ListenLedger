@@ -297,7 +297,7 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 		return 0, err
 	}
 
-	return c.navigateAndWait(reqCtx, ctx, lb, artistURL, resultChan, stopWork)
+	return c.navigateAndWait(reqCtx, lb, artistURL, resultChan, stopWork)
 }
 
 // setupPageInterception creates an incognito page, enables CDP network events,
@@ -393,9 +393,9 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 
 // navigateAndWait navigates to artistURL and waits for a listener count result
 // or context cancellation.
-func (c *Client) navigateAndWait(reqCtx, outerCtx context.Context, lb *localBrowser, artistURL string, resultChan <-chan int, stopWork context.CancelFunc) (int, error) {
+func (c *Client) navigateAndWait(reqCtx context.Context, lb *localBrowser, artistURL string, resultChan <-chan int, stopWork context.CancelFunc) (int, error) {
 	defer stopWork()
-	if err := navigatePage(reqCtx, lb, artistURL, c); err != nil {
+	if err := c.navigatePage(reqCtx, lb, artistURL); err != nil {
 		return 0, err
 	}
 	select {
@@ -407,7 +407,7 @@ func (c *Client) navigateAndWait(reqCtx, outerCtx context.Context, lb *localBrow
 }
 
 // navigatePage navigates the shared browser to artistURL, evicting it on error.
-func navigatePage(reqCtx context.Context, lb *localBrowser, artistURL string, c *Client) error {
+func (c *Client) navigatePage(reqCtx context.Context, lb *localBrowser, artistURL string) error {
 	b := lb.snapshot()
 	if b == nil {
 		return fmt.Errorf("local headless: browser closed before navigation")

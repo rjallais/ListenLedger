@@ -163,31 +163,6 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	return parseApifyResponse(body)
 }
 
-func checkApifyHTTPStatus(resp *http.Response) error {
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("apify: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
-	}
-	if resp.StatusCode == http.StatusPaymentRequired {
-		return fmt.Errorf("apify: quota exceeded (status 402): %w", ErrQuotaExhausted)
-	}
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-		return nil
-	}
-	return formatApifyUnexpectedStatusError(resp)
-}
-
-func formatApifyUnexpectedStatusError(resp *http.Response) error {
-	snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	snippet := strings.TrimSpace(string(snippetBytes))
-	if len(snippet) > 400 {
-		snippet = snippet[:400] + "..."
-	}
-	if snippet != "" {
-		return fmt.Errorf("apify: unexpected status %d; body: %q", resp.StatusCode, snippet)
-	}
-	return fmt.Errorf("apify: unexpected status %d", resp.StatusCode)
-}
-
 // parseApifyResponse extracts the monthly listener count from the Apify dataset items JSON.
 func parseApifyResponse(body []byte) (int, error) {
 	var items apifyRunResponse
@@ -268,7 +243,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		return make(map[string]int), nil
 	}
 
-	input, actorTimeoutSec := c.buildApifyBatchInput(artistIDs)
+	input, tuning := c.buildApifyBatchInput(artistIDs)
 
 	bodyBytes, err := json.Marshal(input)
 	if err != nil {
@@ -280,7 +255,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		ActorID:        c.config.ApifyActorID,
 		Token:          c.config.ApifyToken,
 		MemoryMB:       c.config.ApifyMemoryMB,
-		TimeoutSeconds: actorTimeoutSec,
+		TimeoutSeconds: tuning.TimeoutSeconds,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
@@ -292,7 +267,7 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 
 	maxConc := input.MaxConcurrency
 	log.Printf("[apify] batch run: %d artists, maxConcurrency=%d, actorTimeout=%ds, memory=%dMB",
-		len(artistIDs), maxConc, actorTimeoutSec, c.config.ApifyMemoryMB)
+		len(artistIDs), maxConc, tuning.TimeoutSeconds, c.config.ApifyMemoryMB)
 
 	resp, err := c.httpClientApify.Do(req)
 	if err != nil {
@@ -316,7 +291,11 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	return parseApifyBatchResponse(body)
 }
 
-func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, int) {
+type apifyBatchTuning struct {
+	TimeoutSeconds int
+}
+
+func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, apifyBatchTuning) {
 	startURLs := make([]apifyURL, len(artistIDs))
 	for i, id := range artistIDs {
 		startURLs[i] = apifyURL{URL: fmt.Sprintf("https://open.spotify.com/artist/%s", id)}
@@ -341,25 +320,40 @@ func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, int) {
 		NavigationTimeoutSecs: 60,
 		HandlePageTimeoutSecs: 120,
 	}
-	return input, actorTimeoutSec
+	return input, apifyBatchTuning{TimeoutSeconds: actorTimeoutSec}
 }
 
-func checkApifyBatchHTTPStatus(resp *http.Response) error {
+func checkApifyHTTPStatusWithPrefix(resp *http.Response, prefix string) error {
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("apify batch: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
+		return fmt.Errorf("%s: authentication failed (status %d) — check APIFY_TOKEN", prefix, resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
-		return fmt.Errorf("apify batch: quota exceeded (status 402): %w", ErrQuotaExhausted)
+		return fmt.Errorf("%s: quota exceeded (status 402): %w", prefix, ErrQuotaExhausted)
 	}
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 		return nil
 	}
+	return formatApifyUnexpectedStatusError(resp, prefix)
+}
+
+func formatApifyUnexpectedStatusError(resp *http.Response, prefix string) error {
 	snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	snippet := strings.TrimSpace(string(snippetBytes))
 	if len(snippet) > 400 {
 		snippet = snippet[:400] + "..."
 	}
-	return fmt.Errorf("apify batch: unexpected status %d; body: %q", resp.StatusCode, snippet)
+	if snippet != "" {
+		return fmt.Errorf("%s: unexpected status %d; body: %q", prefix, resp.StatusCode, snippet)
+	}
+	return fmt.Errorf("%s: unexpected status %d", prefix, resp.StatusCode)
+}
+
+func checkApifyHTTPStatus(resp *http.Response) error {
+	return checkApifyHTTPStatusWithPrefix(resp, "apify")
+}
+
+func checkApifyBatchHTTPStatus(resp *http.Response) error {
+	return checkApifyHTTPStatusWithPrefix(resp, "apify batch")
 }
 
 // parseApifyBatchResponse extracts a map of artistID → listenerCount from the

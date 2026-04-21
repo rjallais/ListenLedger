@@ -176,7 +176,6 @@ func main() {
 	summary.UpdatesApplied = applied
 	summary.ArtistNameChanges = artistNameChanges
 
-
 	if err := os.MkdirAll(*reportDir, 0o755); err != nil {
 		log.Fatalf("[backfill_song_artists] failed to create report directory: %v", err)
 	}
@@ -502,7 +501,11 @@ func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToke
 	if token != "" || clientID == "" || clientSecret == "" {
 		return token
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), creds.HTTPTimeout)
+	timeout := creds.HTTPTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	t, err := fetchTidalAccessToken(ctx, httpClient, creds.TokenURL, clientID, clientSecret)
 	if err != nil {
@@ -520,10 +523,10 @@ func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songback
 		if !resolution.Approved(minConf) && !resolution.NamePrefillApproved(minConf) {
 			continue
 		}
-		if resolution.UpdatedArtistName != resolution.OriginalArtistName {
-			nameChanges++
-		}
 		if !doApply {
+			if resolution.UpdatedArtistName != resolution.OriginalArtistName {
+				nameChanges++
+			}
 			continue
 		}
 		record, err := app.FindRecordById("songs", resolution.SongID)
@@ -540,6 +543,9 @@ func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songback
 			continue
 		}
 		applied++
+		if resolution.UpdatedArtistName != resolution.OriginalArtistName {
+			nameChanges++
+		}
 	}
 	return
 }

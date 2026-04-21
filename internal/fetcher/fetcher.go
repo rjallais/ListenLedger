@@ -277,9 +277,9 @@ func (s *Service) processBatch(ctx context.Context, batch []string, bf spotify.B
 // rest are returned as still-missed.
 func (s *Service) retryBatchMissed(ctx context.Context, missed []string, results map[string]int) []string {
 	var stillMissed []string
-	for _, id := range missed {
+	for i, id := range missed {
 		if ctx.Err() != nil {
-			stillMissed = append(stillMissed, missed...)
+			stillMissed = append(stillMissed, missed[i:]...)
 			break
 		}
 		count, retryErr := s.fetchWithRetry(ctx, id, spotify.ProviderApify)
@@ -292,7 +292,6 @@ func (s *Service) retryBatchMissed(ctx context.Context, missed []string, results
 	}
 	return stillMissed
 }
-
 
 // Close closes the underlying client
 func (s *Service) Close() error {

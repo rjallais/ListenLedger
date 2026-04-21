@@ -60,5 +60,5 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist"})
 	}
 
-	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, record.GetInt("collection_songs"))))
+	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, h.dynamicArtistTotalSongs(record))))
 }

@@ -270,14 +270,14 @@ func (w *Worker) markSingleStaleJob(ctx context.Context, job *core.Record, cutof
 		}
 		jobUpdated = true
 
-		return w.markStaleJobArtistFailed(ctx, txApp, job, freshJob.GetString("artist"))
+		return w.markStaleJobArtistFailed(ctx, txApp, job.Id, freshJob.GetString("artist"))
 	})
 	return jobUpdated, err
 }
 
 // markStaleJobArtistFailed updates the artist's fetch_status to "failed" if it
 // is currently "pending". It is called inside the same transaction as the job update.
-func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, job *core.Record, artistID string) error {
+func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, jobID string, artistID string) error {
 	if artistID == "" {
 		return nil
 	}
@@ -286,7 +286,7 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, job.Id, err)
+		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)
 	}
 	if artist.GetString("fetch_status") != "pending" {
 		return nil
@@ -296,8 +296,7 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 		return err
 	}
 	if err := txApp.Save(artist); err != nil {
-		return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, job.Id, err)
+		return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, jobID, err)
 	}
 	return nil
 }
-

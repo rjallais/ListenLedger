@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Batch CodeScene code health check via MCP JSON-RPC
 # Usage: CS_ACCESS_TOKEN=pat_... bash tools/codescene_health_check.sh
-CS_MCP="/var/home/rjallais/.npm/_npx/85498f9af683b8f2/node_modules/@codescene/codehealth-mcp/.cache/1.1.3/cs-mcp"
-PROJECT="/var/home/rjallais/Sync/WebMusicCollection-CodeScene"
+CS_MCP="${CS_MCP:-$(command -v cs-mcp 2>/dev/null || echo 'npx @codescene/codehealth-mcp@latest cs-mcp')}"
+PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
 # Files to check (relative paths)
 FILES=(
@@ -60,13 +61,15 @@ for f in "${FILES[@]}"; do
   ID=$((ID+1))
 done
 
-# Pass the file map into python via env
+# Build the file map into env
 FILE_MAP=""
 for id in "${!ID_TO_FILE[@]}"; do
   FILE_MAP+="$id:${ID_TO_FILE[$id]}"$'\n'
 done
 
-echo "$MESSAGES" | CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}" "$CS_MCP" 2>/dev/null | \
+# Pass FILE_MAP in the command environment so python can read it
+FILE_MAP="$FILE_MAP" CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}" \
+  echo "$MESSAGES" | $CS_MCP 2>"${DEBUG:-/dev/null}" | \
   python3 -c "
 import sys, json, os
 
@@ -87,21 +90,22 @@ for line in sys.stdin:
             for c in obj['result']['content']:
                 if c.get('type') == 'text':
                     results.append((obj['id'], c['text']))
-    except:
+    except (json.JSONDecodeError, KeyError, ValueError):
         pass
 
 results.sort(key=lambda x: x[0])
-print(f'{'FILE':<55} SCORE')
+print('{:<55} SCORE'.format('FILE'))
 print('-' * 65)
 for id_, text in results:
-    fname = file_map.get(id_, f'id={id_}')
-    score = text.replace('Code Health score: ', '')
+    fname = file_map.get(id_, 'id={}'.format(id_))
+    score = text.replace('Code Health score: ', '').strip()
     flag = ''
     try:
         s = float(score)
-        if s < 7.0:   flag = '  ❌'
-        elif s < 9.0: flag = '  ⚠️'
-        else:         flag = '  ✅'
-    except: pass
-    print(f'{fname:<55} {score}{flag}')
-" FILE_MAP="$FILE_MAP"
+        if s < 7.0: flag = ' X'
+        elif s < 9.0: flag = ' !'
+        else: flag = ' OK'
+    except ValueError:
+        pass
+    print('{:<55} {}{}'.format(fname, score, flag))
+"

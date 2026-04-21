@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
-
-	"ListenLedger/internal/quota"
 )
 
 // handleRefresh triggers a refresh request for an artist.
@@ -59,8 +57,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	checker := quota.NewChecker(h.cfg)
-	if !checker.HasAvailableQuota(e.Request.Context()) {
+	if !h.hasAvailableQuota(e.Request.Context()) {
 		return e.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "No scraping quota available.",
 		})

@@ -311,28 +311,35 @@ func upsertArtistFromSheet2(app *pocketbase.PocketBase, dryRun bool, collection 
 	return saveArtistUpsert(app, collection, bandName, spotifyID, listeners)
 }
 
-func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
-	existing, err := app.FindRecordsByFilter(
+func findArtistBySpotifyID(app *pocketbase.PocketBase, collection *core.Collection, spotifyID string) (*core.Record, error) {
+	records, err := app.FindRecordsByFilter(
 		collection.Id, "spotify_id = {:spotifyId}", "-created", 1, 0,
 		map[string]any{"spotifyId": spotifyID},
 	)
-	if err == nil && len(existing) > 0 {
-		log.Printf("[seed] Would update artist: %q (%d listeners)", bandName, listeners)
-	} else {
-		log.Printf("[seed] Would create artist: %q (%s, %d listeners)", bandName, spotifyID, listeners)
+	if err != nil {
+		return nil, err
 	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return records[0], nil
+}
+
+func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
+	existing, err := findArtistBySpotifyID(app, collection, spotifyID)
+	if err == nil && existing != nil {
+		log.Printf("[seed] Would update artist: %q (%d listeners)", bandName, listeners)
+		return 1
+	}
+	log.Printf("[seed] Would create artist: %q (%s, %d listeners)", bandName, spotifyID, listeners)
 	return 0
 }
 
 func saveArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
-	existing, err := app.FindRecordsByFilter(
-		collection.Id, "spotify_id = {:spotifyId}", "-created", 1, 0,
-		map[string]any{"spotifyId": spotifyID},
-	)
-	if err == nil && len(existing) > 0 {
-		record := existing[0]
-		record.Set("monthly_listeners", listeners)
-		if err := app.Save(record); err != nil {
+	existing, err := findArtistBySpotifyID(app, collection, spotifyID)
+	if err == nil && existing != nil {
+		existing.Set("monthly_listeners", listeners)
+		if err := app.Save(existing); err != nil {
 			log.Printf("[seed] Warning: failed to update artist %q: %v", bandName, err)
 			return 0
 		}
