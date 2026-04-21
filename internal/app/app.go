@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/pocketbase/pocketbase"
@@ -54,7 +55,9 @@ func Run(ctx context.Context) error {
 		registerArtistUpdateFanout(ctx, app, js)
 
 		w := worker.New(app, nc, js, cfg)
-		w.Start()
+		if err := w.Start(); err != nil {
+			log.Fatalf("[app] Worker failed to start: %v", err)
+		}
 
 		h := handlers.New(app, nc, js, cfg)
 		h.RegisterRoutes(se.Router)

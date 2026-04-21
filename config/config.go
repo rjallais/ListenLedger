@@ -175,9 +175,7 @@ func (c *Config) LoadFromEnv() error {
 	c.loadBrowserlessConfig()
 	c.loadScrapingAntConfig()
 	c.loadScraperAPIConfig()
-	if err := c.loadApifyConfig(); err != nil {
-		return err
-	}
+	c.loadApifyConfig()
 	if err := c.loadLocalHeadlessConfig(); err != nil {
 		return err
 	}
@@ -230,7 +228,7 @@ func (c *Config) loadScraperAPIConfig() {
 }
 
 // loadApifyConfig reads Apify provider settings from env.
-func (c *Config) loadApifyConfig() error {
+func (c *Config) loadApifyConfig() {
 	if token := os.Getenv("APIFY_TOKEN"); token != "" {
 		c.ApifyToken = token
 	}
@@ -249,7 +247,6 @@ func (c *Config) loadApifyConfig() error {
 	if batch, ok := parsePositiveInt("APIFY_BATCH_SIZE"); ok {
 		c.ApifyBatchSize = batch
 	}
-	return nil
 }
 
 // loadLocalHeadlessConfig reads local headless (go-rod) settings from env.
@@ -292,14 +289,7 @@ func (c *Config) loadLocalBrowserlessConfig() error {
 	if token, ok := os.LookupEnv("LOCAL_BROWSERLESS_TOKEN"); ok {
 		c.LocalBrowserlessToken = token
 	}
-	if concStr := os.Getenv("LOCAL_BROWSERLESS_CONCURRENCY"); concStr != "" {
-		conc, err := strconv.Atoi(concStr)
-		if err != nil {
-			return fmt.Errorf("invalid LOCAL_BROWSERLESS_CONCURRENCY: %w", err)
-		}
-		if conc <= 0 {
-			return fmt.Errorf("invalid LOCAL_BROWSERLESS_CONCURRENCY: must be positive")
-		}
+	if conc, ok := parsePositiveInt("LOCAL_BROWSERLESS_CONCURRENCY"); ok {
 		c.LocalBrowserlessConcurrency = conc
 	}
 	return nil

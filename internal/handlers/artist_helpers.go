@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -242,8 +243,10 @@ func isWaitingListStatusTransition(oldStatus, newStatus string) bool {
 	return oldStatus != newStatus && (oldStatus == waitingArtistStatus || newStatus == waitingArtistStatus)
 }
 
-func nonWaitingArtistListFilter(genre string) string {
-	return "genre_group = {:genre} && list_status != {:waiting}"
+const nonWaitingArtistFilter = "genre_group = {:genre} && list_status != {:waiting}"
+
+func nonWaitingArtistListFilter() string {
+	return nonWaitingArtistFilter
 }
 
 func nonWaitingArtistParams(genre string) dbx.Params {
@@ -385,14 +388,9 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 			continue
 		}
 
-		correlation.Associate(record.Id, requestID)
-		h.createScrapeJobRecord(requestID, record.Id)
+		h.markArtistRefreshQueued(record, requestID)
 		queuedArtistIDs = append(queuedArtistIDs, record.Id)
 		stats[job.Priority.String()]++
-		record.Set("fetch_status", "pending")
-		if err := h.app.Save(record); err != nil {
-			log.Printf("[batch] Warning: failed to mark artist %s pending: %v", record.Id, err)
-		}
 	}
 
 	return queuedArtistIDs, stats
@@ -413,8 +411,8 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 	}
 
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	payload := fmt.Sprintf(`{"artistFetchStatus":{%q:"pending"}}`, artistID)
-	return sse.PatchSignals([]byte(payload))
+	payload, _ := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: "pending"}})
+	return sse.PatchSignals(payload)
 }
 
 func updateArtistCollectionSongs(record *core.Record, delta int) {
@@ -434,7 +432,7 @@ func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
 	}
 
 	genre := record.GetString("genre_group")
-	filter := nonWaitingArtistListFilter(genre)
+	filter := nonWaitingArtistListFilter()
 	filterParams := nonWaitingArtistParams(genre)
 
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)

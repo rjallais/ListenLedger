@@ -71,7 +71,7 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 
 func (h *Handler) handleArtists(e *core.RequestEvent) error {
 	params := parseArtistListParams(e.Request)
-	filter := nonWaitingArtistListFilter(params.genre)
+	filter := nonWaitingArtistListFilter()
 	filterParams := nonWaitingArtistParams(params.genre)
 
 	// Get total count for pagination (excluding waiting).

@@ -29,6 +29,7 @@ import (
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/quota"
 	"ListenLedger/internal/spotify"
+	"fmt"
 )
 
 // providerSlot pairs a provider with its concurrency limit.
@@ -144,6 +145,7 @@ type Worker struct {
 
 	// accepting gates whether dispatch callbacks may enqueue into work.
 	accepting atomic.Bool
+	started   bool
 	// dispatching tracks in-flight dispatch callbacks so shutdown can safely
 	// drain and close the work queue without racing active sends.
 	workCloseOnce sync.Once
@@ -168,7 +170,7 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	}
 }
 
-func (w *Worker) Start() {
+func (w *Worker) Start() error {
 	w.initMetrics()
 	w.initFetcherClient()
 	w.resolveJetStreamTuning()
@@ -179,7 +181,7 @@ func (w *Worker) Start() {
 
 	consume, ok := w.createAndAlignConsumer(totalConc)
 	if !ok {
-		return
+		return fmt.Errorf("failed to create or align JetStream consumer")
 	}
 	w.consume = consume
 
@@ -187,8 +189,10 @@ func (w *Worker) Start() {
 	w.providerCount = max(1, len(slots))
 	w.spawnProviderPools(slots)
 	w.launchBackgroundWorkers()
+	w.started = true
 
 	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
+	return nil
 }
 
 // initFetcherClient initializes the Spotify client and fetcher service.
@@ -267,7 +271,9 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 		return nil, false
 	}
 
-	w.alignFromConsumerInfo(consumer, ctx)
+	alignCtx, alignCancel := context.WithTimeout(w.ctx, 2*time.Second)
+	defer alignCancel()
+	w.alignFromConsumerInfo(alignCtx, consumer)
 
 	consume, err := consumer.Consume(w.dispatchToChannel)
 	if err != nil {
@@ -277,9 +283,7 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 	return consume, true
 }
 
-// alignFromConsumerInfo reads actual ack_wait / max_deliver / backoff from the
-// JetStream server and overwrites the local tuning so they stay in sync.
-func (w *Worker) alignFromConsumerInfo(consumer jetstream.Consumer, ctx context.Context) {
+func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.Consumer) {
 	info, infoErr := consumer.Info(ctx)
 	if infoErr != nil {
 		log.Printf("[worker] Warning: failed to load consumer info: %v", infoErr)
@@ -346,7 +350,6 @@ func (w *Worker) launchBackgroundWorkers() {
 	w.wg.Add(1)
 	go w.sweepStaleJobs()
 }
-
 
 // Stop gracefully drains the NATS consumer and waits for in-flight work.
 func (w *Worker) Stop() {

@@ -196,7 +196,7 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 		return resolution
 	}
 
-	if done := applyExternalEllipsisFilter(&resolution, parsed.HasEllipsis, candidates); done {
+	if done := r.applyExternalEllipsisFilter(&resolution, parsed.HasEllipsis, candidates); done {
 		return resolution
 	}
 
@@ -241,7 +241,7 @@ func (r *Resolver) applyStoredNameResolution(resolution *Resolution, names []str
 // applyExternalEllipsisFilter filters candidates when the artist name uses an
 // ellipsis and stores ExternalCandidates on the resolution. Returns true when
 // processing should stop (no candidates survive the filter).
-func applyExternalEllipsisFilter(resolution *Resolution, hasEllipsis bool, candidates []TrackCandidate) bool {
+func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllipsis bool, candidates []TrackCandidate) bool {
 	if hasEllipsis {
 		candidates = filterCandidatesWithAdditionalArtists(candidates)
 		if len(candidates) == 0 {
@@ -270,11 +270,12 @@ func (r *Resolver) applyPartialMatchUpdate(resolution Resolution, candidate Trac
 		resolution.Strategy = candidate.Source
 		resolution.Confidence = candidate.Confidence
 		resolution.MatchedArtists = partialMatches
-		resolution.UpdatedArtistName = strings.Join(dedupeArtistNames(candidate.ArtistNames), ", ")
+		dedupedNames := dedupeArtistNames(candidate.ArtistNames)
+		resolution.UpdatedArtistName = strings.Join(dedupedNames, ", ")
 		resolution.UpdatedArtistSpotifyIDs = ""
 		resolution.Notes = append(
 			resolution.Notes,
-			fmt.Sprintf("matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(dedupeArtistNames(candidate.ArtistNames))),
+			fmt.Sprintf("matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(dedupedNames)),
 		)
 	}
 	return resolution
@@ -1651,14 +1652,7 @@ func musicBrainzConfidence(song SongInput, primaryArtistPrefix string, recording
 
 	recordingYear := parseReleaseYear(recording.FirstReleaseDate)
 	songYear := parseReleaseYear(song.ReleaseDate)
-	if recordingYear != 0 && songYear != 0 {
-		switch {
-		case recordingYear == songYear:
-			confidence += 0.03
-		case absInt(recordingYear-songYear) > 1:
-			confidence -= 0.05
-		}
-	}
+	confidence += yearMatchAdjustment(recordingYear, songYear, 0.03, 0.05)
 
 	if recording.Score >= 95 {
 		confidence += 0.02
