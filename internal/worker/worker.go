@@ -15,6 +15,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,6 @@ import (
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/quota"
 	"ListenLedger/internal/spotify"
-	"fmt"
 )
 
 // providerSlot pairs a provider with its concurrency limit.

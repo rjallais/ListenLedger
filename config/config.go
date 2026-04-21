@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -336,6 +337,7 @@ func (c *Config) loadJetStreamConfig() {
 
 // parsePositiveInt reads the named env variable and returns its integer value
 // if present and positive, along with a boolean indicating success.
+// Invalid or non-positive values are logged and ignored.
 func parsePositiveInt(envKey string) (int, bool) {
 	s := os.Getenv(envKey)
 	if s == "" {
@@ -343,6 +345,7 @@ func parsePositiveInt(envKey string) (int, bool) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
+		log.Printf("[config] invalid value for %s: %q, ignoring and using default", envKey, s)
 		return 0, false
 	}
 	return n, true

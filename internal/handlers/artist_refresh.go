@@ -45,6 +45,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	h.ensureBatchProgressSubscriber()
 
 	if err := e.Request.ParseForm(); err != nil {
+		log.Printf("[batch] ParseForm failed: %v", err)
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid form data"})
 	}
 
@@ -57,6 +58,9 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	// hasAvailableQuota is a best-effort gate: it checks whether any quota
+	// remains across all configured providers. Individual providers enforce
+	// quota authoritatively during message processing via ErrQuotaExhausted.
 	if !h.hasAvailableQuota(e.Request.Context()) {
 		return e.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "No scraping quota available.",
@@ -65,8 +69,9 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 
 	// Match the PocketBase DateTime format (space-separated, not RFC3339 T-separated)
 	// so SQLite string comparison works correctly.
-	jobs, err := h.batchRefreshJobs(batchRefreshCutoff(time.Now()))
+	jobs, err := h.batchRefreshJobs(batchRefreshCutoff(time.Now()), count)
 	if err != nil {
+		log.Printf("[batch] batchRefreshJobs failed: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
 	}
 

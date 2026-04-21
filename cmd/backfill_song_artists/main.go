@@ -182,7 +182,10 @@ func main() {
 
 	timestamp := time.Now().UTC().Format("20060102_150405")
 	reportPath := filepath.Join(*reportDir, fmt.Sprintf("song_artist_backfill_%s.json", timestamp))
-	reviewQueue, reviewQueueJSONPath, reviewQueueCSVPath := writeReviewOutputs(*reportDir, timestamp, reportPath, resolutions, artists)
+	reviewQueue, reviewQueueJSONPath, reviewQueueCSVPath, err := writeReviewOutputs(*reportDir, timestamp, reportPath, resolutions, artists)
+	if err != nil {
+		log.Fatalf("[backfill_song_artists] failed to write review outputs: %v", err)
+	}
 	reportPayload := report{
 		GeneratedAt:       time.Now().UTC(),
 		ApplyRequested:    *apply,
@@ -498,7 +501,10 @@ func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToke
 	if clientSecret == "" {
 		clientSecret = strings.TrimSpace(os.Getenv("TIDAL_CLIENT_SECRET"))
 	}
-	if token != "" || clientID == "" || clientSecret == "" {
+	if token != "" {
+		return token
+	}
+	if clientID == "" || clientSecret == "" {
 		return token
 	}
 	timeout := creds.HTTPTimeout
@@ -551,23 +557,24 @@ func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songback
 }
 
 // writeReviewOutputs builds the review queue and writes JSON + CSV files.
-// Returns the queue, and the two output paths (empty if no review entries).
-func writeReviewOutputs(reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string) {
+// Returns the queue, the two output paths (empty if no review entries), and any
+// write error. On error the partial output files may already exist on disk.
+func writeReviewOutputs(reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string, error) {
 	queue := buildReviewQueue(reportPath, resolutions, artists)
 	if len(queue.ReviewEntries) == 0 {
-		return queue, "", ""
+		return queue, "", "", nil
 	}
 	jsonPath := filepath.Join(reportDir, fmt.Sprintf("song_artist_review_queue_%s.json", timestamp))
 	csvPath := filepath.Join(reportDir, fmt.Sprintf("song_artist_review_queue_%s.csv", timestamp))
 	queue.JSONPath = jsonPath
 	queue.CSVPath = csvPath
 	if err := writeReviewQueueJSON(jsonPath, queue); err != nil {
-		log.Fatalf("[backfill_song_artists] failed to write review queue json: %v", err)
+		return queue, jsonPath, csvPath, fmt.Errorf("write review queue json: %w", err)
 	}
 	if err := writeReviewQueueCSV(csvPath, queue); err != nil {
-		log.Fatalf("[backfill_song_artists] failed to write review queue csv: %v", err)
+		return queue, jsonPath, csvPath, fmt.Errorf("write review queue csv: %w", err)
 	}
-	return queue, jsonPath, csvPath
+	return queue, jsonPath, csvPath, nil
 }
 
 func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret string) (string, error) {

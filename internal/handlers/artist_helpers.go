@@ -174,7 +174,7 @@ func parsePositiveInt(raw string, defaultValue int) int {
 func parseBoundedPositiveInt(raw string, defaultValue, maxValue int) int {
 	parsed := parsePositiveInt(raw, defaultValue)
 	if parsed > maxValue {
-		return defaultValue
+		return maxValue
 	}
 
 	return parsed
@@ -265,12 +265,18 @@ func nonWaitingArtistCountExpr(genre string) dbx.Expression {
 
 func (h *Handler) countArtistsByGenreExcludingWaiting(genre string) (int, error) {
 	totalCount64, err := h.app.CountRecords("artists", nonWaitingArtistCountExpr(genre))
-	return int(totalCount64), err
+	if err != nil {
+		return 0, err
+	}
+	return int(totalCount64), nil
 }
 
 func (h *Handler) countWaitingArtists() (int, error) {
 	totalCount64, err := h.app.CountRecords("artists", dbx.HashExp{"list_status": waitingArtistStatus})
-	return int(totalCount64), err
+	if err != nil {
+		return 0, err
+	}
+	return int(totalCount64), nil
 }
 
 func (h *Handler) hasAvailableQuota(ctx context.Context) bool {
@@ -336,12 +342,16 @@ func limitPriorityJobs(jobs []priority.Job, count int) []priority.Job {
 	return jobs[:count]
 }
 
-func (h *Handler) batchRefreshJobs(cutoff string) ([]priority.Job, error) {
+func (h *Handler) batchRefreshJobs(cutoff string, limit int) ([]priority.Job, error) {
+	dbLimit := limit * 3
+	if dbLimit <= 0 {
+		dbLimit = 150
+	}
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
 		"spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})",
 		"-monthly_listeners",
-		0,
+		dbLimit,
 		0,
 		dbx.Params{"cutoff": cutoff},
 	)
@@ -411,7 +421,10 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 	}
 
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	payload, _ := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: "pending"}})
+	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: "pending"}})
+	if err != nil {
+		return fmt.Errorf("marshal artistFetchStatus payload: %w", err)
+	}
 	return sse.PatchSignals(payload)
 }
 

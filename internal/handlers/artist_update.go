@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -24,12 +25,14 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 
 	record, err := h.findArtistRecord(artistID)
 	if err != nil {
+		log.Printf("[artist_update] findArtistRecord error: %v", err)
 		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
 	}
 
 	oldStatus := record.GetString("list_status")
 	record.Set("list_status", newStatus)
 	if err := h.app.Save(record); err != nil {
+		log.Printf("[artist_update] Save error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist"})
 	}
 
@@ -52,11 +55,13 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 
 	record, err := h.findArtistRecord(artistID)
 	if err != nil {
+		log.Printf("[artist_update] findArtistRecord error: %v", err)
 		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
 	}
 
 	updateArtistCollectionSongs(record, delta)
 	if err := h.app.Save(record); err != nil {
+		log.Printf("[artist_update] Save error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update artist"})
 	}
 

@@ -186,6 +186,16 @@ func parseApifyResponse(body []byte) (int, error) {
 	return resolveListenerCount(item)
 }
 
+// truncateRunes truncates s to at most max runes, appending an ellipsis if
+// truncation occurred. It avoids splitting multi-byte UTF-8 sequences.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
 // apifyFrameworkError builds an error from an Apify #error sentinel item,
 // surfacing any embedded errorMessages so callers see a useful message.
 func apifyFrameworkError(item apifyDatasetItem) error {
@@ -195,9 +205,7 @@ func apifyFrameworkError(item apifyDatasetItem) error {
 	msgs := make([]string, 0, len(item.Debug.ErrorMessages))
 	for _, m := range item.Debug.ErrorMessages {
 		m = strings.TrimSpace(m)
-		if len(m) > 200 {
-			m = m[:200] + "…"
-		}
+		m = truncateRunes(m, 200)
 		msgs = append(msgs, m)
 	}
 	return fmt.Errorf("apify: actor framework error for %s: %s", item.URL, strings.Join(msgs, " | "))
@@ -383,7 +391,8 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 		}
 		count, err := resolveListenerCount(item)
 		if err != nil {
-			return nil, fmt.Errorf("batch item %s: %w", item.URL, err)
+			log.Printf("[apify] batch: resolveListenerCount failed for artist %s (%s): %v; skipping item", artistID, item.URL, err)
+			continue
 		}
 		results[artistID] = count
 	}
@@ -396,10 +405,7 @@ func logApifyItemError(artistID string, msgs []string) {
 		log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
 		return
 	}
-	first := msgs[0]
-	if len(first) > 120 {
-		first = first[:120] + "…"
-	}
+	first := truncateRunes(msgs[0], 120)
 	log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
 }
 

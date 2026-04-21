@@ -570,11 +570,43 @@ func (c *Client) waitForInit(ctx context.Context) (bool, error) {
 	}
 }
 
-// launchNewBrowser installs the init sentinel, launches a new browser, clears
-// the sentinel, and wakes all waiting goroutines.
+// launchNewBrowser installs the init sentinel under the lock (guarding against
+// concurrent launchers), launches a new browser, clears the sentinel, sets
+// c.local, and wakes all waiting goroutines.
+// Callers must have confirmed (under localMu) that neither c.local nor
+// c.localInit is set before calling this function; however, launchNewBrowser
+// re-checks under the lock and returns the existing browser if another
+// goroutine raced it to the sentinel.
 func (c *Client) launchNewBrowser(ctx context.Context) (*localBrowser, error) {
 	initCh := make(chan struct{})
+
 	c.localMu.Lock()
+	// Re-check: another goroutine may have launched between our tryExistingBrowser
+	// / waitForInit checks and now.
+	if c.local != nil {
+		existing := c.local
+		c.localMu.Unlock()
+		close(initCh) // discard; not installed
+		return existing, nil
+	}
+	if c.localInit != nil {
+		// Someone else just installed a sentinel — fall back to waiting.
+		initCh2 := c.localInit
+		c.localMu.Unlock()
+		close(initCh) // discard; not installed
+		select {
+		case <-initCh2:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
+		}
+		c.localMu.Lock()
+		lb := c.local
+		c.localMu.Unlock()
+		if lb == nil {
+			return nil, fmt.Errorf("local headless: browser launch by peer goroutine failed")
+		}
+		return lb, nil
+	}
 	c.localInit = initCh
 	c.localMu.Unlock()
 

@@ -6,7 +6,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/pocketbase/pocketbase"
@@ -56,7 +55,9 @@ func Run(ctx context.Context) error {
 
 		w := worker.New(app, nc, js, cfg)
 		if err := w.Start(); err != nil {
-			log.Fatalf("[app] Worker failed to start: %v", err)
+			nc.Close()
+			ns.Shutdown()
+			return fmt.Errorf("[app] worker failed to start: %w", err)
 		}
 
 		h := handlers.New(app, nc, js, cfg)
