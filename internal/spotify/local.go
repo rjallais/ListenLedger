@@ -38,6 +38,10 @@ var localHTMLReadyPattern = regexp.MustCompile(`(?i)"artistUnion"\s*:|"monthlyLi
 
 var errLocalBrowserRetired = errors.New("local headless: shared browser is retired")
 
+// ErrPeerLaunchFailed is returned by launchNewBrowser when a peer goroutine
+// that was launching the browser exited without successfully setting c.local.
+var ErrPeerLaunchFailed = errors.New("local headless: browser launch by peer goroutine failed")
+
 // newLocalBrowser launches a headless Chromium instance and connects go-rod to
 // it. ctx is threaded into the connect call so startup is cancellable.
 func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, error) {
@@ -337,6 +341,11 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
 		stopWork()
 		c.evictDeadBrowser(reqCtx, lb)
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			log.Printf("[spotify] warning: cleanupDone timed out after network enable failure")
+		}
 		return nil, nil, nil, fmt.Errorf("local headless: network enable failed: %w", err)
 	}
 
@@ -397,6 +406,11 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	if err := page.Navigate(artistURL); err != nil {
 		stopWork()
 		c.evictDeadBrowser(reqCtx, lb)
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			log.Printf("[spotify] warning: cleanupDone timed out after navigation failure")
+		}
 		return nil, nil, nil, fmt.Errorf("local headless: failed to navigate: %w", err)
 	}
 
@@ -505,6 +519,9 @@ func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) 
 		// We are the launcher — perform the actual launch.
 		lb, err := c.launchNewBrowser(ctx)
 		if err != nil {
+			if errors.Is(err, ErrPeerLaunchFailed) {
+				continue // another goroutine's launch failed; re-read c.local and retry
+			}
 			return nil, err
 		}
 		return lb, nil
@@ -601,7 +618,7 @@ func (c *Client) launchNewBrowser(ctx context.Context) (*localBrowser, error) {
 		lb := c.local
 		c.localMu.Unlock()
 		if lb == nil {
-			return nil, fmt.Errorf("local headless: browser launch by peer goroutine failed")
+			return nil, ErrPeerLaunchFailed
 		}
 		return lb, nil
 	}

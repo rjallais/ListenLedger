@@ -66,7 +66,7 @@ declare -A ID_TO_FILE
 for f in "${FILES[@]}"; do
   FULL_PATH="$PROJECT/$f"
   ESCAPED_PATH="$(json_escape "$FULL_PATH")"
-  MESSAGES+="{\"jsonrpc\":\"2.0\",\"id\":$ID,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":\"$ESCAPED_PATH\"}}}"
+  MESSAGES+="{\"jsonrpc\":\"2.0\",\"id\":$ID,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":$ESCAPED_PATH}}}"
   MESSAGES+=$'\n'
   ID_TO_FILE[$ID]="$f"
   ID=$((ID+1))

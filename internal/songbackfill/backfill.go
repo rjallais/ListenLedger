@@ -196,7 +196,8 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 		return resolution
 	}
 
-	if done := r.applyExternalEllipsisFilter(&resolution, parsed.HasEllipsis, candidates); done {
+	candidates, done := r.applyExternalEllipsisFilter(&resolution, parsed.HasEllipsis, candidates)
+	if done {
 		return resolution
 	}
 
@@ -240,9 +241,10 @@ func (r *Resolver) applyStoredNameResolution(resolution *Resolution, names []str
 }
 
 // applyExternalEllipsisFilter filters candidates when the artist name uses an
-// ellipsis and stores ExternalCandidates on the resolution. Returns true when
-// processing should stop (no candidates survive the filter).
-func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllipsis bool, candidates []TrackCandidate) bool {
+// ellipsis and stores ExternalCandidates on the resolution. Returns the
+// (potentially filtered) candidates slice and true when processing should stop
+// (no candidates survive the filter).
+func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllipsis bool, candidates []TrackCandidate) ([]TrackCandidate, bool) {
 	if hasEllipsis {
 		candidates = filterCandidatesWithAdditionalArtists(candidates)
 		if len(candidates) == 0 {
@@ -250,11 +252,11 @@ func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllips
 				resolution.Notes,
 				"external lookup did not find a confident multi-artist credit for an ellipsis-based song",
 			)
-			return true
+			return nil, true
 		}
 	}
 	resolution.ExternalCandidates = summarizeCandidates(candidates)
-	return false
+	return candidates, false
 }
 
 // applyPartialMatchUpdate attempts a partial artist match when a full match
