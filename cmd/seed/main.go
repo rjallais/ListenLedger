@@ -246,7 +246,7 @@ func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) 
 	}
 
 	songCount := 0
-	artistUpdateCount := 0
+	artistUpsertCount := 0
 	addedSongs := make(map[string]bool)
 
 	for i, row := range records {
@@ -257,11 +257,11 @@ func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) 
 			songCount += seedSongFromSheet2Row(app, dryRun, songsCollection, row, addedSongs)
 		}
 		if len(row) > 9 {
-			artistUpdateCount += upsertArtistFromSheet2(app, dryRun, artistsCollection, row)
+			artistUpsertCount += upsertArtistFromSheet2(app, dryRun, artistsCollection, row)
 		}
 	}
 
-	log.Printf("[seed] %s %d song records, %d artist updates from Sheet2", dryRunAction(dryRun), songCount, artistUpdateCount)
+	log.Printf("[seed] %s %d song records, %d artist upserts from Sheet2", dryRunAction(dryRun), songCount, artistUpsertCount)
 	return nil
 }
 
@@ -339,7 +339,7 @@ func logDryRunArtistUpsert(app *pocketbase.PocketBase, collection *core.Collecti
 		return 1
 	}
 	log.Printf("[seed] Would create artist: %q (%s, %d listeners)", bandName, spotifyID, listeners)
-	return 0
+	return 1
 }
 
 func saveArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
@@ -361,6 +361,7 @@ func saveArtistUpsert(app *pocketbase.PocketBase, collection *core.Collection, b
 	record.Set("name", bandName)
 	record.Set("spotify_id", spotifyID)
 	record.Set("monthly_listeners", listeners)
+	// Sheet2 contains rock/metal artist data exclusively; all imports are classified as rock_metal.
 	record.Set("genre_group", "rock_metal")
 	record.Set("list_status", "waiting")
 	record.Set("fetch_status", "idle")
