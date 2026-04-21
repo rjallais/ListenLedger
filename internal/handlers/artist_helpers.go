@@ -76,7 +76,11 @@ type artistRankCache struct {
 // non-waiting artists sorted by monthly_listeners descending.
 func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
-	if err != nil || totalCount == 0 {
+	if err != nil {
+		log.Printf("[artist_helpers] buildArtistRankMap: countArtistsByGenreExcludingWaiting failed for genre %s: %v", genre, err)
+		return &artistRankCache{genre: genre, totalCount: 0, ranks: make(map[string]int)}, nil
+	}
+	if totalCount == 0 {
 		return &artistRankCache{genre: genre, totalCount: totalCount, ranks: make(map[string]int)}, nil
 	}
 

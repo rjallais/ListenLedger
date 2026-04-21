@@ -167,10 +167,10 @@ func seedArtistsFromSheet1(app *pocketbase.PocketBase, dryRun bool, sheet1Path s
 			continue
 		}
 		if len(row) > 11 {
-			ctx.rockMetalCount += ctx.seedArtistGenreGroup(row, rockMetalMapping, "rock_metal")
+			ctx.seedArtistGenreGroup(row, rockMetalMapping, "rock_metal")
 		}
 		if len(row) > 17 {
-			ctx.everythingElseCount += ctx.seedArtistGenreGroup(row, everythingElseMapping, "everything_else")
+			ctx.seedArtistGenreGroup(row, everythingElseMapping, "everything_else")
 		}
 	}
 
@@ -187,11 +187,11 @@ type seedContext struct {
 	everythingElseCount int
 }
 
-func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMapping, genreGroup string) int {
+func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMapping, genreGroup string) {
 	name := strings.TrimSpace(row[cols.Name])
 	spotifyID := strings.TrimSpace(row[cols.SpotifyID])
 	if name == "" || spotifyID == "" || c.seen[spotifyID] {
-		return 0
+		return
 	}
 
 	listeners := parseListeners(strings.TrimSpace(row[cols.Listeners]))
@@ -201,7 +201,12 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 	if c.dryRun {
 		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
 		c.seen[spotifyID] = true
-		return 1
+		if genreGroup == "rock_metal" {
+			c.rockMetalCount++
+		} else {
+			c.everythingElseCount++
+		}
+		return
 	}
 
 	record := core.NewRecord(c.collection)
@@ -216,10 +221,14 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 
 	if err := c.app.Save(record); err != nil {
 		log.Printf("[seed] Warning: failed to save %s artist %q: %v", genreGroup, name, err)
-		return 0
+		return
 	}
 	c.seen[spotifyID] = true
-	return 1
+	if genreGroup == "rock_metal" {
+		c.rockMetalCount++
+	} else {
+		c.everythingElseCount++
+	}
 }
 
 func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) error {
@@ -303,8 +312,16 @@ func upsertArtistFromSheet2(app *pocketbase.PocketBase, dryRun bool, collection 
 	if bandName == "" || spotifyID == "" {
 		return 0
 	}
-	listeners := parseListeners(listenersStr)
+	listeners, err := parseListenersStrict(listenersStr)
+	if err != nil {
+		if dryRun {
+			logDryRunArtistUpsert(app, collection, bandName, spotifyID, 0)
+		}
+		log.Printf("[seed] Warning: failed to parse listeners %q for artist %q: %v", listenersStr, bandName, err)
+		return 0
+	}
 	if listeners == 0 {
+		log.Printf("[seed] Skipping artist %q with zero listeners", bandName)
 		return 0
 	}
 
@@ -406,6 +423,14 @@ func parseListeners(s string) int {
 
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+func parseListenersStrict(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, ",", "")
+	s = strings.ReplaceAll(s, "\"", "")
+
+	return strconv.Atoi(s)
 }
 
 func dryRunAction(dryRun bool) string {

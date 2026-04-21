@@ -423,7 +423,11 @@ func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, 
 	defer stopWork()
 	defer func() {
 		// Wait for page and incognito cleanup to complete before returning.
-		<-cleanupDone
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			log.Printf("[spotify] warning: navigateAndWait cleanup timed out")
+		}
 	}()
 	select {
 	case val := <-resultChan:
