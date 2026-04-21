@@ -261,12 +261,12 @@ func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllips
 
 // applyPartialMatchUpdate attempts a partial artist match when a full match
 // fails, and applies ActionUpdateNameOnly when enough artists are found.
-func (r *Resolver) applyPartialMatchUpdate(resolution *Resolution, candidate TrackCandidate) bool {
+func (r *Resolver) applyPartialMatchUpdate(resolution *Resolution, candidate TrackCandidate) {
 	partialMatches, partialNotes, partialAmbiguous := r.matchNamesAllowPartial(candidate.ArtistNames)
 	resolution.Notes = append(resolution.Notes, partialNotes...)
 	if partialAmbiguous {
 		resolution.Action = ActionSkipAmbiguous
-		return true
+		return
 	}
 	if len(partialMatches) > 0 && candidate.Confidence >= r.minimumConfidence {
 		resolution.Action = ActionUpdateNameOnly
@@ -281,7 +281,6 @@ func (r *Resolver) applyPartialMatchUpdate(resolution *Resolution, candidate Tra
 			fmt.Sprintf("matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(dedupedNames)),
 		)
 	}
-	return false
 }
 
 func (r *Resolution) applyMatches(matches []ArtistMatch, strategy string, confidence float64) {
@@ -473,7 +472,7 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 
 // applyPrefillNameOnly applies ActionUpdateNameOnly when a prefill candidate
 // has enough confidence but only partial (or no) artist matches.
-func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackCandidate, prefilledNames []string, partialMatches []ArtistMatch) bool {
+func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackCandidate, prefilledNames []string, partialMatches []ArtistMatch) {
 	if len(partialMatches) > 0 && candidate.Confidence >= r.minimumConfidence {
 		resolution.Action = ActionUpdateNameOnly
 		resolution.UpdatedArtistSpotifyIDs = ""
@@ -482,16 +481,15 @@ func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackC
 			resolution.Notes,
 			fmt.Sprintf("prefill matched %d of %d artists; keeping artist_name update for later Spotify ID backfill", len(partialMatches), len(prefilledNames)),
 		)
-		return true
+		return
 	}
 	if candidate.Confidence >= r.minimumConfidence {
 		resolution.Action = ActionUpdateNameOnly
 		resolution.UpdatedArtistSpotifyIDs = ""
-		return true
+		return
 	}
 	resolution.Action = ActionSkipAmbiguous
 	resolution.Notes = append(resolution.Notes, "tidal prefill candidate requires manual review before updating artist_name")
-	return true
 }
 
 type parsedArtists struct {
