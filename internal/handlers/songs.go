@@ -996,14 +996,17 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	}
 
 	correlation.Associate(target.ID, requestID)
-	h.createScrapeJobRecord(requestID, target.ID)
+	h.createScrapeJobRecord(ctx, requestID, target.ID)
 
-	record, err := h.app.FindRecordById("artists", target.ID)
+	record, err := h.app.FindRecordById("artists", target.ID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 	record.Set("fetch_status", "pending")
-	if err := h.app.Save(record); err != nil {
+	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return err
 	}
 

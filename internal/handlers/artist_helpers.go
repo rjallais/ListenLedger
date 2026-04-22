@@ -42,6 +42,9 @@ const (
 	batchRefreshOverFetchFactor = 3
 	// batchRefreshMinDBLimit is the floor for dbLimit, preventing overly small fetches.
 	batchRefreshMinDBLimit = 150
+	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests,
+	// preventing runaway dbLimit calculations (dbLimit = max(count*3, 150)).
+	maxBatchRefreshCount = 100
 )
 
 type artistCreateInput struct {
@@ -74,8 +77,8 @@ type artistRankCache struct {
 
 // buildArtistRankMap creates a rank cache for the given genre by fetching all
 // non-waiting artists sorted by monthly_listeners descending.
-func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
-	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
+func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artistRankCache, error) {
+	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
 	if err != nil {
 		log.Printf("[artist_helpers] buildArtistRankMap: countArtistsByGenreExcludingWaiting failed for genre %s: %v", genre, err)
 		return &artistRankCache{genre: genre, totalCount: 0, ranks: make(map[string]int)}, nil
@@ -86,14 +89,13 @@ func (h *Handler) buildArtistRankMap(genre string) (*artistRankCache, error) {
 
 	filterParams := nonWaitingArtistParams(genre)
 
-	records, err := h.app.FindRecordsByFilter(
-		"artists",
-		nonWaitingArtistFilter,
-		"-monthly_listeners",
-		totalCount,
-		0,
-		filterParams,
-	)
+	records := make([]*core.Record, 0)
+	err = h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
+		OrderBy("monthly_listeners DESC").
+		Limit(int64(totalCount)).
+		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch artists for rank map: %w", err)
 	}
@@ -113,7 +115,7 @@ func (c *artistRankCache) rank(recordID string) int {
 
 // dynamicTotalSongs returns the dynamic total songs count using the rank cache.
 // If cache is nil, falls back to computing rank via query (for backward compatibility).
-func (h *Handler) dynamicTotalSongs(record *core.Record, cache *artistRankCache) int {
+func (h *Handler) dynamicTotalSongs(ctx context.Context, record *core.Record, cache *artistRankCache) int {
 	collectionSongs := record.GetInt("collection_songs")
 	if record.GetString("list_status") == waitingArtistStatus {
 		return collectionSongs
@@ -134,7 +136,7 @@ func (h *Handler) dynamicTotalSongs(record *core.Record, cache *artistRankCache)
 	}
 
 	// Fallback: compute rank via query (for backward compatibility)
-	return h.dynamicArtistTotalSongs(record)
+	return h.dynamicArtistTotalSongs(ctx, record)
 }
 
 func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
@@ -191,7 +193,7 @@ func parseBatchRefreshCount(r *http.Request) (int, error) {
 		return 0, fmt.Errorf("count must be a positive integer")
 	}
 
-	return count, nil
+	return min(count, maxBatchRefreshCount), nil
 }
 
 func parseCollectionSongsAction(action string) (int, error) {
@@ -359,20 +361,32 @@ func nonWaitingArtistCountExpr(genre string) dbx.Expression {
 	)
 }
 
-func (h *Handler) countArtistsByGenreExcludingWaiting(genre string) (int, error) {
-	totalCount64, err := h.app.CountRecords("artists", nonWaitingArtistCountExpr(genre))
+func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre string) (int, error) {
+	var count int64
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(nonWaitingArtistCountExpr(genre)).
+		Limit(1).
+		Row(&count)
 	if err != nil {
 		return 0, err
 	}
-	return int(totalCount64), nil
+	return int(count), nil
 }
 
-func (h *Handler) countWaitingArtists() (int, error) {
-	totalCount64, err := h.app.CountRecords("artists", dbx.HashExp{"list_status": waitingArtistStatus})
+func (h *Handler) countWaitingArtists(ctx context.Context) (int, error) {
+	var count int64
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(dbx.HashExp{"list_status": waitingArtistStatus}).
+		Limit(1).
+		Row(&count)
 	if err != nil {
 		return 0, err
 	}
-	return int(totalCount64), nil
+	return int(count), nil
 }
 
 func (h *Handler) hasAvailableQuota(ctx context.Context) bool {
@@ -380,8 +394,11 @@ func (h *Handler) hasAvailableQuota(ctx context.Context) bool {
 	return checker.HasAvailableQuota(ctx)
 }
 
-func (h *Handler) findArtistRecord(artistID string) (*core.Record, error) {
-	return h.app.FindRecordById("artists", artistID)
+func (h *Handler) findArtistRecord(ctx context.Context, artistID string) (*core.Record, error) {
+	return h.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
 }
 
 func (h *Handler) resumableBatchRefreshSnapshot(requestedBatchID string) (batchProgressSnapshot, bool) {
@@ -438,16 +455,15 @@ func limitPriorityJobs(jobs []priority.Job, count int) []priority.Job {
 	return jobs[:count]
 }
 
-func (h *Handler) batchRefreshJobs(cutoff string, limit int) ([]priority.Job, error) {
+func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, limit int) ([]priority.Job, error) {
 	dbLimit := max(limit*batchRefreshOverFetchFactor, batchRefreshMinDBLimit)
-	records, err := h.app.FindRecordsByFilter(
-		"artists",
-		"spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})",
-		"-monthly_listeners",
-		dbLimit,
-		0,
-		dbx.Params{"cutoff": cutoff},
-	)
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
+		OrderBy("monthly_listeners DESC").
+		Limit(int64(dbLimit)).
+		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)
 	}
@@ -491,7 +507,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 			continue
 		}
 
-		h.markArtistRefreshQueued(record, requestID)
+		h.markArtistRefreshQueued(ctx, record, requestID)
 		queuedArtistIDs = append(queuedArtistIDs, record.Id)
 		stats[job.Priority.String()]++
 	}
@@ -499,11 +515,11 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 	return queuedArtistIDs, stats
 }
 
-func (h *Handler) markArtistRefreshQueued(record *core.Record, requestID string) {
+func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) {
 	correlation.Associate(record.Id, requestID)
-	h.createScrapeJobRecord(requestID, record.Id)
+	h.createScrapeJobRecord(ctx, requestID, record.Id)
 	record.Set("fetch_status", "pending")
-	if err := h.app.Save(record); err != nil {
+	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		log.Printf("[handlers] Warning: failed to update fetch_status: %v", err)
 	}
 }
@@ -531,7 +547,7 @@ func updateArtistCollectionSongs(record *core.Record, delta int) {
 	record.Set("collection_songs", nextCount)
 }
 
-func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
+func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Record) int {
 	collectionSongs := record.GetInt("collection_songs")
 	if record.GetString("list_status") == waitingArtistStatus {
 		return collectionSongs
@@ -540,19 +556,18 @@ func (h *Handler) dynamicArtistTotalSongs(record *core.Record) int {
 	genre := record.GetString("genre_group")
 	filterParams := nonWaitingArtistParams(genre)
 
-	totalCount, err := h.countArtistsByGenreExcludingWaiting(genre)
+	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
 	if err != nil || totalCount == 0 {
 		return collectionSongs
 	}
 
-	records, err := h.app.FindRecordsByFilter(
-		"artists",
-		nonWaitingArtistFilter,
-		"-monthly_listeners",
-		totalCount,
-		0,
-		filterParams,
-	)
+	records := make([]*core.Record, 0)
+	err = h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
+		OrderBy("monthly_listeners DESC").
+		Limit(int64(totalCount)).
+		All(&records)
 	if err != nil {
 		return collectionSongs
 	}
