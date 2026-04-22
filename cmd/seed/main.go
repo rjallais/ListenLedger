@@ -187,6 +187,17 @@ type seedContext struct {
 	everythingElseCount int
 }
 
+func (c *seedContext) incrementGenreCount(genreGroup string) {
+	switch genreGroup {
+	case "rock_metal":
+		c.rockMetalCount++
+	case "everything_else":
+		c.everythingElseCount++
+	default:
+		log.Printf("[seed] Warning: unknown genre_group %q, not incrementing any count", genreGroup)
+	}
+}
+
 func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMapping, genreGroup string) {
 	name := strings.TrimSpace(row[cols.Name])
 	spotifyID := strings.TrimSpace(row[cols.SpotifyID])
@@ -201,11 +212,7 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 	if c.dryRun {
 		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
 		c.seen[spotifyID] = true
-		if genreGroup == "rock_metal" {
-			c.rockMetalCount++
-		} else {
-			c.everythingElseCount++
-		}
+		c.incrementGenreCount(genreGroup)
 		return
 	}
 
@@ -224,11 +231,7 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 		return
 	}
 	c.seen[spotifyID] = true
-	if genreGroup == "rock_metal" {
-		c.rockMetalCount++
-	} else {
-		c.everythingElseCount++
-	}
+	c.incrementGenreCount(genreGroup)
 }
 
 func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) error {
@@ -314,9 +317,6 @@ func upsertArtistFromSheet2(app *pocketbase.PocketBase, dryRun bool, collection 
 	}
 	listeners, err := parseListenersStrict(listenersStr)
 	if err != nil {
-		if dryRun {
-			logDryRunArtistUpsert(app, collection, bandName, spotifyID, 0)
-		}
 		log.Printf("[seed] Warning: failed to parse listeners %q for artist %q: %v", listenersStr, bandName, err)
 		return 0
 	}
@@ -430,7 +430,11 @@ func parseListenersStrict(s string) (int, error) {
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.ReplaceAll(s, "\"", "")
 
-	return strconv.Atoi(s)
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("parseListenersStrict: invalid listeners %q: %w", s, err)
+	}
+	return n, nil
 }
 
 func dryRunAction(dryRun bool) string {

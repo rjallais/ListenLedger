@@ -310,7 +310,7 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 
 // cleanupAfterSetupError stops work, evicts the dead browser, waits for cleanup
 // with localCleanupTimeout, and returns a wrapped error for the caller to return.
-func (c *Client) cleanupAfterSetupError(stopWork context.CancelFunc, reqCtx context.Context, lb *localBrowser, cleanupDone <-chan struct{}, err error) error {
+func (c *Client) cleanupAfterSetupError(reqCtx context.Context, stopWork context.CancelFunc, lb *localBrowser, cleanupDone <-chan struct{}, err error) error {
 	stopWork()
 	c.evictDeadBrowser(reqCtx, lb)
 	select {
@@ -356,7 +356,7 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	}()
 
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
-		return nil, nil, nil, c.cleanupAfterSetupError(stopWork, reqCtx, lb, cleanupDone, fmt.Errorf("local headless: network enable failed: %w", err))
+		return nil, nil, nil, c.cleanupAfterSetupError(reqCtx, stopWork, lb, cleanupDone, fmt.Errorf("local headless: network enable failed: %w", err))
 	}
 
 	if err := (proto.NetworkSetBlockedURLs{Urls: blockedURLPatterns()}).Call(page); err != nil {
@@ -414,7 +414,7 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 
 	// Navigate the incognito page to the artist URL.
 	if err := page.Navigate(artistURL); err != nil {
-		return nil, nil, nil, c.cleanupAfterSetupError(stopWork, reqCtx, lb, cleanupDone, fmt.Errorf("local headless: failed to navigate: %w", err))
+		return nil, nil, nil, c.cleanupAfterSetupError(reqCtx, stopWork, lb, cleanupDone, fmt.Errorf("local headless: failed to navigate: %w", err))
 	}
 
 	return resultChan, stopWork, cleanupDone, nil
@@ -423,7 +423,6 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 // navigateAndWait waits for a listener count result or context cancellation,
 // and ensures page cleanup completes before returning.
 func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, stopWork context.CancelFunc, cleanupDone <-chan struct{}) (int, error) {
-	defer stopWork()
 	defer func() {
 		// Wait for page and incognito cleanup to complete before returning.
 		select {
@@ -432,6 +431,7 @@ func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, 
 			log.Printf("[spotify] warning: navigateAndWait cleanup timed out")
 		}
 	}()
+	defer stopWork()
 	select {
 	case val := <-resultChan:
 		return val, nil
@@ -599,7 +599,7 @@ func (c *Client) waitForInit(ctx context.Context) (bool, error) {
 // c.localInit is set before calling this function; however, launchNewBrowser
 // re-checks under the lock and returns the existing browser if another
 // goroutine raced it to the sentinel.
-func (c *Client) launchNewBrowser(ctx context.Context) (*localBrowser, error) {
+func (c *Client) launchNewBrowser(ctx context.Context) (lb *localBrowser, err error) {
 	initCh := make(chan struct{})
 
 	c.localMu.Lock()
@@ -622,7 +622,7 @@ func (c *Client) launchNewBrowser(ctx context.Context) (*localBrowser, error) {
 			return nil, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
 		}
 		c.localMu.Lock()
-		lb := c.local
+		lb = c.local
 		c.localMu.Unlock()
 		if lb == nil {
 			return nil, ErrPeerLaunchFailed
@@ -632,15 +632,17 @@ func (c *Client) launchNewBrowser(ctx context.Context) (*localBrowser, error) {
 	c.localInit = initCh
 	c.localMu.Unlock()
 
-	lb, err := newLocalBrowser(ctx, c.config)
+	defer func() {
+		c.localMu.Lock()
+		c.localInit = nil
+		if err == nil {
+			c.local = lb
+		}
+		c.localMu.Unlock()
+		close(initCh)
+	}()
 
-	c.localMu.Lock()
-	c.localInit = nil
-	if err == nil {
-		c.local = lb
-	}
-	c.localMu.Unlock()
-	close(initCh)
+	lb, err = newLocalBrowser(ctx, c.config)
 
 	if err != nil {
 		return nil, fmt.Errorf("local headless unavailable: %w", err)
