@@ -76,7 +76,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	//   - When all pools are exhausted, the NATS consumer is drained and
 	//     remaining messages stay queued for redelivery after restart.
 	//
-	// See also: enqueueBatchRefreshJobs, limitPriorityJobs, batchRefreshJobs.
+	// See also: enqueueBatchRefreshJobs, batchRefreshJobs.
 	if !h.hasAvailableQuota(e.Request.Context()) {
 		return e.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "No scraping quota available.",
@@ -85,14 +85,13 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 
 	// Match the PocketBase DateTime format (space-separated, not RFC3339 T-separated)
 	// so SQLite string comparison works correctly.
-	jobs, err := h.batchRefreshJobs(e.Request.Context(), batchRefreshCutoff(time.Now()), count)
+	jobs, err := h.batchRefreshJobs(e.Request.Context(), batchRefreshCutoff(time.Now()))
 	if err != nil {
 		log.Printf("[batch] batchRefreshJobs failed: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
 	}
 
-	jobs = limitPriorityJobs(jobs, count)
-	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(e.Request.Context(), jobs)
+	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(e.Request.Context(), jobs, count)
 	if len(queuedArtistIDs) == 0 {
 		return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
 	}
