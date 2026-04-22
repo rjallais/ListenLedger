@@ -34,16 +34,7 @@ const (
 	maxWaitingArtistPageSize     = 10
 	waitingArtistStatus          = "waiting"
 
-	// batchRefreshOverFetchFactor multiplies the requested limit when querying the DB,
-	// ensuring we fetch more records than needed so that prioritizeArtistJobs (which
-	// sorts by priority and monthly_listeners) can select the top `limit` after DB
-	// ordering. This compensates for cases where priority weighting may demote some
-	// records that would otherwise be in the top `limit` by monthly_listeners alone.
-	batchRefreshOverFetchFactor = 3
-	// batchRefreshMinDBLimit is the floor for dbLimit, preventing overly small fetches.
-	batchRefreshMinDBLimit = 150
-	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests,
-	// preventing runaway dbLimit calculations (dbLimit = max(count*3, 150)).
+	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests.
 	maxBatchRefreshCount = 100
 )
 
@@ -447,22 +438,11 @@ func prioritizeArtistJobs(records []*core.Record) []priority.Job {
 	return jobs
 }
 
-func limitPriorityJobs(jobs []priority.Job, count int) []priority.Job {
-	if count > len(jobs) {
-		count = len(jobs)
-	}
-
-	return jobs[:count]
-}
-
-func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, limit int) ([]priority.Job, error) {
-	dbLimit := max(limit*batchRefreshOverFetchFactor, batchRefreshMinDBLimit)
+func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priority.Job, error) {
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
-		OrderBy("monthly_listeners DESC").
-		Limit(int64(dbLimit)).
 		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)
@@ -473,6 +453,11 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, limit int
 
 func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (string, bool, error) {
 	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	previousFetchStatus := record.GetString("fetch_status")
+
+	if err := h.markArtistRefreshQueued(ctx, record); err != nil {
+		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
+	}
 
 	req := messaging.NewScrapeRequested(
 		record.Id,
@@ -486,15 +471,14 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
+		if rollbackErr := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); rollbackErr != nil {
+			return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w (rollback queued state failed: %v)", err, rollbackErr)
+		}
 		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 
 	if ack != nil && ack.Duplicate {
 		return requestID, true, nil
-	}
-
-	if err := h.markArtistRefreshQueued(ctx, record); err != nil {
-		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
 	}
 
 	correlation.Associate(record.Id, requestID)
@@ -503,11 +487,15 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 	return requestID, false, nil
 }
 
-func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job) ([]string, map[string]int) {
+func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
 	queuedArtistIDs := make([]string, 0, len(jobs))
 	stats := make(map[string]int)
 
 	for _, job := range jobs {
+		if len(queuedArtistIDs) >= count {
+			break
+		}
+
 		record := job.Record
 		requestID, duplicate, err := h.queueArtistRefresh(ctx, record)
 		if err != nil {
@@ -531,6 +519,19 @@ func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Reco
 	record.Set("fetch_status", "pending")
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) unmarkArtistRefreshQueued(ctx context.Context, record *core.Record, previousStatus string) error {
+	status := strings.TrimSpace(previousStatus)
+	if status == "" {
+		status = "idle"
+	}
+
+	record.Set("fetch_status", status)
+	if err := h.app.SaveWithContext(ctx, record); err != nil {
+		return fmt.Errorf("unmarkArtistRefreshQueued: save fetch_status: %w", err)
 	}
 	return nil
 }
