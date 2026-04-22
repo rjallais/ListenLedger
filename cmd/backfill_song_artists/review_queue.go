@@ -95,10 +95,16 @@ func buildReviewQueue(reportPath string, resolutions []songbackfill.Resolution, 
 	}
 }
 
+// isReviewSkippedAction reports whether the resolution action means the item
+// should be excluded from the review queue.
+func isReviewSkippedAction(action string) bool {
+	return action == songbackfill.ActionUpdate ||
+		action == songbackfill.ActionUpdateNameOnly ||
+		action == songbackfill.ActionSkipExisting
+}
+
 func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewItem, bool) {
-	if resolution.Action == songbackfill.ActionUpdate ||
-		resolution.Action == songbackfill.ActionUpdateNameOnly ||
-		resolution.Action == songbackfill.ActionSkipExisting {
+	if isReviewSkippedAction(resolution.Action) {
 		return reviewItem{}, false
 	}
 
@@ -127,12 +133,25 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 		Notes:                     append([]string(nil), resolution.Notes...),
 	}
 
-	chosenIsTidal := selectedCandidate != nil && selectedCandidate.Source == "tidal_track"
+	classifyReviewItem(&item, resolution, selectedCandidate, missingArtists, suggestedArtistNames)
+	return item, true
+}
+
+// classifyReviewItem assigns the Priority, Category, and RecommendedAction fields
+// of item based on the resolution outcome and available candidates.
+func classifyReviewItem(
+	item *reviewItem,
+	resolution songbackfill.Resolution,
+	selectedCandidate *songbackfill.CandidateSummary,
+	missingArtists, suggestedArtistNames []string,
+) {
+	hasTidal := selectedCandidate != nil && selectedCandidate.Source == "tidal_track"
+	tidalAvailable := hasTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates))
 
 	switch {
 	case resolution.Action == songbackfill.ActionSkipAmbiguous:
 		item.Priority = 2
-		if chosenIsTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates)) {
+		if tidalAvailable {
 			item.Category = "ambiguous_tidal_prefill"
 			item.RecommendedAction = "Choose the correct TIDAL artist list, update artist_name if appropriate, then rerun the backfill."
 		} else {
@@ -143,7 +162,7 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 		item.Priority = 1
 		item.Category = "missing_artist_record"
 		item.RecommendedAction = "Create or map the missing artist records, then rerun the backfill."
-	case chosenIsTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates)):
+	case tidalAvailable:
 		item.Priority = 3
 		item.Category = "tidal_prefill_review"
 		item.RecommendedAction = "Review the suggested TIDAL artist list before updating artist_name and rerunning the backfill."
@@ -160,8 +179,6 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 		item.Category = "manual_review"
 		item.RecommendedAction = "Inspect this song manually and decide whether to add aliases, artists, or a one-off correction."
 	}
-
-	return item, true
 }
 
 func extractMissingArtistNames(notes []string) []string {
@@ -188,23 +205,8 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 	}
 
 	for _, note := range resolution.Notes {
-		matches := selectedCandidateNoteMatch.FindStringSubmatch(note)
-		if len(matches) != 4 {
-			continue
-		}
-		title := matches[1]
-		source := matches[2]
-		parsedConf, err := strconv.ParseFloat(matches[3], 64)
-		if err != nil {
-			continue
-		}
-		roundedParsed := math.Round(parsedConf*100) / 100
-		for _, candidate := range resolution.ExternalCandidates {
-			roundedCand := math.Round(candidate.Confidence*100) / 100
-			if candidate.Source == source && candidate.Title == title && roundedCand == roundedParsed {
-				selected := candidate
-				return &selected
-			}
+		if found := candidateFromNote(note, resolution.ExternalCandidates); found != nil {
+			return found
 		}
 	}
 
@@ -215,6 +217,30 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 		}
 	}
 	return &best
+}
+
+// candidateFromNote attempts to match a "selected ..." note against the
+// candidate list. Returns the matched candidate pointer or nil.
+func candidateFromNote(note string, candidates []songbackfill.CandidateSummary) *songbackfill.CandidateSummary {
+	matches := selectedCandidateNoteMatch.FindStringSubmatch(note)
+	if len(matches) != 4 {
+		return nil
+	}
+	title := matches[1]
+	source := matches[2]
+	parsedConf, err := strconv.ParseFloat(matches[3], 64)
+	if err != nil {
+		return nil
+	}
+	roundedParsed := math.Round(parsedConf*100) / 100
+	for _, candidate := range candidates {
+		roundedCand := math.Round(candidate.Confidence*100) / 100
+		if candidate.Source == source && candidate.Title == title && roundedCand == roundedParsed {
+			selected := candidate
+			return &selected
+		}
+	}
+	return nil
 }
 
 func suggestExistingArtists(inputName string, artists []songbackfill.ArtistInput) []reviewArtistSuggestion {

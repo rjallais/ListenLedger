@@ -15,6 +15,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -144,6 +145,7 @@ type Worker struct {
 
 	// accepting gates whether dispatch callbacks may enqueue into work.
 	accepting atomic.Bool
+	started   bool
 	// dispatching tracks in-flight dispatch callbacks so shutdown can safely
 	// drain and close the work queue without racing active sends.
 	workCloseOnce sync.Once
@@ -168,19 +170,46 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	}
 }
 
-func (w *Worker) Start() {
+func (w *Worker) Start() error {
 	w.initMetrics()
+	w.initFetcherClient()
+	w.resolveJetStreamTuning()
 
-	// Initialize the Spotify client and fetcher.
+	totalConc := w.totalConcurrency()
+	w.work = make(chan inflightMsg, totalConc)
+	w.accepting.Store(true)
+
+	consume, ok := w.createAndAlignConsumer(totalConc)
+	if !ok {
+		return fmt.Errorf("failed to create or align JetStream consumer")
+	}
+	w.consume = consume
+
+	slots := w.providerSlots()
+	w.providerCount = max(1, len(slots))
+	w.spawnProviderPools(slots)
+	w.launchBackgroundWorkers()
+	w.started = true
+
+	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
+	return nil
+}
+
+// initFetcherClient initializes the Spotify client and fetcher service.
+// Errors are logged as warnings; scraping is disabled until tokens are configured.
+func (w *Worker) initFetcherClient() {
 	client, err := spotify.NewClient(w.cfg)
 	if err != nil {
 		log.Printf("[worker] Warning: Could not initialize Spotify client: %v", err)
 		log.Printf("[worker] Worker will start but scraping will be disabled until tokens are configured")
-	} else {
-		w.fetcher = fetcher.NewService(client, w.cfg)
+		return
 	}
+	w.fetcher = fetcher.NewService(client, w.cfg)
+}
 
-	// Resolve JetStream tuning knobs.
+// resolveJetStreamTuning derives maxDeliver, backoff, ackWait, and progress from
+// config, applying safe defaults where values are absent or out of range.
+func (w *Worker) resolveJetStreamTuning() {
 	maxDeliver := w.cfg.ScrapeMaxDeliver
 	if maxDeliver <= 0 {
 		maxDeliver = 3
@@ -219,16 +248,12 @@ func (w *Worker) Start() {
 		progress = maxProgress
 	}
 	w.progress = progress
+}
 
-	totalConc := w.totalConcurrency()
-
-	// Create the shared work channel. Buffer it to totalConcurrency so the
-	// NATS consume callback can hand off messages without blocking on a full
-	// channel while all provider goroutines are busy.
-	w.work = make(chan inflightMsg, totalConc)
-	w.accepting.Store(true)
-
-	// Single durable JetStream consumer (restart-safe) for the shared queue.
+// createAndAlignConsumer ensures the durable JetStream consumer exists, reads back
+// the server-side config, and returns the active ConsumeContext.
+// Returns (consume, true) on success or (nil, false) on failure.
+func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext, bool) {
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 	defer cancel()
 
@@ -236,88 +261,94 @@ func (w *Worker) Start() {
 		Durable:       messaging.ScrapeWorkerConsumerName,
 		FilterSubject: messaging.SubjectScrapeRequest,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       ackWait,
-		MaxDeliver:    maxDeliver,
-		BackOff:       backoff,
+		AckWait:       w.ackWait,
+		MaxDeliver:    w.maxDeliver,
+		BackOff:       w.backoff,
 		MaxAckPending: totalConc,
 	})
 	if err != nil {
 		log.Printf("[worker] Failed to ensure scrape consumer: %v", err)
-		return
+		return nil, false
 	}
 
-	// Align local tuning to actual server-side consumer config.
-	if info, infoErr := consumer.Info(ctx); infoErr == nil && info != nil {
-		if info.Config.MaxDeliver > 0 {
-			w.maxDeliver = info.Config.MaxDeliver
-		}
-		if info.Config.AckWait > 0 {
-			w.ackWait = info.Config.AckWait
-			mp := w.ackWait / 2
-			if mp < time.Second {
-				mp = time.Second
-			}
-			if w.progress > mp {
-				w.progress = mp
-			}
-		}
-		if len(info.Config.BackOff) > 0 {
-			w.backoff = info.Config.BackOff
-		}
-		log.Printf(
-			"[worker] Consumer config: durable=%s subject=%s ack_wait=%s max_deliver=%d backoff=%v max_ack_pending=%d progress=%s",
-			info.Config.Durable,
-			info.Config.FilterSubject,
-			info.Config.AckWait,
-			info.Config.MaxDeliver,
-			info.Config.BackOff,
-			info.Config.MaxAckPending,
-			w.progress,
-		)
-	} else if infoErr != nil {
-		log.Printf("[worker] Warning: failed to load consumer info: %v", infoErr)
-	}
+	alignCtx, alignCancel := context.WithTimeout(w.ctx, 2*time.Second)
+	defer alignCancel()
+	w.alignFromConsumerInfo(alignCtx, consumer)
 
-	// Start the NATS consumer callback that feeds the work channel.
 	consume, err := consumer.Consume(w.dispatchToChannel)
 	if err != nil {
 		log.Printf("[worker] Failed to start consumer: %v", err)
+		return nil, false
+	}
+	return consume, true
+}
+
+func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.Consumer) {
+	info, infoErr := consumer.Info(ctx)
+	if infoErr != nil {
+		log.Printf("[worker] Warning: failed to load consumer info: %v", infoErr)
 		return
 	}
-	w.consume = consume
+	if info == nil {
+		return
+	}
+	if info.Config.MaxDeliver > 0 {
+		w.maxDeliver = info.Config.MaxDeliver
+	}
+	if info.Config.AckWait > 0 {
+		w.ackWait = info.Config.AckWait
+		mp := w.ackWait / 2
+		if mp < time.Second {
+			mp = time.Second
+		}
+		if w.progress > mp {
+			w.progress = mp
+		}
+	}
+	if len(info.Config.BackOff) > 0 {
+		w.backoff = info.Config.BackOff
+	}
+	log.Printf(
+		"[worker] Consumer config: durable=%s subject=%s ack_wait=%s max_deliver=%d backoff=%v max_ack_pending=%d progress=%s",
+		info.Config.Durable,
+		info.Config.FilterSubject,
+		info.Config.AckWait,
+		info.Config.MaxDeliver,
+		info.Config.BackOff,
+		info.Config.MaxAckPending,
+		w.progress,
+	)
+}
 
-	// Spawn per-provider goroutine pools.
-	slots := w.providerSlots()
-	w.providerCount = max(1, len(slots))
+// spawnProviderPools starts one goroutine pool per configured provider slot.
+// If no slots are configured a single fallback pool using ProviderAny is started.
+func (w *Worker) spawnProviderPools(slots []providerSlot) {
 	if len(slots) == 0 {
-		// No providers configured — run a single goroutine that will report
-		// fetcher-unavailable for every message.
 		log.Printf("[worker] No providers configured; starting single fallback worker")
 		g := w.newProviderGroup(spotify.ProviderAny, 1)
 		w.wg.Add(1)
 		go w.providerLoop(g, 0)
-	} else {
-		for _, slot := range slots {
-			g := w.newProviderGroup(slot.provider, slot.concurrency)
-			for i := 0; i < slot.concurrency; i++ {
-				w.wg.Add(1)
-				go w.providerLoop(g, i)
-			}
-			log.Printf("[worker] Started %d goroutine(s) for provider %s", slot.concurrency, providerLabel(slot.provider))
-		}
+		return
 	}
+	for _, slot := range slots {
+		g := w.newProviderGroup(slot.provider, slot.concurrency)
+		for i := 0; i < slot.concurrency; i++ {
+			w.wg.Add(1)
+			go w.providerLoop(g, i)
+		}
+		log.Printf("[worker] Started %d goroutine(s) for provider %s", slot.concurrency, providerLabel(slot.provider))
+	}
+}
 
-	// Monitor each provider group; when all groups are dead (e.g. every
-	// provider hit its quota) drain the NATS consumer so messages aren't
-	// buffered with no one to process them.
+// launchBackgroundWorkers starts the all-groups watchdog, metrics reporter,
+// and stale-job sweeper goroutines.
+func (w *Worker) launchBackgroundWorkers() {
 	w.allGroupsDead = make(chan struct{})
 	go w.watchAllGroups()
 	w.wg.Add(1)
 	go w.metricsReporter()
 	w.wg.Add(1)
 	go w.sweepStaleJobs()
-
-	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
 }
 
 // Stop gracefully drains the NATS consumer and waits for in-flight work.
