@@ -370,7 +370,7 @@ func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre
 		Limit(1).
 		Row(&count)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("countArtistsByGenreExcludingWaiting: query artists count failed for genre %s: %w", genre, err)
 	}
 	return int(count), nil
 }
@@ -384,7 +384,7 @@ func (h *Handler) countWaitingArtists(ctx context.Context) (int, error) {
 		Limit(1).
 		Row(&count)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("countWaitingArtists: query artists count failed: %w", err)
 	}
 	return int(count), nil
 }
@@ -474,10 +474,6 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, limit int
 func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (string, bool, error) {
 	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
 
-	if err := h.markArtistRefreshQueued(ctx, record, requestID); err != nil {
-		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
-	}
-
 	req := messaging.NewScrapeRequested(
 		record.Id,
 		record.GetString("spotify_id"),
@@ -490,12 +486,21 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		record.Set("fetch_status", "idle")
-		_ = h.app.SaveWithContext(ctx, record)
 		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 
-	return requestID, ack != nil && ack.Duplicate, nil
+	if ack != nil && ack.Duplicate {
+		return requestID, true, nil
+	}
+
+	if err := h.markArtistRefreshQueued(ctx, record); err != nil {
+		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
+	}
+
+	correlation.Associate(record.Id, requestID)
+	h.createScrapeJobRecord(ctx, requestID, record.Id)
+
+	return requestID, false, nil
 }
 
 func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job) ([]string, map[string]int) {
@@ -522,9 +527,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 	return queuedArtistIDs, stats
 }
 
-func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) error {
-	correlation.Associate(record.Id, requestID)
-	h.createScrapeJobRecord(ctx, requestID, record.Id)
+func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record) error {
 	record.Set("fetch_status", "pending")
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w", err)

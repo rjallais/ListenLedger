@@ -30,6 +30,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Show what would be seeded without making changes")
 	sheet1 := flag.String("sheet1", "Music - Sheet1.csv", "Path to Sheet1 CSV file")
 	sheet2 := flag.String("sheet2", "Music - Sheet2.csv", "Path to Sheet2 CSV file")
+	sheet2GenreGroup := flag.String("sheet2-genre-group", "rock_metal", "Genre group for artists seeded from Sheet2")
 	flag.Parse()
 
 	if err := app.Bootstrap(); err != nil {
@@ -41,14 +42,14 @@ func main() {
 	}
 
 	ctx := context.Background()
-	if err := runSeed(ctx, app, *dryRun, *sheet1, *sheet2); err != nil {
+	if err := runSeed(ctx, app, *dryRun, *sheet1, *sheet2, *sheet2GenreGroup); err != nil {
 		log.Fatalf("[seed] Failed: %v", err)
 	}
 
 	log.Println("[seed] Completed successfully")
 }
 
-func runSeed(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path, sheet2Path string) error {
+func runSeed(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path, sheet2Path, sheet2GenreGroup string) error {
 	if err := seedAlbums(ctx, app, dryRun, sheet1Path); err != nil {
 		return fmt.Errorf("failed to seed albums: %w", err)
 	}
@@ -57,7 +58,7 @@ func runSeed(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet
 		return fmt.Errorf("failed to seed artists from Sheet1: %w", err)
 	}
 
-	if err := seedFromSheet2(ctx, app, dryRun, sheet2Path); err != nil {
+	if err := seedFromSheet2(ctx, app, dryRun, sheet2Path, sheet2GenreGroup); err != nil {
 		return fmt.Errorf("failed to seed from Sheet2: %w", err)
 	}
 
@@ -160,7 +161,7 @@ func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryR
 		return fmt.Errorf("artists collection not found: %w", err)
 	}
 
-	sc := seedContext{ctx: ctx, app: app, collection: collection, dryRun: dryRun, seen: make(map[string]bool)}
+	sc := seedContext{app: app, collection: collection, dryRun: dryRun, seen: make(map[string]bool)}
 
 	rockMetalMapping := artistColumnMapping{Name: 7, SpotifyID: 8, Listeners: 9, CollectionSongs: 10, TotalSongs: 11}
 	everythingElseMapping := artistColumnMapping{Name: 13, SpotifyID: 14, Listeners: 15, CollectionSongs: 16, TotalSongs: 17}
@@ -170,10 +171,10 @@ func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryR
 			continue
 		}
 		if len(row) > 11 {
-			sc.seedArtistGenreGroup(row, rockMetalMapping, "rock_metal")
+			sc.seedArtistGenreGroup(ctx, row, rockMetalMapping, "rock_metal")
 		}
 		if len(row) > 17 {
-			sc.seedArtistGenreGroup(row, everythingElseMapping, "everything_else")
+			sc.seedArtistGenreGroup(ctx, row, everythingElseMapping, "everything_else")
 		}
 	}
 
@@ -182,7 +183,6 @@ func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryR
 }
 
 type seedContext struct {
-	ctx                 context.Context
 	app                 *pocketbase.PocketBase
 	collection          *core.Collection
 	dryRun              bool
@@ -202,7 +202,7 @@ func (c *seedContext) incrementGenreCount(genreGroup string) {
 	}
 }
 
-func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMapping, genreGroup string) {
+func (c *seedContext) seedArtistGenreGroup(ctx context.Context, row []string, cols artistColumnMapping, genreGroup string) {
 	name := strings.TrimSpace(row[cols.Name])
 	spotifyID := strings.TrimSpace(row[cols.SpotifyID])
 	if name == "" || spotifyID == "" || c.seen[spotifyID] {
@@ -234,7 +234,7 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 	record.Set("collection_songs", collectionSongs)
 	record.Set("total_songs", totalSongs)
 
-	if err := c.app.SaveWithContext(c.ctx, record); err != nil {
+	if err := c.app.SaveWithContext(ctx, record); err != nil {
 		log.Printf("[seed] Warning: failed to save %s artist %q: %v", genreGroup, name, err)
 		return
 	}
@@ -242,7 +242,10 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 	c.incrementGenreCount(genreGroup)
 }
 
-func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet2Path string) error {
+func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet2Path, genreGroup string) error {
+	if genreGroup == "" {
+		return fmt.Errorf("sheet2-genre-group must not be empty")
+	}
 	file, err := os.Open(sheet2Path)
 	if err != nil {
 		return fmt.Errorf("failed to open Sheet2: %w", err)
@@ -282,8 +285,11 @@ func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool
 			if spotifyID == "" || processedArtists[spotifyID] {
 				continue
 			}
-			processedArtists[spotifyID] = true
-			artistUpsertCount += upsertArtistFromSheet2(ctx, app, dryRun, artistsCollection, row)
+			upsertCount := upsertArtistFromSheet2(ctx, app, dryRun, artistsCollection, row, genreGroup)
+			if upsertCount > 0 {
+				processedArtists[spotifyID] = true
+				artistUpsertCount += upsertCount
+			}
 		}
 	}
 
@@ -325,7 +331,7 @@ func seedSongFromSheet2Row(ctx context.Context, app *pocketbase.PocketBase, dryR
 	return 1
 }
 
-func upsertArtistFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, collection *core.Collection, row []string) int {
+func upsertArtistFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, collection *core.Collection, row []string, genreGroup string) int {
 	bandName := strings.TrimSpace(row[7])
 	spotifyID := strings.TrimSpace(row[8])
 	listenersStr := strings.TrimSpace(row[9])
@@ -344,9 +350,9 @@ func upsertArtistFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dry
 	}
 
 	if dryRun {
-		return logDryRunArtistUpsert(ctx, app, collection, bandName, spotifyID, listeners)
+		return logDryRunArtistUpsert(ctx, app, collection, bandName, spotifyID, listeners, genreGroup)
 	}
-	return saveArtistUpsert(ctx, app, collection, bandName, spotifyID, listeners)
+	return saveArtistUpsert(ctx, app, collection, bandName, spotifyID, listeners, genreGroup)
 }
 
 func findArtistBySpotifyID(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, spotifyID string) (*core.Record, error) {
@@ -366,7 +372,7 @@ func findArtistBySpotifyID(ctx context.Context, app *pocketbase.PocketBase, coll
 	return records[0], nil
 }
 
-func logDryRunArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
+func logDryRunArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int, genreGroup string) int {
 	existing, err := findArtistBySpotifyID(ctx, app, collection, spotifyID)
 	if err != nil {
 		log.Printf("[seed] Warning: lookup failed for artist %q (%s): %v", bandName, spotifyID, err)
@@ -380,7 +386,7 @@ func logDryRunArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, coll
 	return 1
 }
 
-func saveArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int) int {
+func saveArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, bandName, spotifyID string, listeners int, genreGroup string) int {
 	existing, err := findArtistBySpotifyID(ctx, app, collection, spotifyID)
 	if err != nil {
 		log.Printf("[seed] Warning: lookup failed for artist %q (%s): %v", bandName, spotifyID, err)
@@ -399,7 +405,7 @@ func saveArtistUpsert(ctx context.Context, app *pocketbase.PocketBase, collectio
 	record.Set("name", bandName)
 	record.Set("spotify_id", spotifyID)
 	record.Set("monthly_listeners", listeners)
-	record.Set("genre_group", "rock_metal")
+	record.Set("genre_group", genreGroup)
 	record.Set("list_status", "waiting")
 	record.Set("fetch_status", "idle")
 

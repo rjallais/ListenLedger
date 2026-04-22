@@ -93,6 +93,9 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 
 	jobs = limitPriorityJobs(jobs, count)
 	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(e.Request.Context(), jobs)
+	if len(queuedArtistIDs) == 0 {
+		return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
+	}
 
 	snapshot := h.createBatchProgress(queuedArtistIDs, stats)
 	log.Printf("[batch] Created batch %s with %d queued artist(s)", snapshot.ID, snapshot.Total)
