@@ -205,7 +205,11 @@ func (c *seedContext) seedArtistGenreGroup(row []string, cols artistColumnMappin
 		return
 	}
 
-	listeners := parseListeners(strings.TrimSpace(row[cols.Listeners]))
+	listeners, err := parseListenersStrict(strings.TrimSpace(row[cols.Listeners]))
+	if err != nil {
+		log.Printf("[seed] Warning: failed to parse listeners for %s artist %q: %v", genreGroup, name, err)
+		return
+	}
 	collectionSongs := parseNumber(row[cols.CollectionSongs])
 	totalSongs := parseNumber(row[cols.TotalSongs])
 
@@ -273,7 +277,11 @@ func seedFromSheet2(app *pocketbase.PocketBase, dryRun bool, sheet2Path string) 
 		}
 	}
 
-	log.Printf("[seed] %s %d song records, %d artist upserts from Sheet2", dryRunAction(dryRun), songCount, artistUpsertCount)
+	if dryRun {
+		log.Printf("[seed] Would create %d song records, would upsert %d artists from Sheet2", songCount, artistUpsertCount)
+	} else {
+		log.Printf("[seed] Created %d song records, upserted %d artists from Sheet2", songCount, artistUpsertCount)
+	}
 	return nil
 }
 
