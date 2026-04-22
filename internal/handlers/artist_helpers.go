@@ -139,7 +139,7 @@ func (h *Handler) dynamicTotalSongs(record *core.Record, cache *artistRankCache)
 
 func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
 	if err := r.ParseForm(); err != nil {
-		return artistCreateInput{}, fmt.Errorf("invalid form data")
+		return artistCreateInput{}, fmt.Errorf("parsing form data: %w", err)
 	}
 
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -439,10 +439,7 @@ func limitPriorityJobs(jobs []priority.Job, count int) []priority.Job {
 }
 
 func (h *Handler) batchRefreshJobs(cutoff string, limit int) ([]priority.Job, error) {
-	dbLimit := limit * batchRefreshOverFetchFactor
-	if dbLimit <= 0 {
-		dbLimit = batchRefreshMinDBLimit
-	}
+	dbLimit := max(limit*batchRefreshOverFetchFactor, batchRefreshMinDBLimit)
 	records, err := h.app.FindRecordsByFilter(
 		"artists",
 		"spotify_id != '' && spotify_id != null && (last_updated = '' || last_updated < {:cutoff})",
@@ -452,7 +449,7 @@ func (h *Handler) batchRefreshJobs(cutoff string, limit int) ([]priority.Job, er
 		dbx.Params{"cutoff": cutoff},
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)
 	}
 
 	return prioritizeArtistJobs(records), nil
@@ -472,7 +469,7 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 
 	return requestID, ack != nil && ack.Duplicate, nil
