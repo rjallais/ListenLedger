@@ -42,6 +42,10 @@ var errLocalBrowserRetired = errors.New("local headless: shared browser is retir
 // that was launching the browser exited without successfully setting c.local.
 var ErrPeerLaunchFailed = errors.New("local headless: browser launch by peer goroutine failed")
 
+// localCleanupTimeout is the maximum time to wait for page/incognito cleanup
+// before returning from a failure path in setupPageInterception or navigateAndWait.
+const localCleanupTimeout = 5 * time.Second
+
 // newLocalBrowser launches a headless Chromium instance and connects go-rod to
 // it. ctx is threaded into the connect call so startup is cancellable.
 func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, error) {
@@ -304,6 +308,19 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 	return c.navigateAndWait(reqCtx, resultChan, stopWork, cleanupDone)
 }
 
+// cleanupAfterSetupError stops work, evicts the dead browser, waits for cleanup
+// with localCleanupTimeout, and returns a wrapped error for the caller to return.
+func (c *Client) cleanupAfterSetupError(stopWork context.CancelFunc, reqCtx context.Context, lb *localBrowser, cleanupDone <-chan struct{}, err error) error {
+	stopWork()
+	c.evictDeadBrowser(reqCtx, lb)
+	select {
+	case <-cleanupDone:
+	case <-time.After(localCleanupTimeout):
+		log.Printf("[spotify] warning: cleanupAfterSetupError timed out")
+	}
+	return err
+}
+
 // setupPageInterception creates an incognito page, enables CDP network events,
 // installs the pathfinder response listener, navigates to artistURL, and starts
 // the DOM poll. It returns a channel that receives the listener count on success,
@@ -339,14 +356,7 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 	}()
 
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
-		stopWork()
-		c.evictDeadBrowser(reqCtx, lb)
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			log.Printf("[spotify] warning: cleanupDone timed out after network enable failure")
-		}
-		return nil, nil, nil, fmt.Errorf("local headless: network enable failed: %w", err)
+		return nil, nil, nil, c.cleanupAfterSetupError(stopWork, reqCtx, lb, cleanupDone, fmt.Errorf("local headless: network enable failed: %w", err))
 	}
 
 	if err := (proto.NetworkSetBlockedURLs{Urls: blockedURLPatterns()}).Call(page); err != nil {
@@ -404,14 +414,7 @@ func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, l
 
 	// Navigate the incognito page to the artist URL.
 	if err := page.Navigate(artistURL); err != nil {
-		stopWork()
-		c.evictDeadBrowser(reqCtx, lb)
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			log.Printf("[spotify] warning: cleanupDone timed out after navigation failure")
-		}
-		return nil, nil, nil, fmt.Errorf("local headless: failed to navigate: %w", err)
+		return nil, nil, nil, c.cleanupAfterSetupError(stopWork, reqCtx, lb, cleanupDone, fmt.Errorf("local headless: failed to navigate: %w", err))
 	}
 
 	return resultChan, stopWork, cleanupDone, nil
@@ -425,7 +428,7 @@ func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, 
 		// Wait for page and incognito cleanup to complete before returning.
 		select {
 		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(localCleanupTimeout):
 			log.Printf("[spotify] warning: navigateAndWait cleanup timed out")
 		}
 	}()
