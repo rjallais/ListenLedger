@@ -54,7 +54,11 @@ func Run(ctx context.Context) error {
 		registerArtistUpdateFanout(ctx, app, js)
 
 		w := worker.New(app, nc, js, cfg)
-		w.Start()
+		if err := w.Start(); err != nil {
+			nc.Close()
+			ns.Shutdown()
+			return fmt.Errorf("[app] worker failed to start: %w", err)
+		}
 
 		h := handlers.New(app, nc, js, cfg)
 		h.RegisterRoutes(se.Router)

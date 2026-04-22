@@ -12,11 +12,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -127,10 +125,13 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	// Use configured memory (default 8192 MB). Even a single-artist run benefits
 	// from extra headroom; the memory parameter drives Actor container sizing.
 	// timeout=90 gives the Actor 90 s to navigate and render the Spotify page.
-	endpoint := buildApifyEndpoint(
-		c.config.ApifyEndpoint, c.config.ApifyActorID, c.config.ApifyToken,
-		c.config.ApifyMemoryMB, 90,
-	)
+	endpoint := buildApifyEndpoint(apifyEndpointParams{
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: 90,
+	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -150,22 +151,8 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 		}
 	}()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("apify: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
-	}
-	if resp.StatusCode == http.StatusPaymentRequired {
-		return 0, fmt.Errorf("apify: quota exceeded (status 402): %w", ErrQuotaExhausted)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		snippet := strings.TrimSpace(string(snippetBytes))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "..."
-		}
-		if snippet != "" {
-			return 0, fmt.Errorf("apify: unexpected status %d; body: %q", resp.StatusCode, snippet)
-		}
-		return 0, fmt.Errorf("apify: unexpected status %d", resp.StatusCode)
+	if err := checkApifyHTTPStatus(resp); err != nil {
+		return 0, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -182,7 +169,6 @@ func parseApifyResponse(body []byte) (int, error) {
 	if err := json.Unmarshal(body, &items); err != nil {
 		return 0, fmt.Errorf("apify: failed to unmarshal dataset items: %w", err)
 	}
-
 	if len(items) == 0 {
 		return 0, fmt.Errorf("apify: actor returned no dataset items")
 	}
@@ -191,55 +177,65 @@ func parseApifyResponse(body []byte) (int, error) {
 
 	// The Apify framework sets #error=true when the browser or navigation
 	// fails before our pageFunction even runs (e.g. OOM, page-creation timeout).
-	// Surface the embedded errorMessages so the caller sees a useful message.
 	if item.IsError {
-		if len(item.Debug.ErrorMessages) > 0 {
-			// Trim each message to 200 chars to keep logs readable.
-			msgs := make([]string, 0, len(item.Debug.ErrorMessages))
-			for _, m := range item.Debug.ErrorMessages {
-				m = strings.TrimSpace(m)
-				if len(m) > 200 {
-					m = m[:200] + "…"
-				}
-				msgs = append(msgs, m)
-			}
-			return 0, fmt.Errorf("apify: actor framework error for %s: %s",
-				item.URL, strings.Join(msgs, " | "))
-		}
-		return 0, fmt.Errorf("apify: actor framework error for %s (no details)", item.URL)
+		return 0, apifyFrameworkError(item)
 	}
-
-	// Our own pageFunction sets error when it cannot find the listener text.
 	if item.Error != "" {
 		return 0, fmt.Errorf("apify: actor reported error: %s", item.Error)
 	}
+	return resolveListenerCount(item)
+}
 
-	if item.MonthlyListenersRaw != "" {
-		rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
-		if err != nil {
-			return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
+// truncateRunes truncates s to at most max runes, appending an ellipsis if
+// truncation occurred. It avoids splitting multi-byte UTF-8 sequences.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
+// apifyFrameworkError builds an error from an Apify #error sentinel item,
+// surfacing any embedded errorMessages so callers see a useful message.
+func apifyFrameworkError(item apifyDatasetItem) error {
+	if len(item.Debug.ErrorMessages) == 0 {
+		return fmt.Errorf("apify: actor framework error for %s (no details)", item.URL)
+	}
+	msgs := make([]string, 0, len(item.Debug.ErrorMessages))
+	for _, m := range item.Debug.ErrorMessages {
+		m = strings.TrimSpace(m)
+		m = truncateRunes(m, 200)
+		msgs = append(msgs, m)
+	}
+	return fmt.Errorf("apify: actor framework error for %s: %s", item.URL, strings.Join(msgs, " | "))
+}
+
+// resolveListenerCount picks the listener value from a dataset item, preferring
+// the raw text field (re-parsed locally) over the pre-parsed integer to avoid
+// actor-side M-suffix inflation.
+func resolveListenerCount(item apifyDatasetItem) (int, error) {
+	if item.MonthlyListenersRaw == "" {
+		if item.MonthlyListeners != nil {
+			return *item.MonthlyListeners, nil
 		}
-		// Prefer reparsing the raw text ourselves. The actor's numeric field has
-		// occasionally been observed to over-apply the M suffix and inflate values
-		// by 1,000,000. Raw text from the page is the safer source of truth.
-		if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
-			log.Printf(
-				"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
-				item.URL,
-				*item.MonthlyListeners,
-				rawCount,
-				item.MonthlyListenersRaw,
-			)
-		}
-		return rawCount, nil
+		return 0, fmt.Errorf("apify: dataset item contained no listener data")
 	}
 
-	// Fall back to the already-parsed integer field when raw text is absent.
-	if item.MonthlyListeners != nil {
-		return *item.MonthlyListeners, nil
+	rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
+	if err != nil {
+		return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
 	}
-
-	return 0, fmt.Errorf("apify: dataset item contained no listener data")
+	// Prefer reparsing the raw text ourselves. The actor's numeric field has
+	// occasionally been observed to over-apply the M suffix and inflate values
+	// by 1,000,000. Raw text from the page is the safer source of truth.
+	if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
+		log.Printf(
+			"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
+			item.URL, *item.MonthlyListeners, rawCount, item.MonthlyListenersRaw,
+		)
+	}
+	return rawCount, nil
 }
 
 // FetchApifyBatch sends a slice of Spotify artist IDs to a single Apify Actor
@@ -255,52 +251,20 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		return make(map[string]int), nil
 	}
 
-	startURLs := make([]apifyURL, len(artistIDs))
-	for i, id := range artistIDs {
-		startURLs[i] = apifyURL{URL: fmt.Sprintf("https://open.spotify.com/artist/%s", id)}
-	}
-
-	maxConc := c.config.ApifyMaxConcurrency
-	if maxConc <= 0 {
-		maxConc = len(artistIDs)
-	}
-
-	// Actor timeout: empirical throughput is ~7 artists/min regardless of
-	// maxConcurrency, because the Crawlee v3 autoscaler ramps from
-	// desiredConcurrency=1 at ~5%/10s and minConcurrency is not exposed by
-	// apify~puppeteer-scraper. Budget 15 s per artist (≈ 4× the 3.75 s/artist
-	// rate at 16/min peak, covering variance) plus 30 s startup overhead.
-	// Cap at 290 s — 10 s under the Apify run-sync hard limit of 300 s.
-	actorTimeoutSec := len(artistIDs)*15 + 30
-	if actorTimeoutSec > 290 {
-		actorTimeoutSec = 290
-	}
-
-	input := apifyRunInput{
-		StartURLs:           startURLs,
-		PageFunction:        buildApifyPageFunction(),
-		MaxRequestsPerCrawl: len(artistIDs),
-		MaxConcurrency:      maxConc,
-		// networkidle2: same reasoning as the single-artist path — let React
-		// finish fetching listener data before pageFunction runs.
-		WaitUntil: []string{"networkidle2"},
-		// 60 s navigation timeout: sufficient for the autoscaler's actual
-		// concurrency of 3-7 tabs where CPU is not contended.
-		NavigationTimeoutSecs: 60,
-		// 120 s handler timeout: navigation (≤60 s) + waitForFunction span
-		// search (≤25 s) + evaluation + generous headroom.
-		HandlePageTimeoutSecs: 120,
-	}
+	input, tuning := c.buildApifyBatchInput(artistIDs)
 
 	bodyBytes, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("apify batch: failed to marshal input: %w", err)
 	}
 
-	endpoint := buildApifyEndpoint(
-		c.config.ApifyEndpoint, c.config.ApifyActorID, c.config.ApifyToken,
-		c.config.ApifyMemoryMB, actorTimeoutSec,
-	)
+	endpoint := buildApifyEndpoint(apifyEndpointParams{
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: tuning.TimeoutSeconds,
+	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -309,8 +273,9 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "ListenLedger/1.0")
 
+	maxConc := input.MaxConcurrency
 	log.Printf("[apify] batch run: %d artists, maxConcurrency=%d, actorTimeout=%ds, memory=%dMB",
-		len(artistIDs), maxConc, actorTimeoutSec, c.config.ApifyMemoryMB)
+		len(artistIDs), maxConc, tuning.TimeoutSeconds, c.config.ApifyMemoryMB)
 
 	resp, err := c.httpClientApify.Do(req)
 	if err != nil {
@@ -322,19 +287,8 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 		}
 	}()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("apify batch: authentication failed (status %d) — check APIFY_TOKEN", resp.StatusCode)
-	}
-	if resp.StatusCode == http.StatusPaymentRequired {
-		return nil, fmt.Errorf("apify batch: quota exceeded (status 402): %w", ErrQuotaExhausted)
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		snippet := strings.TrimSpace(string(snippetBytes))
-		if len(snippet) > 400 {
-			snippet = snippet[:400] + "..."
-		}
-		return nil, fmt.Errorf("apify batch: unexpected status %d; body: %q", resp.StatusCode, snippet)
+	if err := checkApifyBatchHTTPStatus(resp); err != nil {
+		return nil, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -343,6 +297,71 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	}
 
 	return parseApifyBatchResponse(body)
+}
+
+type apifyBatchTuning struct {
+	TimeoutSeconds int
+}
+
+func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, apifyBatchTuning) {
+	startURLs := make([]apifyURL, len(artistIDs))
+	for i, id := range artistIDs {
+		startURLs[i] = apifyURL{URL: fmt.Sprintf("https://open.spotify.com/artist/%s", id)}
+	}
+
+	maxConc := c.config.ApifyMaxConcurrency
+	if maxConc <= 0 {
+		maxConc = len(artistIDs)
+	}
+
+	actorTimeoutSec := len(artistIDs)*15 + 30
+	if actorTimeoutSec > 290 {
+		actorTimeoutSec = 290
+	}
+
+	input := apifyRunInput{
+		StartURLs:             startURLs,
+		PageFunction:          buildApifyPageFunction(),
+		MaxRequestsPerCrawl:   len(artistIDs),
+		MaxConcurrency:        maxConc,
+		WaitUntil:             []string{"networkidle2"},
+		NavigationTimeoutSecs: 60,
+		HandlePageTimeoutSecs: 120,
+	}
+	return input, apifyBatchTuning{TimeoutSeconds: actorTimeoutSec}
+}
+
+func checkApifyHTTPStatusWithPrefix(resp *http.Response, prefix string) error {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%s: authentication failed (status %d) — check APIFY_TOKEN", prefix, resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return fmt.Errorf("%s: quota exceeded (status 402): %w", prefix, ErrQuotaExhausted)
+	}
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		return nil
+	}
+	return formatApifyUnexpectedStatusError(resp, prefix)
+}
+
+func formatApifyUnexpectedStatusError(resp *http.Response, prefix string) error {
+	snippetBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	snippet := strings.TrimSpace(string(snippetBytes))
+	if len(snippet) > 400 {
+		snippet = snippet[:400] + "..."
+	}
+	if snippet != "" {
+		return fmt.Errorf("%s: unexpected status %d; body: %q", prefix, resp.StatusCode, snippet)
+	}
+	return fmt.Errorf("%s: unexpected status %d", prefix, resp.StatusCode)
+}
+
+func checkApifyHTTPStatus(resp *http.Response) error {
+	return checkApifyHTTPStatusWithPrefix(resp, "apify")
+}
+
+func checkApifyBatchHTTPStatus(resp *http.Response) error {
+	return checkApifyHTTPStatusWithPrefix(resp, "apify batch")
 }
 
 // parseApifyBatchResponse extracts a map of artistID → listenerCount from the
@@ -357,56 +376,37 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	}
 
 	results := make(map[string]int, len(items))
-
 	for _, item := range items {
 		artistID := extractArtistIDFromSpotifyURL(item.URL)
 		if artistID == "" {
 			continue
 		}
-
 		if item.IsError {
-			msgs := item.Debug.ErrorMessages
-			if len(msgs) > 0 {
-				first := msgs[0]
-				if len(first) > 120 {
-					first = first[:120] + "…"
-				}
-				log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
-			} else {
-				log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
-			}
+			logApifyItemError(artistID, item.Debug.ErrorMessages)
 			continue
 		}
-
 		if item.Error != "" {
 			log.Printf("[apify] batch: pageFunction error for artist %s: %s", artistID, item.Error)
 			continue
 		}
-
-		if item.MonthlyListenersRaw != "" {
-			rawCount, err := parseListenersFromRawText(item.MonthlyListenersRaw)
-			if err != nil {
-				return nil, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
-			}
-			if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
-				log.Printf(
-					"[apify] batch: listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
-					item.URL,
-					*item.MonthlyListeners,
-					rawCount,
-					item.MonthlyListenersRaw,
-				)
-			}
-			results[artistID] = rawCount
+		count, err := resolveListenerCount(item)
+		if err != nil {
+			log.Printf("[apify] batch: resolveListenerCount failed for artist %s (%s): %v; skipping item", artistID, item.URL, err)
 			continue
 		}
-
-		if item.MonthlyListeners != nil {
-			results[artistID] = *item.MonthlyListeners
-		}
+		results[artistID] = count
 	}
-
 	return results, nil
+}
+
+// logApifyItemError logs the first error message from an Apify #error sentinel item.
+func logApifyItemError(artistID string, msgs []string) {
+	if len(msgs) == 0 {
+		log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
+		return
+	}
+	first := truncateRunes(msgs[0], 120)
+	log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
 }
 
 // extractArtistIDFromSpotifyURL returns the artist ID from a URL of the form
@@ -421,12 +421,21 @@ func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 	return trimmed[idx+1:]
 }
 
-// buildApifyEndpoint constructs the run-sync-get-dataset-items URL with the
-// given token, memory allocation (MB), and Actor timeout in seconds.
-func buildApifyEndpoint(baseEndpoint, actorID, token string, memoryMB, actorTimeoutSec int) string {
+// apifyEndpointParams bundles the parameters needed to construct a
+// run-sync-get-dataset-items URL, avoiding an excess-argument function.
+type apifyEndpointParams struct {
+	BaseEndpoint   string
+	ActorID        string
+	Token          string
+	MemoryMB       int
+	TimeoutSeconds int
+}
+
+// buildApifyEndpoint constructs the run-sync-get-dataset-items URL.
+func buildApifyEndpoint(p apifyEndpointParams) string {
 	return fmt.Sprintf(
 		"%s/%s/run-sync-get-dataset-items?token=%s&timeout=%d&memory=%d",
-		baseEndpoint, actorID, token, actorTimeoutSec, memoryMB,
+		p.BaseEndpoint, p.ActorID, p.Token, p.TimeoutSeconds, p.MemoryMB,
 	)
 }
 
@@ -449,31 +458,7 @@ func parseListenersFromRawText(raw string) (int, error) {
 	}
 
 	numberStr := strings.ReplaceAll(parts[1], ",", "")
-	multiplierStr := strings.ToUpper(parts[2])
-
-	var count int
-	switch multiplierStr {
-	case "M":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse M float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000000))
-	case "K":
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse K float %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val * 1000))
-	default:
-		val, err := strconv.ParseFloat(numberStr, 64)
-		if err != nil {
-			return 0, fmt.Errorf("apify: failed to parse listener count %q: %w", numberStr, err)
-		}
-		count = int(math.Round(val))
-	}
-
-	return count, nil
+	return parseListenerCountFromSuffix(numberStr, strings.ToUpper(parts[2]), "apify")
 }
 
 // buildApifyPageFunction returns the JavaScript page function that the Apify

@@ -33,19 +33,21 @@ func TestLoadFromEnvFailsOnInvalidLocalBrowserlessEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadFromEnvFailsOnInvalidLocalBrowserlessConcurrency(t *testing.T) {
+func TestLoadFromEnvIgnoresInvalidLocalBrowserlessConcurrency(t *testing.T) {
 	tests := []string{"NaN", "0", "-1"}
 	for _, value := range tests {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("LOCAL_BROWSERLESS_CONCURRENCY", value)
 
 			cfg := DefaultConfig()
+			defaultConcurrency := cfg.LocalBrowserlessConcurrency
 			err := cfg.LoadFromEnv()
-			if err == nil {
-				t.Fatalf("LoadFromEnv() error = nil, want invalid LOCAL_BROWSERLESS_CONCURRENCY")
+			if err != nil {
+				t.Fatalf("LoadFromEnv() error = %v, want nil (parsePositiveInt should silently ignore invalid values)", err)
 			}
-			if !strings.Contains(err.Error(), "invalid LOCAL_BROWSERLESS_CONCURRENCY") {
-				t.Fatalf("LoadFromEnv() error = %v, want invalid LOCAL_BROWSERLESS_CONCURRENCY", err)
+			if cfg.LocalBrowserlessConcurrency != defaultConcurrency {
+				t.Fatalf("LocalBrowserlessConcurrency = %d, want default %d (invalid value %q should be ignored)",
+					cfg.LocalBrowserlessConcurrency, defaultConcurrency, value)
 			}
 		})
 	}

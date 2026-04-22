@@ -32,7 +32,7 @@ func (h *Handler) publishScrapeRequest(ctx context.Context, req messaging.Scrape
 	return ack, nil
 }
 
-func (h *Handler) createScrapeJobRecord(requestID, artistID string) {
+func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID string) {
 	if requestID == "" || artistID == "" {
 		return
 	}
@@ -51,7 +51,7 @@ func (h *Handler) createScrapeJobRecord(requestID, artistID string) {
 	job.Set("error", "")
 	job.Set("started_at", nil)
 	job.Set("finished_at", nil)
-	if err := h.app.Save(job); err != nil {
+	if err := h.app.SaveWithContext(ctx, job); err != nil {
 		log.Printf("[handlers] Warning: failed to create scrape job record: %v", err)
 	}
 }
@@ -65,21 +65,20 @@ type queueRetryStats struct {
 	InvalidArtist  int `json:"invalid_artist"`
 }
 
-func (h *Handler) scrapeJobsByStatus(status string, limit int) ([]*core.Record, error) {
+func (h *Handler) scrapeJobsByStatus(ctx context.Context, status string, limit int) ([]*core.Record, error) {
 	if strings.TrimSpace(status) == "" {
 		return nil, nil
 	}
 	if limit <= 0 {
 		limit = 250
 	}
-	records, err := h.app.FindRecordsByFilter(
-		"scrape_jobs",
-		"status = {:status}",
-		"-queued_at",
-		limit,
-		0,
-		dbx.Params{"status": status},
-	)
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("status = {:status}", dbx.Params{"status": status})).
+		OrderBy("queued_at DESC").
+		Limit(int64(limit)).
+		All(&records)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +90,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		limit = 250
 	}
 
-	failedRecords, err := h.scrapeJobsByStatus("failed", limit)
+	failedRecords, err := h.scrapeJobsByStatus(ctx, "failed", limit)
 	if err != nil {
 		return queueRetryStats{}, fmt.Errorf("query failed jobs: %w", err)
 	}
@@ -101,7 +100,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		remaining = 0
 	}
 
-	queuedRecords, err := h.scrapeJobsByStatus("queued", remaining)
+	queuedRecords, err := h.scrapeJobsByStatus(ctx, "queued", remaining)
 	if err != nil {
 		return queueRetryStats{}, fmt.Errorf("query queued jobs: %w", err)
 	}
@@ -124,7 +123,10 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		}
 		seenArtist[artistID] = struct{}{}
 
-		artist, findErr := h.app.FindRecordById("artists", artistID)
+		artist, findErr := h.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
 		if findErr != nil || artist == nil {
 			stats.InvalidArtist++
 			continue
@@ -161,7 +163,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			job.Set("status", "failed")
 			job.Set("error", fmt.Sprintf("retry publish failed: %v", pubErr))
 			job.Set("finished_at", time.Now())
-			if saveErr := h.app.Save(job); saveErr != nil {
+			if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
 				log.Printf("[queue-retry] Warning: failed to save publish error for job %s: %v", job.Id, saveErr)
 			}
 			continue
@@ -172,7 +174,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			job.Set("status", "succeeded")
 			job.Set("error", "deduped_existing_request")
 			job.Set("finished_at", time.Now())
-			if saveErr := h.app.Save(job); saveErr != nil {
+			if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
 				log.Printf("[queue-retry] Warning: failed to save deduped status for job %s: %v", job.Id, saveErr)
 			}
 			continue
@@ -183,13 +185,13 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		job.Set("error", "")
 		job.Set("started_at", nil)
 		job.Set("finished_at", nil)
-		if saveErr := h.app.Save(job); saveErr != nil {
+		if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
 			log.Printf("[queue-retry] Warning: failed to save queued status for job %s: %v", job.Id, saveErr)
 		}
 
 		correlation.Associate(artistID, requestID)
 		artist.Set("fetch_status", "pending")
-		if saveErr := h.app.Save(artist); saveErr != nil {
+		if saveErr := h.app.SaveWithContext(ctx, artist); saveErr != nil {
 			log.Printf("[queue-retry] Warning: failed to mark artist %s pending: %v", artistID, saveErr)
 		}
 		stats.Retried++
@@ -235,21 +237,28 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 		}
 	}
 
-	jobsQueued, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "queued"})
-	if err != nil {
-		log.Printf("[queue] Warning: failed to count queued jobs: %v", err)
-	}
-	jobsProcessing, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "processing"})
-	if err != nil {
-		log.Printf("[queue] Warning: failed to count processing jobs: %v", err)
-	}
-	jobsFailed, err := h.app.CountRecords("scrape_jobs", dbx.HashExp{"status": "failed"})
-	if err != nil {
-		log.Printf("[queue] Warning: failed to count failed jobs: %v", err)
-	}
-	artistsPending, err := h.app.CountRecords("artists", dbx.HashExp{"fetch_status": "pending"})
-	if err != nil {
-		log.Printf("[queue] Warning: failed to count pending artists: %v", err)
+	var jobsQueued, jobsProcessing, jobsFailed, artistsPending int64
+	for _, item := range []struct {
+		collection string
+		exp        dbx.Expression
+		result     *int64
+	}{
+		{"scrape_jobs", dbx.HashExp{"status": "queued"}, &jobsQueued},
+		{"scrape_jobs", dbx.HashExp{"status": "processing"}, &jobsProcessing},
+		{"scrape_jobs", dbx.HashExp{"status": "failed"}, &jobsFailed},
+		{"artists", dbx.HashExp{"fetch_status": "pending"}, &artistsPending},
+	} {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		if qErr := h.app.RecordQuery(item.collection).
+			WithContext(ctx).
+			Select("COUNT(*)").
+			AndWhere(item.exp).
+			Limit(1).
+			Row(item.result); qErr != nil {
+			log.Printf("[queue] Warning: failed to count %s: %v", item.collection, qErr)
+		}
 	}
 
 	activeBatchRemaining := int64(0)

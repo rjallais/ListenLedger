@@ -436,16 +436,20 @@ func TestParseApifyBatchResponsePrefersRawOverInflatedNumericField(t *testing.T)
 	}
 }
 
-func TestParseApifyBatchResponseWrapsRawParseErrorWithURL(t *testing.T) {
+// TestParseApifyBatchResponseSkipsUnparsableItem verifies that when
+// resolveListenerCount fails for one batch item, that item is logged and
+// skipped rather than aborting the entire batch (no error is returned and the
+// bad artist is simply absent from the result map).
+func TestParseApifyBatchResponseSkipsUnparsableItem(t *testing.T) {
 	t.Parallel()
 
 	body := `[{"url":"https://open.spotify.com/artist/batch-bad","monthlyListenersRaw":"not listeners text"}]`
 
-	_, err := parseApifyBatchResponse([]byte(body))
-	if err == nil {
-		t.Fatalf("parseApifyBatchResponse() error = nil, want wrapped parse error")
+	got, err := parseApifyBatchResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("parseApifyBatchResponse() error = %v, want nil (bad item should be skipped)", err)
 	}
-	if !strings.Contains(err.Error(), "https://open.spotify.com/artist/batch-bad") {
-		t.Fatalf("parseApifyBatchResponse() error = %v, want URL in message", err)
+	if _, present := got["batch-bad"]; present {
+		t.Fatalf("parseApifyBatchResponse() included bad item in results, want it absent")
 	}
 }

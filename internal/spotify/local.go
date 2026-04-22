@@ -38,6 +38,14 @@ var localHTMLReadyPattern = regexp.MustCompile(`(?i)"artistUnion"\s*:|"monthlyLi
 
 var errLocalBrowserRetired = errors.New("local headless: shared browser is retired")
 
+// ErrPeerLaunchFailed is returned by launchNewBrowser when a peer goroutine
+// that was launching the browser exited without successfully setting c.local.
+var ErrPeerLaunchFailed = errors.New("local headless: browser launch by peer goroutine failed")
+
+// localCleanupTimeout is the maximum time to wait for page/incognito cleanup
+// before returning from a failure path in setupPageInterception or navigateAndWait.
+const localCleanupTimeout = 5 * time.Second
+
 // newLocalBrowser launches a headless Chromium instance and connects go-rod to
 // it. ctx is threaded into the connect call so startup is cancellable.
 func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, error) {
@@ -279,13 +287,9 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 
 	// Enforce a bounded inner deadline so the local headless interception
 	// cannot block forever if the Pathfinder API response never arrives.
-	// boundedPhaseTimeout caps at 45 s but shrinks to the parent's remaining
-	// deadline when that is shorter, ensuring the inner timeout is always tighter.
 	reqCtx, cancel := context.WithTimeout(ctx, boundedPhaseTimeout(ctx, 45*time.Second))
 	defer cancel()
 
-	// Snapshot the browser pointer under the lock so we never race with Close()
-	// which nils lb.browser. If the browser has already been closed, bail out.
 	if !lb.tryAcquirePage() {
 		return 0, errLocalBrowserRetired
 	}
@@ -296,37 +300,68 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 		return 0, fmt.Errorf("local headless: browser was closed before request started")
 	}
 
-	// Open an incognito context for isolation — each request gets clean cookies/storage.
-	// We MUST context-wrap the browser to prevent indefinite CDP deadlocks if the socket hangs.
+	resultChan, stopWork, cleanupDone, err := c.setupPageInterception(reqCtx, b, lb, artistURL)
+	if err != nil {
+		return 0, err
+	}
+
+	return c.navigateAndWait(reqCtx, resultChan, stopWork, cleanupDone)
+}
+
+// cleanupAfterSetupError stops work, evicts the dead browser, waits for cleanup
+// with localCleanupTimeout, and returns a wrapped error for the caller to return.
+func (c *Client) cleanupAfterSetupError(reqCtx context.Context, stopWork context.CancelFunc, lb *localBrowser, cleanupDone <-chan struct{}, err error) error {
+	stopWork()
+	c.evictDeadBrowser(reqCtx, lb)
+	select {
+	case <-cleanupDone:
+	case <-time.After(localCleanupTimeout):
+		log.Printf("[spotify] warning: cleanupAfterSetupError timed out")
+	}
+	return err
+}
+
+// setupPageInterception creates an incognito page, enables CDP network events,
+// installs the pathfinder response listener, navigates to artistURL, and starts
+// the DOM poll. It returns a channel that receives the listener count on success,
+// a stop function the caller must invoke when done, a cleanup done signal, and
+// any setup error.
+func (c *Client) setupPageInterception(reqCtx context.Context, b *rod.Browser, lb *localBrowser, artistURL string) (<-chan int, context.CancelFunc, <-chan struct{}, error) {
+	workCtx, stopWork := context.WithCancel(reqCtx)
+
 	browserCtx := b.Context(reqCtx)
 	incognito, err := browserCtx.Incognito()
 	if err != nil {
-		c.evictDeadBrowser(ctx, lb)
-		return 0, fmt.Errorf("local headless: failed to create incognito context: %w", err)
+		stopWork()
+		c.evictDeadBrowser(reqCtx, lb)
+		return nil, nil, nil, fmt.Errorf("local headless: failed to create incognito context: %w", err)
 	}
-	defer func() { _ = incognito.Close() }()
 
 	page, err := incognito.Context(reqCtx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
-		c.evictDeadBrowser(ctx, lb)
-		return 0, fmt.Errorf("local headless: failed to create page: %w", err)
+		stopWork()
+		_ = incognito.Close()
+		c.evictDeadBrowser(reqCtx, lb)
+		return nil, nil, nil, fmt.Errorf("local headless: failed to create page: %w", err)
 	}
-	defer func() { _ = page.Close() }()
 
-	// Enable CDP network domain for this page.
+	// cleanupDone signals when page and incognito cleanup is complete.
+	cleanupDone := make(chan struct{})
+	// Cleanup incognito and page when workCtx is cancelled, then signal completion.
+	go func() {
+		<-workCtx.Done()
+		_ = page.Close()
+		_ = incognito.Close()
+		close(cleanupDone)
+	}()
+
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
-		c.evictDeadBrowser(ctx, lb)
-		return 0, fmt.Errorf("local headless: network enable failed: %w", err)
+		return nil, nil, nil, c.cleanupAfterSetupError(reqCtx, stopWork, lb, cleanupDone, fmt.Errorf("local headless: network enable failed: %w", err))
 	}
 
-	// Block resource-heavy URLs (images, fonts, media) to speed up page loads.
 	if err := (proto.NetworkSetBlockedURLs{Urls: blockedURLPatterns()}).Call(page); err != nil {
 		log.Printf("[spotify] Warning: failed to set blocked URLs: %v", err)
 	}
-
-	// Set up CDP event listener to capture pathfinder API responses.
-	workCtx, stopWork := context.WithCancel(reqCtx)
-	defer stopWork()
 
 	resultChan := make(chan int, 1)
 	var once sync.Once
@@ -360,37 +395,43 @@ func (c *Client) fetchViaLocalHeadlessOnce(ctx context.Context, lb *localBrowser
 				if workCtx.Err() != nil {
 					return
 				}
-
 				res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
 				if err != nil {
-					// Likely a CORS preflight OPTIONS request with no body.
 					return
 				}
-
 				var data map[string]any
 				if err := json.Unmarshal([]byte(res.Body), &data); err != nil {
 					return
 				}
-
-				listeners, ok := extractMonthlyListeners(data)
-				if !ok {
-					return
+				if listeners, ok := extractMonthlyListeners(data); ok {
+					deliver(listeners)
 				}
-
-				deliver(listeners)
 			}(e.RequestID)
 		},
 	)()
 
 	go c.pollLocalHeadlessDOM(workCtx, page, deliver)
 
-	// Navigate to the raw Spotify web player HTML renderer.
+	// Navigate the incognito page to the artist URL.
 	if err := page.Navigate(artistURL); err != nil {
-		c.evictDeadBrowser(ctx, lb)
-		return 0, fmt.Errorf("local headless: failed to navigate: %w", err)
+		return nil, nil, nil, c.cleanupAfterSetupError(reqCtx, stopWork, lb, cleanupDone, fmt.Errorf("local headless: failed to navigate: %w", err))
 	}
 
-	// Wait for the pathfinder response or for the parent context to cancel (e.g., worker's absolute max ceiling).
+	return resultChan, stopWork, cleanupDone, nil
+}
+
+// navigateAndWait waits for a listener count result or context cancellation,
+// and ensures page cleanup completes before returning.
+func (c *Client) navigateAndWait(reqCtx context.Context, resultChan <-chan int, stopWork context.CancelFunc, cleanupDone <-chan struct{}) (int, error) {
+	defer func() {
+		// Wait for page and incognito cleanup to complete before returning.
+		select {
+		case <-cleanupDone:
+		case <-time.After(localCleanupTimeout):
+			log.Printf("[spotify] warning: navigateAndWait cleanup timed out")
+		}
+	}()
+	defer stopWork()
 	select {
 	case val := <-resultChan:
 		return val, nil
@@ -473,79 +514,140 @@ func shouldRetryLocalHeadless(ctx context.Context, err error) bool {
 // Only one goroutine performs the launch at a time; others wait on c.localInit.
 func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) {
 	for {
-		c.localMu.Lock()
-
-		// Happy path: snapshot the candidate, release the lock, then
-		// probe liveness outside the lock (isAlive does a 3 s CDP ping).
-		// If alive, re-acquire to confirm c.local hasn't been replaced
-		// concurrently before returning it.
-		if c.local != nil {
-			candidate := c.local
-			c.localMu.Unlock()
-			if candidate.isAlive(ctx) && !candidate.isRetired() {
-				// Verify the singleton hasn't been swapped while we were probing.
-				c.localMu.Lock()
-				if c.local == candidate && !candidate.isRetired() {
-					c.localMu.Unlock()
-					return candidate, nil
-				}
-				// c.local changed under us — release and restart the loop.
-				c.localMu.Unlock()
-				continue
-			}
-			// Browser is dead — detach it under the lock so the launcher path
-			// sees c.local == nil, then close outside the lock and restart.
-			c.localMu.Lock()
-			var dead *localBrowser
-			if c.local == candidate {
-				dead = c.local
-				c.local = nil
-			}
-			c.localMu.Unlock()
-			if dead != nil {
-				dead.markRetired()
-				c.closeRetiredBrowserAsync(dead, 5*time.Second, "retired shared browser cleanup")
-			}
-			continue
+		if lb, done, err := c.tryExistingBrowser(ctx); done {
+			return lb, err
 		}
-
-		// Another goroutine is already launching; wait for it to finish.
-		if c.localInit != nil {
-			initCh := c.localInit
-			c.localMu.Unlock()
-			select {
-			case <-initCh:
-				// Launcher finished — loop and re-read c.local.
-				continue
-			case <-ctx.Done():
-				return nil, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
+		if done, err := c.waitForInit(ctx); done {
+			if err != nil {
+				return nil, err
 			}
+			continue // re-read c.local after init completes
 		}
+		// We are the launcher — perform the actual launch.
+		lb, err := c.launchNewBrowser(ctx)
+		if err != nil {
+			if errors.Is(err, ErrPeerLaunchFailed) {
+				continue // another goroutine's launch failed; re-read c.local and retry
+			}
+			return nil, err
+		}
+		return lb, nil
+	}
+}
 
-		// We are the launcher. Install the sentinel.
-		initCh := make(chan struct{})
-		c.localInit = initCh
+// tryExistingBrowser attempts to re-use the current shared browser. It returns
+// (browser, true, nil) on success, (nil, true, err) on unrecoverable error, or
+// (nil, false, nil) when neither condition applies (caller should proceed to launch).
+func (c *Client) tryExistingBrowser(ctx context.Context) (*localBrowser, bool, error) {
+	c.localMu.Lock()
+	if c.local == nil {
 		c.localMu.Unlock()
+		return nil, false, nil
+	}
+	candidate := c.local
+	c.localMu.Unlock()
 
-		// Launch the new browser. On success or failure, clear the sentinel
-		// and wake all waiters by closing the channel.
-		lb, err := newLocalBrowser(ctx, c.config)
+	if candidate.isAlive(ctx) && !candidate.isRetired() {
+		c.localMu.Lock()
+		if c.local == candidate && !candidate.isRetired() {
+			c.localMu.Unlock()
+			return candidate, true, nil
+		}
+		c.localMu.Unlock()
+		// Swapped under us — retry outer loop.
+		return nil, false, nil
+	}
 
+	// Browser is dead — detach and retire it, then retry.
+	c.localMu.Lock()
+	var dead *localBrowser
+	if c.local == candidate {
+		dead = c.local
+		c.local = nil
+	}
+	c.localMu.Unlock()
+	if dead != nil {
+		dead.markRetired()
+		c.closeRetiredBrowserAsync(dead, 5*time.Second, "retired shared browser cleanup")
+	}
+	return nil, false, nil
+}
+
+// waitForInit waits for an in-progress launch initiated by another goroutine.
+// Returns (true, nil) if a launch was in progress (caller should re-read c.local),
+// (true, err) on context cancellation, or (false, nil) if no launch is in progress.
+func (c *Client) waitForInit(ctx context.Context) (bool, error) {
+	c.localMu.Lock()
+	if c.localInit == nil {
+		c.localMu.Unlock()
+		return false, nil
+	}
+	initCh := c.localInit
+	c.localMu.Unlock()
+	select {
+	case <-initCh:
+		return true, nil
+	case <-ctx.Done():
+		return true, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
+	}
+}
+
+// launchNewBrowser installs the init sentinel under the lock (guarding against
+// concurrent launchers), launches a new browser, clears the sentinel, sets
+// c.local, and wakes all waiting goroutines.
+// Callers must have confirmed (under localMu) that neither c.local nor
+// c.localInit is set before calling this function; however, launchNewBrowser
+// re-checks under the lock and returns the existing browser if another
+// goroutine raced it to the sentinel.
+func (c *Client) launchNewBrowser(ctx context.Context) (lb *localBrowser, err error) {
+	initCh := make(chan struct{})
+
+	c.localMu.Lock()
+	// Re-check: another goroutine may have launched between our tryExistingBrowser
+	// / waitForInit checks and now.
+	if c.local != nil {
+		existing := c.local
+		c.localMu.Unlock()
+		close(initCh) // discard; not installed
+		return existing, nil
+	}
+	if c.localInit != nil {
+		// Someone else just installed a sentinel — fall back to waiting.
+		initCh2 := c.localInit
+		c.localMu.Unlock()
+		close(initCh) // discard; not installed
+		select {
+		case <-initCh2:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("local headless: context cancelled while waiting for browser init: %w", ctx.Err())
+		}
+		c.localMu.Lock()
+		lb = c.local
+		c.localMu.Unlock()
+		if lb == nil {
+			return nil, ErrPeerLaunchFailed
+		}
+		return lb, nil
+	}
+	c.localInit = initCh
+	c.localMu.Unlock()
+
+	defer func() {
 		c.localMu.Lock()
 		c.localInit = nil
 		if err == nil {
 			c.local = lb
 		}
 		c.localMu.Unlock()
-		close(initCh) // wake all waiters
+		close(initCh)
+	}()
 
-		if err != nil {
-			// Return the error but do NOT flip useLocal to false. A transient
-			// launch failure must not permanently disable the provider.
-			return nil, fmt.Errorf("local headless unavailable: %w", err)
-		}
-		return lb, nil
+	lb, err = newLocalBrowser(ctx, c.config)
+
+	if err != nil {
+		return nil, fmt.Errorf("local headless unavailable: %w", err)
 	}
+	return lb, nil
 }
 
 // evictDeadBrowser atomically clears the singleton if it is the same instance
