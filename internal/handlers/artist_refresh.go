@@ -30,7 +30,7 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
 	}
 
-	requestID, duplicate, err := h.queueArtistRefresh(ctx, record)
+	_, duplicate, err := h.queueArtistRefresh(ctx, record)
 	if err != nil {
 		log.Printf("[artist_refresh] queueArtistRefresh error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to queue refresh"})
@@ -40,7 +40,6 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 		return respondArtistRefreshQueued(e, record.Id, "already_queued")
 	}
 
-	h.markArtistRefreshQueued(ctx, record, requestID)
 	return respondArtistRefreshQueued(e, record.Id, "queued")
 }
 
@@ -62,8 +61,22 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	}
 
 	// hasAvailableQuota is a best-effort gate: it checks whether any quota
-	// remains across all configured providers. Individual providers enforce
-	// quota authoritatively during message processing via ErrQuotaExhausted.
+	// remains across all configured providers. It does NOT reserve capacity
+	// for the requested count because per-job reservation is infeasible —
+	// quota is consumed asynchronously by provider goroutine pools in the
+	// worker, and providers like local-headless and Browserless have no
+	// numeric credit API to reserve against.
+	//
+	// Authoritative quota enforcement happens downstream:
+	//   - Worker provider pools detect quota exhaustion via
+	//     spotify.ErrQuotaExhausted (triggered by HTTP 401/402/403/429 from
+	//     external providers).
+	//   - On exhaustion, the provider's pool shuts down and NAKs in-flight
+	//     messages back to JetStream for redelivery by surviving providers.
+	//   - When all pools are exhausted, the NATS consumer is drained and
+	//     remaining messages stay queued for redelivery after restart.
+	//
+	// See also: enqueueBatchRefreshJobs, limitPriorityJobs, batchRefreshJobs.
 	if !h.hasAvailableQuota(e.Request.Context()) {
 		return e.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "No scraping quota available.",
