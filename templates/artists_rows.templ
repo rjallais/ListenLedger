@@ -1,0 +1,65 @@
+package templates
+
+// ArtistsTable renders the artists data table.
+templ ArtistsTable(artists []Artist, currentGenre string) {
+	<div class="overflow-x-auto">
+		<table class="table table-zebra">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th class="text-right">Monthly Listeners</th>
+					<th class="text-center">List Status</th>
+					<th class="text-center">Collection</th>
+					<th>Last Updated</th>
+					<th class="text-center">Actions</th>
+				</tr>
+			</thead>
+			@ArtistsTableBody(artists, currentGenre)
+		</table>
+	</div>
+}
+
+templ ArtistsTableBody(artists []Artist, currentGenre string) {
+	<tbody id={ artistsTBodyID(currentGenre) }>
+		for _, artist := range artists {
+			@ArtistRow(artist)
+		}
+	</tbody>
+}
+
+// ArtistRow renders a single artist table row.
+templ ArtistRow(artist Artist) {
+	<tr id={ artistRowID(artist.ID) } data-signals={ artistSignalsJSON(artist) }>
+		@ArtistRowContent(artist)
+	</tr>
+}
+
+templ ArtistRowContent(artist Artist) {
+	<td class="font-medium">{ artist.Name }</td>
+	<td class="text-right font-mono">
+		@ArtistSignalTextValue(artistListenerElementID(artist.ID), artistListenerSignal(artist.ID), FormatNumber(artist.MonthlyListeners))
+	</td>
+	<td class="text-center">
+		<div class="flex justify-center">
+			@ListStatusDropdown(artist.ID, artist.ListStatus)
+		</div>
+	</td>
+	<td class="text-center">
+		@ArtistCollectionControls(artist)
+	</td>
+	<td>
+		@ArtistSignalTextValue(artistUpdatedElementID(artist.ID), artistUpdatedSignal(artist.ID), artist.LastUpdated)
+	</td>
+	<td class="text-center">
+		@ArtistRefreshAction(artist.ID)
+	</td>
+}
+
+// NewArtistRow wraps ArtistRow for prepending to the table with a success highlight.
+templ NewArtistRow(artist Artist) {
+	<tbody id={ artistsTBodyID(artist.GenreGroup) } data-merge-mode="prepend">
+		<tr id={ artistRowID(artist.ID) } class="bg-success/10" data-signals={ artistSignalsJSON(artist) }>
+			@ArtistRowContent(artist)
+		</tr>
+	</tbody>
+}

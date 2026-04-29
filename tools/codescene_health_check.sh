@@ -37,7 +37,7 @@ FILES=(
   "internal/messaging/messages.go"
   "internal/messaging/jetstream.go"
   "internal/quota/quota.go"
-  "internal/songbackfill/backfill.go"
+  "internal/songbackfill/backfill_test.go"
   "internal/spotify/apify.go"
   "internal/spotify/client.go"
   "internal/spotify/local.go"
@@ -53,73 +53,82 @@ FILES=(
   "cmd/seed/main.go"
 )
 
-# Build JSON-RPC messages
-ID=2
-MESSAGES=''
-MESSAGES+='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}'
-MESSAGES+=$'\n'
-MESSAGES+='{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
-MESSAGES+=$'\n'
+score_for_file() {
+  local full_path="$1"
+  local escaped_path
+  escaped_path="$(json_escape "$full_path")"
 
-# Build a parallel array mapping ID -> filename for output
-declare -A ID_TO_FILE
-for f in "${FILES[@]}"; do
-  FULL_PATH="$PROJECT/$f"
-  ESCAPED_PATH="$(json_escape "$FULL_PATH")"
-  MESSAGES+="{\"jsonrpc\":\"2.0\",\"id\":$ID,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":$ESCAPED_PATH}}}"
-  MESSAGES+=$'\n'
-  ID_TO_FILE[$ID]="$f"
-  ID=$((ID+1))
-done
+  local payload
+  payload=''
+  payload+='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}'
+  payload+=$'\n'
+  payload+='{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
+  payload+=$'\n'
+  payload+="{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":$escaped_path}}}"
+  payload+=$'\n'
 
-# Build the file map into env
-FILE_MAP=""
-for id in "${!ID_TO_FILE[@]}"; do
-  FILE_MAP+="$id:${ID_TO_FILE[$id]}"$'\n'
-done
+  printf '%s' "$payload" | "${CS_MCP[@]}" 2>>"${DEBUG:-/dev/null}" | python3 -c "
+import json
+import sys
 
-# Export FILE_MAP and CS_ACCESS_TOKEN so both "${CS_MCP[@]}" and python3 in the
-# pipeline inherit them (a per-command env prefix only applies to that one
-# command, not the whole pipeline).
-export FILE_MAP
-export CS_ACCESS_TOKEN="${CS_ACCESS_TOKEN:-}"
-echo "$MESSAGES" | "${CS_MCP[@]}" 2>"${DEBUG:-/dev/null}" | \
-  python3 -c "
-import sys, json, os
-
-file_map = {}
-for line in os.environ.get('FILE_MAP', '').strip().splitlines():
-    if ':' in line:
-        id_, name = line.split(':', 1)
-        file_map[int(id_)] = name
-
-results = []
 for line in sys.stdin:
     line = line.strip()
     if not line:
         continue
     try:
         obj = json.loads(line)
-        if 'result' in obj and 'content' in obj['result']:
-            for c in obj['result']['content']:
-                if c.get('type') == 'text':
-                    results.append((obj['id'], c['text']))
-    except (json.JSONDecodeError, KeyError, ValueError):
-        pass
-
-results.sort(key=lambda x: x[0])
-print('{:<55} SCORE'.format('FILE'))
-print('-' * 65)
-for id_, text in results:
-    fname = file_map.get(id_, 'id={}'.format(id_))
-    score = text.replace('Code Health score: ', '').strip()
-    flag = ''
-    try:
-        s = float(score)
-        if s < 7.0: flag = ' X'
-        elif s < 9.0: flag = ' !'
-        else: flag = ' OK'
-    except ValueError:
-        pass
-    print('{:<55} {}{}'.format(fname, score, flag))
+    except json.JSONDecodeError:
+        continue
+    if obj.get('id') != 2:
+        continue
+    if obj.get('error'):
+        print('ERROR: {}'.format(obj['error']))
+        sys.exit(0)
+    result = obj.get('result', {})
+    for c in result.get('content', []):
+        if c.get('type') == 'text':
+            print(c.get('text', '').strip())
+            sys.exit(0)
+print('NO_RESPONSE')
 "
+}
+
+echo "$(printf '%-55s SCORE' 'FILE')"
+echo "-----------------------------------------------------------------"
+
+for f in "${FILES[@]}"; do
+  full_path="$PROJECT/$f"
+  if [[ ! -f "$full_path" ]]; then
+    echo "[codescene] Skipping missing file: $f" >&2
+    continue
+  fi
+
+  raw_score="$(score_for_file "$full_path")"
+  score="$(printf '%s\n' "$raw_score" | python3 -c "
+import re
+import sys
+
+text = sys.stdin.read().strip()
+match = re.search(r'Code Health score:\\s*([0-9]+(?:\\.[0-9]+)?)', text)
+if match:
+    print(match.group(1))
+elif text:
+    print(text.splitlines()[-1].strip())
+else:
+    print('NO_RESPONSE')
+")"
+  flag=''
+  if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    is_low="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 7.0 else 0)' "$score")"
+    is_warn="$(python3 -c 'import sys; s=float(sys.argv[1]); print(1 if 7.0 <= s < 9.0 else 0)' "$score")"
+    if [[ "$is_low" == "1" ]]; then
+      flag=' X'
+    elif [[ "$is_warn" == "1" ]]; then
+      flag=' !'
+    else
+      flag=' OK'
+    fi
+  fi
+
+  printf '%-55s %s%s\n' "$f" "$score" "$flag"
+done

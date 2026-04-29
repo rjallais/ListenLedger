@@ -1,0 +1,30 @@
+package templates
+
+import "fmt"
+
+// NotRecentSongRows appends not-recent songs and updates pagination controls.
+templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort string) {
+	<tbody id="songs-not-recent" data-merge-mode="append">
+		for _, song := range songs {
+			@SongRow(song, playlistSort)
+		}
+	</tbody>
+	if hasMore {
+		<div id="load-more-songs-not-recent" data-merge-mode="morph" class="mt-4 text-center">
+			<button
+				class="btn btn-outline btn-sm"
+				data-on:click={ songsNotRecentURL(nextOffset, playlistSort) }
+			>
+				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+			</button>
+		</div>
+	} else {
+		<div id="load-more-songs-not-recent" data-merge-mode="morph" class="mt-4 text-center">
+			<p class="text-sm text-success">✓ All archived songs loaded</p>
+		</div>
+	}
+}
+
+func songsNotRecentURL(offset int, playlistSort string) string {
+	return fmt.Sprintf("@get('/api/songs/not-recent?offset=%d&limit=50&playlist_sort=%s')", offset, playlistSort)
+}

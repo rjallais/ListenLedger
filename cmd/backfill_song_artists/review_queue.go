@@ -6,16 +6,11 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-	"unicode"
-
-	"golang.org/x/text/unicode/norm"
 
 	"ListenLedger/internal/songbackfill"
 )
@@ -139,48 +134,6 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 
 // classifyReviewItem assigns the Priority, Category, and RecommendedAction fields
 // of item based on the resolution outcome and available candidates.
-func classifyReviewItem(
-	item *reviewItem,
-	resolution songbackfill.Resolution,
-	selectedCandidate *songbackfill.CandidateSummary,
-	missingArtists, suggestedArtistNames []string,
-) {
-	hasTidal := selectedCandidate != nil && selectedCandidate.Source == "tidal_track"
-	tidalAvailable := hasTidal || (selectedCandidate == nil && hasTidalCandidate(resolution.ExternalCandidates))
-
-	switch {
-	case resolution.Action == songbackfill.ActionSkipAmbiguous:
-		item.Priority = 2
-		if tidalAvailable {
-			item.Category = "ambiguous_tidal_prefill"
-			item.RecommendedAction = "Choose the correct TIDAL artist list, update artist_name if appropriate, then rerun the backfill."
-		} else {
-			item.Category = "ambiguous_external_credit"
-			item.RecommendedAction = "Choose the correct artist-credit group from the competing external candidates, then rerun the backfill."
-		}
-	case len(missingArtists) > 0 && len(suggestedArtistNames) > 0:
-		item.Priority = 1
-		item.Category = "missing_artist_record"
-		item.RecommendedAction = "Create or map the missing artist records, then rerun the backfill."
-	case tidalAvailable:
-		item.Priority = 3
-		item.Category = "tidal_prefill_review"
-		item.RecommendedAction = "Review the suggested TIDAL artist list before updating artist_name and rerunning the backfill."
-	case len(missingArtists) > 0:
-		item.Priority = 2
-		item.Category = "artist_name_mismatch"
-		item.RecommendedAction = "Review the unmatched artist names, add aliases or artist records if needed, then rerun the backfill."
-	case hasNote(resolution.Notes, "external lookup did not find a confident multi-artist credit for an ellipsis-based song"):
-		item.Priority = 4
-		item.Category = "needs_manual_credit_lookup"
-		item.RecommendedAction = "Look up the missing collaborators manually and seed them before rerunning the backfill."
-	default:
-		item.Priority = 5
-		item.Category = "manual_review"
-		item.RecommendedAction = "Inspect this song manually and decide whether to add aliases, artists, or a one-off correction."
-	}
-}
-
 func extractMissingArtistNames(notes []string) []string {
 	names := []string{}
 	seen := map[string]bool{}
@@ -197,179 +150,6 @@ func extractMissingArtistNames(notes []string) []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.CandidateSummary {
-	if len(resolution.ExternalCandidates) == 0 {
-		return nil
-	}
-
-	for _, note := range resolution.Notes {
-		if found := candidateFromNote(note, resolution.ExternalCandidates); found != nil {
-			return found
-		}
-	}
-
-	best := resolution.ExternalCandidates[0]
-	for _, candidate := range resolution.ExternalCandidates[1:] {
-		if candidate.Confidence > best.Confidence {
-			best = candidate
-		}
-	}
-	return &best
-}
-
-// candidateFromNote attempts to match a "selected ..." note against the
-// candidate list. Returns the matched candidate pointer or nil.
-func candidateFromNote(note string, candidates []songbackfill.CandidateSummary) *songbackfill.CandidateSummary {
-	matches := selectedCandidateNoteMatch.FindStringSubmatch(note)
-	if len(matches) != 4 {
-		return nil
-	}
-	title := matches[1]
-	source := matches[2]
-	parsedConf, err := strconv.ParseFloat(matches[3], 64)
-	if err != nil {
-		return nil
-	}
-	roundedParsed := math.Round(parsedConf*100) / 100
-	for _, candidate := range candidates {
-		roundedCand := math.Round(candidate.Confidence*100) / 100
-		if candidate.Source == source && candidate.Title == title && roundedCand == roundedParsed {
-			selected := candidate
-			return &selected
-		}
-	}
-	return nil
-}
-
-func suggestExistingArtists(inputName string, artists []songbackfill.ArtistInput) []reviewArtistSuggestion {
-	inputKey := normalizeReviewKey(inputName)
-	if inputKey == "" {
-		return nil
-	}
-
-	suggestions := make([]reviewArtistSuggestion, 0, 6)
-	for _, artist := range artists {
-		artistKey := normalizeReviewKey(artist.Name)
-		if artistKey == "" {
-			continue
-		}
-
-		score := matchSuggestionScore(inputKey, artistKey)
-		if score <= 0 {
-			continue
-		}
-
-		suggestions = append(suggestions, reviewArtistSuggestion{
-			InputName:          inputName,
-			SuggestedName:      artist.Name,
-			SuggestedSpotifyID: artist.SpotifyID,
-			Score:              score,
-		})
-	}
-
-	sort.SliceStable(suggestions, func(i, j int) bool {
-		if suggestions[i].Score != suggestions[j].Score {
-			return suggestions[i].Score > suggestions[j].Score
-		}
-		if suggestions[i].SuggestedName != suggestions[j].SuggestedName {
-			return suggestions[i].SuggestedName < suggestions[j].SuggestedName
-		}
-		return suggestions[i].SuggestedSpotifyID < suggestions[j].SuggestedSpotifyID
-	})
-
-	if len(suggestions) > 5 {
-		suggestions = suggestions[:5]
-	}
-	return suggestions
-}
-
-func matchSuggestionScore(inputKey, artistKey string) float64 {
-	switch {
-	case inputKey == artistKey:
-		return 1.0
-	case strings.HasPrefix(inputKey, artistKey), strings.HasPrefix(artistKey, inputKey):
-		return 0.86
-	}
-
-	distance := levenshteinDistance(inputKey, artistKey)
-	maxLength := max(len([]rune(inputKey)), len([]rune(artistKey)))
-	if maxLength == 0 {
-		return 0
-	}
-
-	similarity := 1 - float64(distance)/float64(maxLength)
-	switch {
-	case distance <= 1 && similarity >= 0.85:
-		return 0.93
-	case distance <= 2 && similarity >= 0.75:
-		return 0.82
-	case distance <= 3 && similarity >= 0.70:
-		return 0.74
-	default:
-		return 0
-	}
-}
-
-func normalizeReviewKey(value string) string {
-	value = strings.TrimSpace(strings.ToLower(value))
-	value = strings.ReplaceAll(value, "…", "...")
-	value = norm.NFD.String(value)
-
-	var builder strings.Builder
-	lastSpace := false
-	for _, r := range value {
-		if unicode.Is(unicode.Mn, r) {
-			continue
-		}
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r):
-			builder.WriteRune(r)
-			lastSpace = false
-		case unicode.IsSpace(r):
-			if !lastSpace {
-				builder.WriteByte(' ')
-				lastSpace = true
-			}
-		}
-	}
-
-	return strings.TrimSpace(strings.Join(strings.Fields(builder.String()), " "))
-}
-
-func levenshteinDistance(left, right string) int {
-	leftRunes := []rune(left)
-	rightRunes := []rune(right)
-
-	if len(leftRunes) == 0 {
-		return len(rightRunes)
-	}
-	if len(rightRunes) == 0 {
-		return len(leftRunes)
-	}
-
-	column := make([]int, len(rightRunes)+1)
-	for j := range column {
-		column[j] = j
-	}
-
-	for i, leftRune := range leftRunes {
-		prevDiagonal := column[0]
-		column[0] = i + 1
-		for j, rightRune := range rightRunes {
-			insertCost := column[j+1] + 1
-			deleteCost := column[j] + 1
-			replaceCost := prevDiagonal
-			if leftRune != rightRune {
-				replaceCost++
-			}
-			prevDiagonal = column[j+1]
-			column[j+1] = min(insertCost, min(deleteCost, replaceCost))
-		}
-	}
-
-	return column[len(rightRunes)]
 }
 
 func writeReviewQueueJSON(path string, queue reviewQueue) error {
@@ -445,22 +225,4 @@ func formatSuggestionList(suggestions []reviewArtistSuggestion) string {
 		))
 	}
 	return strings.Join(parts, " | ")
-}
-
-func hasNote(notes []string, target string) bool {
-	for _, note := range notes {
-		if note == target {
-			return true
-		}
-	}
-	return false
-}
-
-func hasTidalCandidate(candidates []songbackfill.CandidateSummary) bool {
-	for _, candidate := range candidates {
-		if candidate.Source == "tidal_track" {
-			return true
-		}
-	}
-	return false
 }
