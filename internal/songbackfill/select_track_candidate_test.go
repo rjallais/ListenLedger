@@ -69,9 +69,9 @@ func TestSelectTrackCandidatePrefersFewestArtistsAmongNearTopCandidates(t *testi
 	selected, ambiguous, notes, ok := selectTrackCandidate([]TrackCandidate{
 		{
 			Source:       "deezer_track",
-			Title:        "Old Thing Back (feat. Ja Rule and Ralph Tresvant)",
+			Title:        "Old Thing Back",
 			ArtistNames:  []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"},
-			Confidence:   0.98,
+			Confidence:   0.97,
 		},
 		{
 			Source:       "musicbrainz_recording",
@@ -79,12 +79,18 @@ func TestSelectTrackCandidatePrefersFewestArtistsAmongNearTopCandidates(t *testi
 			ArtistNames:  []string{"Matoma", "The Notorious B.I.G."},
 			Confidence:   0.97,
 		},
+		{
+			Source:       "tidal_track",
+			Title:        "Old Thing Back",
+			ArtistNames:  []string{"Matoma", "The Notorious B.I.G."},
+			Confidence:   0.96,
+		},
 	})
 	if !ok || ambiguous {
 		t.Fatalf("ok=%v ambiguous=%v notes=%v, want non-ambiguous selection", ok, ambiguous, notes)
 	}
-	if len(selected.ArtistNames) != 4 {
-		t.Fatalf("selected.ArtistNames = %#v, want 4-artist featured candidate (featured title signals keep broader group)", selected.ArtistNames)
+	if len(selected.ArtistNames) != 2 {
+		t.Fatalf("selected.ArtistNames = %#v, want 2-artist candidate (corroborated by multiple sources)", selected.ArtistNames)
 	}
 }
 
