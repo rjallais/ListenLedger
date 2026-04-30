@@ -16,16 +16,39 @@ func isSingleArtistName(name string) bool {
 	if !strings.Contains(name, ",") {
 		return false
 	}
-	for i, r := range name {
-		if r == ',' {
-			if i+1 < len(name) && name[i+1] != ' ' {
-				return true
-			}
-		}
-	}
+
+	// Already exclude multi-artist patterns: " & " and " and "
 	if strings.Contains(name, " & ") || strings.Contains(name, " and ") {
 		return false
 	}
+
+	// Check each comma to determine if it's part of an inverted name (e.g., "Tyler, The Creator")
+	// or a multi-artist separator (e.g., "Artist1, Artist2").
+	for i, r := range name {
+		if r == ',' {
+			// Case 1: comma not followed by space => inverted name like "nothing,nowhere."
+			if i+1 >= len(name) || name[i+1] != ' ' {
+				return true
+			}
+
+			// Case 2: comma followed by space => check for article patterns that indicate
+			// an inverted name (e.g., "Tyler, The Creator" or "Artist, A Cappella")
+			if i+2 < len(name) {
+				afterSpace := name[i+2:]
+
+				// Check for articles: "The ", "A ", "An " (case-sensitive)
+				articles := []string{"The ", "A ", "An "}
+				for _, article := range articles {
+					if strings.HasPrefix(afterSpace, article) {
+						return true // Inverted name like "Tyler, The Creator"
+					}
+				}
+			}
+		}
+	}
+
+	// If we reach here, we have a comma but no clear inverted name patterns
+	// Treat it as a multi-artist separator
 	return false
 }
 
