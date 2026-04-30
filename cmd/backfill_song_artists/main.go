@@ -54,12 +54,14 @@ func main() {
 		log.Fatalf("[backfill_song_artists] bootstrap failed: %v (stop the live app first or point --data-dir at a backup copy)", err)
 	}
 
-	songs, err := loadSongs(app)
+	ctx := context.Background()
+
+	songs, err := loadSongs(ctx, app)
 	if err != nil {
 		log.Fatalf("[backfill_song_artists] failed to load songs: %v", err)
 	}
 
-	artists, err := loadArtists(app)
+	artists, err := loadArtists(ctx, app)
 	if err != nil {
 		log.Fatalf("[backfill_song_artists] failed to load artists: %v", err)
 	}
@@ -73,7 +75,7 @@ func main() {
 	}
 
 	httpClient := &http.Client{Timeout: *httpTimeout}
-	resolver := buildResolver(httpClient, buildResolverParams{
+	resolver := buildResolver(ctx, httpClient, buildResolverParams{
 		TidalTokenURL:     *tidalTokenURL,
 		TidalClientID:     *tidalClientID,
 		TidalClientSecret: *tidalClientSecret,
@@ -87,7 +89,7 @@ func main() {
 	}, artists)
 
 	resolutions := resolveSongs(resolver, songs, *httpTimeout)
-	applied, artistNameChanges := applyApprovedResolutions(app, resolutions, *minConfidence, *apply)
+	applied, artistNameChanges := applyApprovedResolutions(ctx, app, resolutions, *minConfidence, *apply)
 
 	summary := buildSummary(resolutions, *minConfidence)
 	summary.UpdatesApplied = applied
@@ -99,7 +101,7 @@ func main() {
 
 	timestamp := time.Now().UTC().Format("20060102_150405")
 	reportPath := filepath.Join(*reportDir, fmt.Sprintf("song_artist_backfill_%s.json", timestamp))
-	reviewQueue, reviewQueueJSONPath, reviewQueueCSVPath, err := writeReviewOutputs(*reportDir, timestamp, reportPath, resolutions, artists)
+	reviewQueue, reviewQueueJSONPath, reviewQueueCSVPath, err := writeReviewOutputs(ctx, *reportDir, timestamp, reportPath, resolutions, artists)
 	if err != nil {
 		log.Fatalf("[backfill_song_artists] failed to write review outputs: %v", err)
 	}
@@ -134,8 +136,8 @@ type buildResolverParams struct {
 	MinConfidence     float64
 }
 
-func buildResolver(httpClient *http.Client, params buildResolverParams, artists []songbackfill.ArtistInput) *songbackfill.Resolver {
-	resolvedTidalToken := resolveTidalToken(httpClient, tidalCredentials{
+func buildResolver(ctx context.Context, httpClient *http.Client, params buildResolverParams, artists []songbackfill.ArtistInput) *songbackfill.Resolver {
+	resolvedTidalToken := resolveTidalToken(ctx, httpClient, tidalCredentials{
 		TokenURL:     params.TidalTokenURL,
 		ClientID:     params.TidalClientID,
 		ClientSecret: params.TidalClientSecret,
@@ -167,19 +169,27 @@ func buildResolver(httpClient *http.Client, params buildResolverParams, artists 
 }
 
 func applyRetryPlanning(enabled bool, reportDir string, songs []songbackfill.SongInput, limit int) []songbackfill.SongInput {
+	applyLimit := func(items []songbackfill.SongInput) []songbackfill.SongInput {
+		if limit > 0 && len(items) > limit {
+			return items[:limit]
+		}
+		return items
+	}
+
 	if !enabled {
-		return songs
+		return applyLimit(songs)
 	}
 	plannedSongs, latestReportPath, err := planSongsFromLatestReport(reportDir, songs)
 	if err != nil {
 		log.Printf("[backfill_song_artists] warning: failed to use latest report for retry planning: %v", err)
-		return songs
+		return applyLimit(songs)
 	}
 	if latestReportPath != "" {
+		plannedSongs = applyLimit(plannedSongs)
 		log.Printf("[backfill_song_artists] prioritized %d songs using latest report %s", len(plannedSongs), latestReportPath)
 		return plannedSongs
 	}
-	return songs
+	return applyLimit(songs)
 }
 
 func resolveSongs(resolver *songbackfill.Resolver, songs []songbackfill.SongInput, httpTimeout time.Duration) []songbackfill.Resolution {

@@ -126,14 +126,14 @@ func PaginationEdgeButton(button paginationNavButton) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		if button.Disabled {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<button class=\"join-item btn btn-sm btn-disabled\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<button type=\"button\" class=\"join-item btn btn-sm btn-disabled\" disabled aria-disabled=\"true\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(button.Label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_pagination.templ`, Line: 21, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_pagination.templ`, Line: 21, Col: 110}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -232,14 +232,14 @@ func PaginationPageButton(link paginationPageLink) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		if link.Active {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<button class=\"join-item btn btn-sm btn-active\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<button type=\"button\" class=\"join-item btn btn-sm btn-active\" disabled aria-current=\"page\" aria-disabled=\"true\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(intString(link.Number))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_pagination.templ`, Line: 35, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_pagination.templ`, Line: 35, Col: 138}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {

@@ -1,6 +1,9 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 templ IconPlus(className string) {
 	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -127,7 +130,7 @@ templ AlbumStatusDropdown(albumID, currentStatus string) {
 		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-40">
 			@AlbumStatusOption(albumID, currentStatus, "full", "badge-success", "Full")
 			@AlbumStatusOption(albumID, currentStatus, "processed", "badge-warning", "Processed")
-			@AlbumStatusOption(albumID, currentStatus, "waiting", "badge-ghost", "Waiting")
+			@AlbumStatusOption(albumID, currentStatus, StatusWaiting, "badge-ghost", "Waiting")
 		</ul>
 	</div>
 }
@@ -139,7 +142,7 @@ templ AlbumStatusBadge(status string) {
 			<span class="badge badge-success badge-sm">full</span>
 		case "processed":
 			<span class="badge badge-warning badge-sm">processed</span>
-		case "waiting":
+		case StatusWaiting:
 			<span class="badge badge-ghost badge-sm">waiting</span>
 		default:
 			<span class="badge badge-ghost badge-sm">unknown</span>
@@ -148,7 +151,7 @@ templ AlbumStatusBadge(status string) {
 
 // AlbumRemoveElement removes an album element from the DOM after a status change.
 templ AlbumRemoveElement(albumID, currentStatus string) {
-	if currentStatus == "waiting" {
+	if currentStatus == StatusWaiting {
 		<div id={ "album-card-" + albumID } data-merge-mode="remove"></div>
 	} else {
 		<tr id={ "album-" + albumID } data-merge-mode="remove"></tr>
@@ -157,7 +160,7 @@ templ AlbumRemoveElement(albumID, currentStatus string) {
 
 // AlbumInsertElement inserts an album into the correct section container.
 templ AlbumInsertElement(album Album) {
-	if album.Status == "waiting" {
+	if album.Status == StatusWaiting {
 		<div id="albums-waiting" data-merge-mode="prepend">
 			@AlbumCard(album)
 		</div>
@@ -206,10 +209,11 @@ templ AddAlbumModal() {
 				<h3 class="font-bold text-lg">Add New Album</h3>
 				<label for="add-album-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
-			<form
-				id="add-album-form"
-				data-on:submit="evt.preventDefault(); @post('/api/albums', {contentType: 'form'})"
-			>
+	<form
+		id="add-album-form"
+		data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
+		data-on-success="document.getElementById('add-album-form').reset()"
+	>
 				<div class="form-control w-full mb-4">
 					<label class="label">
 						<span class="label-text">Album Title *</span>
@@ -305,11 +309,11 @@ func albumsWaitingURL(offset int) string {
 }
 
 func albumSongAdjustURL(apiPath, op string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/%s')", apiPath, op)
+	return fmt.Sprintf("@post('/api/albums/%s/%s')", url.PathEscape(apiPath), url.PathEscape(op))
 }
 
 func albumStatusUpdateURL(albumID, status string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/status/%s')", albumID, status)
+	return fmt.Sprintf("@post('/api/albums/%s/status/%s')", url.PathEscape(albumID), url.PathEscape(status))
 }
 
 func sectionBorderClass(color string) string {

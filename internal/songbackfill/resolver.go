@@ -293,7 +293,7 @@ func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackC
 		resolution.UpdatedArtistSpotifyIDs = ""
 		return
 	}
-	resolution.Action = ActionSkipAmbiguous
+	resolution.Action = ActionSkipLowConfidence
 	resolution.Notes = append(resolution.Notes, "tidal prefill candidate requires manual review before updating artist_name")
 }
 

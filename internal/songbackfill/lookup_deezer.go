@@ -77,6 +77,10 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 		if err != nil {
 			continue
 		}
+		if detailResp.StatusCode != http.StatusOK {
+			_ = detailResp.Body.Close()
+			continue
+		}
 
 		var detail deezerTrackDetail
 		decodeErr := json.NewDecoder(detailResp.Body).Decode(&detail)

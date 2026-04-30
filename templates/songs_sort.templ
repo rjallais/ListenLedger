@@ -1,6 +1,9 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 templ SongSortControls(playlistSort string) {
 	<div class="flex flex-wrap items-center gap-2 mb-4">
@@ -20,5 +23,6 @@ templ SongSortButton(sortValue, label, playlistSort string) {
 }
 
 func songsSectionsSortURL(sortValue string) string {
-	return fmt.Sprintf("@get('/api/songs/sections?playlist_sort=%s')", sortValue)
+	query := url.Values{"playlist_sort": []string{sortValue}}.Encode()
+	return fmt.Sprintf("@get('/api/songs/sections?%s')", query)
 }

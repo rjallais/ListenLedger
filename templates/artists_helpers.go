@@ -1,7 +1,10 @@
+//go:build goexperiment.jsonv2
+
 package templates
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 )
 
@@ -83,15 +86,15 @@ func artistCardUpdatedElementID(artistID string) string {
 }
 
 func artistCollectionDecAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/dec')", artistID)
+	return fmt.Sprintf("@post('/api/artists/%s/collection/dec')", url.PathEscape(artistID))
 }
 
 func artistCollectionIncAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/inc')", artistID)
+	return fmt.Sprintf("@post('/api/artists/%s/collection/inc')", url.PathEscape(artistID))
 }
 
 func artistRefreshPostAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/refresh/%s')", artistID)
+	return fmt.Sprintf("@post('/api/refresh/%s')", url.PathEscape(artistID))
 }
 
 func artistCollectionText(artist Artist) string {
@@ -143,7 +146,7 @@ func statusOptionButtonClass(warning, active bool) string {
 }
 
 func artistStatusPostAction(artistID, status string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/status/%s')", artistID, status)
+	return fmt.Sprintf("@post('/api/artists/%s/status/%s')", url.PathEscape(artistID), url.PathEscape(status))
 }
 
 func listStatusBadgeProps(status string) artistBadgeProps {
@@ -196,7 +199,7 @@ func fetchStatusBadgeProps(status string) artistBadgeProps {
 }
 
 func paginationURL(genre string, page int) string {
-	return fmt.Sprintf("/artists?genre=%s&page=%d", genre, page)
+	return fmt.Sprintf("/artists?genre=%s&page=%d", url.QueryEscape(genre), page)
 }
 
 func paginationRange(current, total int) []int {

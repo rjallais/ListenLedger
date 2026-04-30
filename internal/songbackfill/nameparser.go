@@ -12,9 +12,21 @@ type parsedArtists struct {
 	PreserveWhole bool
 }
 
-var preserveWholeArtistNames = map[string]bool{
-	"nothing,nowhere.": true,
-	"nothing,nowhere":  true,
+func isSingleArtistName(name string) bool {
+	if !strings.Contains(name, ",") {
+		return false
+	}
+	for i, r := range name {
+		if r == ',' {
+			if i+1 < len(name) && name[i+1] != ' ' {
+				return true
+			}
+		}
+	}
+	if strings.Contains(name, " & ") || strings.Contains(name, " and ") {
+		return false
+	}
+	return false
 }
 
 var artistAliasOverrides = map[string]string{
@@ -30,7 +42,7 @@ func parseStoredArtists(raw string) parsedArtists {
 	if cleaned == "" {
 		return parsedArtists{}
 	}
-	if preserveWholeArtistNames[normalizeKey(cleaned)] {
+	if isSingleArtistName(cleaned) {
 		return parsedArtists{
 			Names:         []string{cleaned},
 			PrimaryPrefix: cleaned,
@@ -122,7 +134,7 @@ func preservesStoredMultiplicity(raw string, artistNames []string) bool {
 	if required <= 1 {
 		return true
 	}
-	return distinctArtistCount(artistNames) >= 2
+	return distinctArtistCount(artistNames) >= required
 }
 
 func filterCandidatesForStoredMultiplicity(raw string, candidates []TrackCandidate) []TrackCandidate {

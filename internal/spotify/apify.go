@@ -1,6 +1,6 @@
 //go:build goexperiment.jsonv2
 
-// Package spotify provides Apify Actor-based scraping for Spotify artist listener data.
+// apify.go provides Apify Actor-based scraping for Spotify artist listener data.
 // It uses the apify~puppeteer-scraper Actor, which exposes the raw Puppeteer page object
 // in the pageFunction context — required for waitForFunction and evaluate calls.
 package spotify

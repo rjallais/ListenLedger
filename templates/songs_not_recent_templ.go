@@ -8,7 +8,11 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+)
 
 // NotRecentSongRows appends not-recent songs and updates pagination controls.
 func NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort string) templ.Component {
@@ -54,7 +58,7 @@ func NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort 
 			var templ_7745c5c3_Var2 string
 			templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(songsNotRecentURL(nextOffset, playlistSort))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_not_recent.templ`, Line: 16, Col: 63}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_not_recent.templ`, Line: 20, Col: 63}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 			if templ_7745c5c3_Err != nil {
@@ -67,7 +71,7 @@ func NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort 
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", nextOffset))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_not_recent.templ`, Line: 18, Col: 46}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_not_recent.templ`, Line: 22, Col: 46}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -88,7 +92,12 @@ func NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort 
 }
 
 func songsNotRecentURL(offset int, playlistSort string) string {
-	return fmt.Sprintf("@get('/api/songs/not-recent?offset=%d&limit=50&playlist_sort=%s')", offset, playlistSort)
+	query := url.Values{
+		"offset":        []string{strconv.Itoa(offset)},
+		"limit":         []string{"50"},
+		"playlist_sort": []string{playlistSort},
+	}
+	return fmt.Sprintf("@get('/api/songs/not-recent?%s')", query.Encode())
 }
 
 var _ = templruntime.GeneratedTemplate

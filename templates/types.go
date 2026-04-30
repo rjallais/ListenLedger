@@ -2,6 +2,8 @@ package templates
 
 import "fmt"
 
+const StatusWaiting = "waiting"
+
 // Theme represents a DaisyUI theme
 type Theme struct {
 	Name  string

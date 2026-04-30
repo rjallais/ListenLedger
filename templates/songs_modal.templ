@@ -9,10 +9,11 @@ templ AddSongModal() {
 				<h3 class="font-bold text-lg">Add New Song</h3>
 				<label for="add-song-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
-			<form
-				id="add-song-form"
-				data-on:submit="evt.preventDefault(); @post('/api/songs', {contentType: 'form'})"
-			>
+	<form
+		id="add-song-form"
+		data-signals="{songInFlight:false}"
+		data-on:submit__prevent="if ($songInFlight) { return; } $songInFlight = true; @post('/api/songs', {contentType: 'form'}); $songInFlight = false"
+	>
 				<div class="form-control w-full mb-4">
 					<label class="label">
 						<span class="label-text">Song Name *</span>
@@ -113,7 +114,7 @@ templ AddSongModal() {
 				</div>
 				<div class="modal-action">
 					<label for="add-song-modal" class="btn btn-ghost">Cancel</label>
-					<button type="submit" class="btn btn-primary gap-2">
+					<button type="submit" class="btn btn-primary gap-2" data-attr="{'disabled': $songInFlight}">
 						@IconPlus("h-5 w-5")
 						Add Song
 					</button>

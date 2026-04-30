@@ -323,7 +323,7 @@ func (h *Handler) fetchArtistNameFromSpotify(ctx context.Context, spotifyID stri
 		return "", http.StatusBadGateway, fmt.Errorf("failed to infer artist name from spotify_id")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify to infer artist name")
 	}
@@ -359,11 +359,17 @@ type albumUpsertParams struct {
 }
 
 func (h *Handler) upsertAlbumForSong(p albumUpsertParams) error {
+	filter := "title = {:title} && artist_name = {:artist_name}"
+	params := dbx.Params{"title": p.AlbumName, "artist_name": p.PrimaryArtist}
+	if p.ReleaseType != "" {
+		filter += " && release_type = {:release_type}"
+		params["release_type"] = p.ReleaseType
+	}
 	records, err := h.app.FindRecordsByFilter(
 		"albums",
-		"title ~ {:title} && artist_name ~ {:artist_name}",
+		filter,
 		"", 1, 0,
-		dbx.Params{"title": p.AlbumName, "artist_name": p.PrimaryArtist},
+		params,
 	)
 	if err != nil {
 		return err
@@ -415,6 +421,9 @@ type songNewArtistTarget struct {
 }
 
 func (h *Handler) upsertArtistsForSong(artists []string, artistSpotifyIDs []string, newArtistGenre string) ([]songNewArtistTarget, error) {
+	if len(artists) != len(artistSpotifyIDs) {
+		return nil, fmt.Errorf("artists and artistSpotifyIDs length mismatch: %d vs %d", len(artists), len(artistSpotifyIDs))
+	}
 	collection, err := h.app.FindCollectionByNameOrId("artists")
 	if err != nil {
 		return nil, err

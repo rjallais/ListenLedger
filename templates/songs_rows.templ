@@ -1,6 +1,9 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // SongRow renders a single song row.
 templ SongRow(song Song, playlistSort string) {
@@ -45,8 +48,10 @@ templ SongRecentToggleCell(songID string, isRecent bool, playlistSort string) {
 }
 
 func songRecentToggleAction(songID, playlistSort string) string {
+	escapedSongID := url.PathEscape(songID)
+	query := url.Values{"playlist_sort": []string{playlistSort}}.Encode()
 	return fmt.Sprintf(
-		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?playlist_sort=%s') } else { @post('/api/songs/%s/recent/false?playlist_sort=%s') }",
-		songID, playlistSort, songID, playlistSort,
+		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?%s') } else { @post('/api/songs/%s/recent/false?%s') }",
+		escapedSongID, query, escapedSongID, query,
 	)
 }

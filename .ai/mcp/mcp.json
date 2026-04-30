@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "codescene": {
+      "command": "npx",
+      "args": ["-y", "@codescene/mcp-server@latest"],
+      "env": {
+        "CODESCENE_PAT": "pat_eyJpZCI6ODcxNzYsInJhbmQiOiJGVklrVDNnTjFxTWFMUGtLU3llUmFlYlUzWm44a0QvWCJ9"
+      }
+    }
+  }
+}

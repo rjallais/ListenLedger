@@ -1,6 +1,6 @@
 //go:build goexperiment.jsonv2
 
-// Package spotify provides local headless scraping via go-rod.
+// local.go provides local headless scraping via go-rod.
 package spotify
 
 import (

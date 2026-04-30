@@ -4,7 +4,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -76,7 +78,6 @@ func (h *Handler) scrapeJobsByStatus(ctx context.Context, status string, limit i
 	if strings.TrimSpace(status) == "" {
 		return nil, nil
 	}
-	limit = normalizeQueueRetryLimit(limit)
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("scrape_jobs").
 		WithContext(ctx).
@@ -127,7 +128,15 @@ func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, see
 		q.WithContext(ctx)
 		return nil
 	})
-	if findErr != nil || artist == nil {
+	if findErr != nil {
+		if errors.Is(findErr, sql.ErrNoRows) || artist == nil {
+			stats.InvalidArtist++
+		} else {
+			log.Printf("[handlers.prepareRetryRequest] FindRecordById error for artist %s: %v", artistID, findErr)
+		}
+		return messaging.ScrapeRequested{}, nil, "", "", false
+	}
+	if artist == nil {
 		stats.InvalidArtist++
 		return messaging.ScrapeRequested{}, nil, "", "", false
 	}
@@ -386,7 +395,10 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 		})
 	}
 
-	stats, err := h.retryFailedAndQueuedJobs(e.Request.Context(), 250)
+	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	stats, err := h.retryFailedAndQueuedJobs(ctx, 250)
 	if err != nil {
 		log.Printf("[queue-retry] retry loop failed: %v", err)
 		if wantsJSONResponse(e.Request) {

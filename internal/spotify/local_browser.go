@@ -1,5 +1,7 @@
 //go:build goexperiment.jsonv2
 
+// local_browser.go manages the local browser lifecycle (startup, shutdown, and retry)
+// for headless Spotify scraping via go-rod.
 package spotify
 
 import (
@@ -123,7 +125,7 @@ func (lb *localBrowser) isAlive(ctx context.Context) bool {
 		return false
 	}
 
-	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	_, err := b.Context(pingCtx).Version()
 	return err == nil

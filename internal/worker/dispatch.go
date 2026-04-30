@@ -5,6 +5,7 @@ package worker
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -91,6 +92,9 @@ func (w *Worker) watchAllGroups() {
 	// All groups are gone.
 	log.Printf("[worker] All provider groups have exited - draining NATS consumer")
 	w.drainOnce.Do(func() {
+		w.dispatchMu.Lock()
+		defer w.dispatchMu.Unlock()
+
 		w.accepting.Store(false)
 		if w.consume != nil {
 			w.consume.Drain()
@@ -107,7 +111,7 @@ func (w *Worker) watchAllGroups() {
 func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 	meta, _ := msg.Metadata()
 
-	req, ok := w.parseDispatchRequest(msg, meta)
+	req, ok := w.parseDispatchRequest(w.ctx, msg, meta)
 	if !ok {
 		return
 	}
@@ -137,14 +141,16 @@ func (w *Worker) dispatchToChannel(msg jetstream.Msg) {
 	}
 }
 
-func (w *Worker) parseDispatchRequest(msg jetstream.Msg, meta *jetstream.MsgMetadata) (messaging.ScrapeRequested, bool) {
+func (w *Worker) parseDispatchRequest(ctx context.Context, msg jetstream.Msg, meta *jetstream.MsgMetadata) (messaging.ScrapeRequested, bool) {
 	req, err := messaging.UnmarshalScrapeRequested(msg.Data())
 	if err == nil {
 		return req, true
 	}
 
 	log.Printf("[worker] Failed to unmarshal request (terminating): %v", err)
-	if dlqErr := w.publishScrapeDLQ(w.ctx, msgEnvelope{msg: msg, meta: meta}, "unmarshal_error"); dlqErr != nil {
+	dlqCtx, dlqCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer dlqCancel()
+	if dlqErr := w.publishScrapeDLQ(dlqCtx, msgEnvelope{msg: msg, meta: meta}, "unmarshal_error"); dlqErr != nil {
 		log.Printf("[worker] Failed to publish poison message to DLQ: %v", dlqErr)
 		if nakErr := msg.Nak(); nakErr != nil {
 			log.Printf("[worker] Failed to NAK poison message after DLQ publish failure: %v", nakErr)
@@ -158,7 +164,9 @@ func (w *Worker) parseDispatchRequest(msg jetstream.Msg, meta *jetstream.MsgMeta
 }
 
 func (w *Worker) startDispatch(msg jetstream.Msg, progress *progressHandle) bool {
+	w.dispatchMu.Lock()
 	if !w.accepting.Load() {
+		w.dispatchMu.Unlock()
 		progress.Stop()
 		w.nakDispatchMessage(msg, "after dispatch shutdown")
 		return false
@@ -167,10 +175,12 @@ func (w *Worker) startDispatch(msg jetstream.Msg, progress *progressHandle) bool
 	w.dispatching.Add(1)
 	if !w.accepting.Load() {
 		w.dispatching.Done()
+		w.dispatchMu.Unlock()
 		progress.Stop()
 		w.nakDispatchMessage(msg, "after dispatch shutdown")
 		return false
 	}
+	w.dispatchMu.Unlock()
 	return true
 }
 

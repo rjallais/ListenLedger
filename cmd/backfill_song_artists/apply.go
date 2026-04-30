@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"ListenLedger/internal/songbackfill"
 )
 
-func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songbackfill.Resolution, minConf float64, doApply bool) (applied, nameChanges int) {
+func applyApprovedResolutions(ctx context.Context, app *pocketbase.PocketBase, resolutions []songbackfill.Resolution, minConf float64, doApply bool) (applied, nameChanges int) {
 	for _, resolution := range resolutions {
 		if !resolution.Approved(minConf) && !resolution.NamePrefillApproved(minConf) {
 			continue
@@ -45,7 +46,7 @@ func applyApprovedResolutions(app *pocketbase.PocketBase, resolutions []songback
 	return
 }
 
-func writeReviewOutputs(reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string, error) {
+func writeReviewOutputs(ctx context.Context, reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string, error) {
 	queue := buildReviewQueue(reportPath, resolutions, artists)
 	if len(queue.ReviewEntries) == 0 {
 		return queue, "", "", nil

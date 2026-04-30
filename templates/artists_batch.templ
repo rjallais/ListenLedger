@@ -2,7 +2,7 @@ package templates
 
 templ BatchRefreshModal() {
 	<input type="checkbox" id="batch-refresh-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false}">
+	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false,batchInFlight:false}">
 		<div class="modal-box">
 			<div class="flex items-center justify-between mb-4">
 				<h3 class="font-bold text-lg">Batch Refresh Artists</h3>
@@ -12,10 +12,10 @@ templ BatchRefreshModal() {
 				Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped.
 				Jobs are prioritized: queued → recently added (rock first) → not added → included.
 			</p>
-			<form
-				id="batch-refresh-form"
-				data-on:submit="evt.preventDefault(); if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } @post('/api/refresh/batch', {contentType: 'form'})"
-			>
+	<form
+		id="batch-refresh-form"
+		data-on:submit__prevent="if ($batchInFlight || $batchDone) { return; } $batchInFlight = true; if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } @post('/api/refresh/batch', {contentType: 'form'}); $batchInFlight = false"
+	>
 				<input type="hidden" name="batch_id" data-bind="$batchID"/>
 				@BatchRefreshCountField()
 				@BatchRefreshModalActions()
@@ -45,6 +45,6 @@ templ BatchRefreshCountField() {
 templ BatchRefreshModalActions() {
 	<div class="modal-action">
 		<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
-		<button type="submit" class="btn btn-primary">Start Refresh</button>
+		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight || $batchDone}">Start Refresh</button>
 	</div>
 }

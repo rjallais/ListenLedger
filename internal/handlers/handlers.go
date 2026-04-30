@@ -4,6 +4,8 @@
 package handlers
 
 import (
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -22,14 +24,16 @@ type Handler struct {
 	js        jetstream.JetStream
 	staticDir string
 
-	app          *pocketbase.PocketBase
-	nc           *nats.Conn
-	cfg          *config.Config
-	batches      map[string]*batchProgress
-	artistBatch  map[string]string
-	latestBatch  string
+	app        *pocketbase.PocketBase
+	nc         *nats.Conn
+	cfg        *config.Config
+	batches    map[string]*batchProgress
+	artistBatch map[string]string
+	latestBatch string
 	batchUpdates *nats.Subscription
 	batchSubMu   sync.Mutex
+	
+	httpClient *http.Client
 }
 
 // New creates a new Handler instance.
@@ -37,6 +41,20 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	staticDir := "static"
 	if cfg != nil && cfg.StaticDir != "" {
 		staticDir = cfg.StaticDir
+	}
+
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Dial: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).Dial,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
 	}
 
 	return &Handler{
@@ -47,7 +65,9 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 		staticDir: staticDir,
 		startedAt: time.Now(),
 
-		batches:     make(map[string]*batchProgress),
+		batches:    make(map[string]*batchProgress),
 		artistBatch: make(map[string]string),
+		
+		httpClient: httpClient,
 	}
 }

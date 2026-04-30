@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -11,10 +13,10 @@ import (
 	"ListenLedger/internal/songbackfill"
 )
 
-func loadSongs(app *pocketbase.PocketBase) ([]songbackfill.SongInput, error) {
-	records, err := app.FindAllRecords("songs")
+func loadSongs(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.SongInput, error) {
+	records, err := app.FindRecordsByFilter("songs", "", "", 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read songs collection: %w", err)
 	}
 
 	songs := make([]songbackfill.SongInput, 0, len(records))
@@ -41,10 +43,10 @@ func loadSongs(app *pocketbase.PocketBase) ([]songbackfill.SongInput, error) {
 	return songs, nil
 }
 
-func loadArtists(app *pocketbase.PocketBase) ([]songbackfill.ArtistInput, error) {
-	records, err := app.FindAllRecords("artists")
+func loadArtists(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.ArtistInput, error) {
+	records, err := app.FindRecordsByFilter("artists", "", "", 0, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read artists collection: %w", err)
 	}
 
 	artists := make([]songbackfill.ArtistInput, 0, len(records))

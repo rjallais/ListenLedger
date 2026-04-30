@@ -15,7 +15,7 @@ func classifyReviewItem(
 	selectedCandidate *songbackfill.CandidateSummary,
 	missingArtists, suggestedArtistNames []string,
 ) {
-	if resolution.Action == songbackfill.ActionSkipAmbiguous {
+	if resolution.Action == songbackfill.ActionSkipAmbiguous || resolution.Action == songbackfill.ActionSkipLowConfidence {
 		assignAmbiguousClassification(item, selectedCandidate, resolution.ExternalCandidates)
 		return
 	}

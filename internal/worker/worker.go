@@ -106,6 +106,8 @@ type Worker struct {
 	consume jetstream.ConsumeContext
 	ctx     context.Context
 
+	// dispatchMu serializes accepting checks/updates with dispatching Add/Wait.
+	dispatchMu  sync.Mutex
 	dispatching sync.WaitGroup
 	wg          sync.WaitGroup
 
@@ -177,7 +179,9 @@ func (w *Worker) Start() error {
 
 	totalConc := w.totalConcurrency()
 	w.work = make(chan inflightMsg, totalConc)
+	w.dispatchMu.Lock()
 	w.accepting.Store(true)
+	w.dispatchMu.Unlock()
 
 	consume, ok := w.createAndAlignConsumer(totalConc)
 	if !ok {
@@ -363,19 +367,22 @@ func (w *Worker) Stop() {
 	w.recalcMu.Unlock()
 
 	// Drain NATS consumer (idempotent with watchAllGroups via drainOnce).
-	w.accepting.Store(false)
 	w.drainOnce.Do(func() {
+		w.dispatchMu.Lock()
+		defer w.dispatchMu.Unlock()
+
+		w.accepting.Store(false)
 		if w.consume != nil {
 			w.consume.Drain()
 		}
 		if w.allGroupsDead != nil {
 			close(w.allGroupsDead)
 		}
-	})
 
-	w.dispatching.Wait()
-	w.rejectQueuedWork()
-	w.closeWork()
+		w.dispatching.Wait()
+		w.rejectQueuedWork()
+		w.closeWork()
+	})
 
 	done := make(chan struct{})
 	go func() {

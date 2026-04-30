@@ -8,7 +8,10 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // SongRow renders a single song row.
 func SongRow(song Song, playlistSort string) templ.Component {
@@ -39,7 +42,7 @@ func SongRow(song Song, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs("song-" + song.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 7, Col: 27}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 10, Col: 27}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -52,7 +55,7 @@ func SongRow(song Song, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var3 string
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(song.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 8, Col: 38}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 11, Col: 38}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -65,7 +68,7 @@ func SongRow(song Song, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(song.ArtistName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 9, Col: 23}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 12, Col: 23}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -78,7 +81,7 @@ func SongRow(song Song, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(song.Album)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 10, Col: 18}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 13, Col: 18}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -99,7 +102,7 @@ func SongRow(song Song, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(song.ReleaseDate)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 12, Col: 24}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 15, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -158,7 +161,7 @@ func SongReleaseTypeCell(releaseType string) templ.Component {
 			var templ_7745c5c3_Var8 string
 			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(releaseType)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 21, Col: 59}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 24, Col: 59}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 			if templ_7745c5c3_Err != nil {
@@ -210,7 +213,7 @@ func SongBatchCell(batchSeq, batchPos int) templ.Component {
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("B%d.%d", batchSeq, batchPos))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 29, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 32, Col: 89}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
@@ -272,7 +275,7 @@ func SongRecentToggleCell(songID string, isRecent bool, playlistSort string) tem
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(songRecentToggleAction(songID, playlistSort))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 42, Col: 64}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_rows.templ`, Line: 45, Col: 64}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
@@ -287,9 +290,11 @@ func SongRecentToggleCell(songID string, isRecent bool, playlistSort string) tem
 }
 
 func songRecentToggleAction(songID, playlistSort string) string {
+	escapedSongID := url.PathEscape(songID)
+	query := url.Values{"playlist_sort": []string{playlistSort}}.Encode()
 	return fmt.Sprintf(
-		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?playlist_sort=%s') } else { @post('/api/songs/%s/recent/false?playlist_sort=%s') }",
-		songID, playlistSort, songID, playlistSort,
+		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?%s') } else { @post('/api/songs/%s/recent/false?%s') }",
+		escapedSongID, query, escapedSongID, query,
 	)
 }
 

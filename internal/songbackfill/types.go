@@ -1,5 +1,7 @@
 //go:build goexperiment.jsonv2
 
+// Package songbackfill resolves missing Spotify artist IDs for songs by matching
+// stored artist names against an artist index and external metadata lookups.
 package songbackfill
 
 import (
@@ -8,11 +10,12 @@ import (
 )
 
 const (
-	ActionUpdate          = "update"
-	ActionUpdateNameOnly  = "update_name_only"
-	ActionSkipAmbiguous   = "skip_ambiguous"
-	ActionSkipExisting    = "skip_existing"
-	ActionSkipUnresolved  = "skip_unresolved"
+	ActionUpdate            = "update"
+	ActionUpdateNameOnly    = "update_name_only"
+	ActionSkipAmbiguous     = "skip_ambiguous"
+	ActionSkipLowConfidence = "skip_low_confidence"
+	ActionSkipExisting      = "skip_existing"
+	ActionSkipUnresolved    = "skip_unresolved"
 )
 
 type SongInput struct {

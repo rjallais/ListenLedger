@@ -349,10 +349,10 @@ func TestResolverSendsBorderlineTidalPrefillToReview(t *testing.T) {
 	resolver := NewResolver(nil, Options{
 		MinimumConfidence: 0.90,
 		NamePrefillLookup: fakeLookup{candidates: []TrackCandidate{{
-			Source:      "tidal_track",
-			Title:       "Complicated",
-			ArtistNames: []string{"Dimitri Vegas", "David Guetta", "Kiiara"},
-			Confidence:  0.86,
+			Source:       "tidal_track",
+			Title:        "Complicated",
+			ArtistNames:  []string{"Dimitri Vegas", "David Guetta", "Kiiara"},
+			Confidence:   0.86,
 		}}},
 	})
 
@@ -362,8 +362,8 @@ func TestResolverSendsBorderlineTidalPrefillToReview(t *testing.T) {
 		ArtistName: "Dimitri Vegas, ...",
 	})
 
-	if got.Action != ActionSkipAmbiguous {
-		t.Fatalf("Action = %q, want %q (notes=%v)", got.Action, ActionSkipAmbiguous, got.Notes)
+	if got.Action != ActionSkipLowConfidence {
+		t.Fatalf("Action = %q, want %q (notes=%v)", got.Action, ActionSkipLowConfidence, got.Notes)
 	}
 	if !strings.Contains(strings.Join(got.Notes, " | "), "manual review") {
 		t.Fatalf("Notes = %v, want manual review note", got.Notes)

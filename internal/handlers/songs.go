@@ -78,9 +78,10 @@ func songFromRecord(record *core.Record) templates.Song {
 }
 
 type songListEntry struct {
-	song        templates.Song
-	createdAt   time.Time
-	releaseDate time.Time
+	song              templates.Song
+	createdAt         time.Time
+	releaseDate       time.Time
+	releaseDateValid  bool
 }
 
 type songPageData struct {
@@ -90,12 +91,12 @@ type songPageData struct {
 	NotRecentCount  int
 }
 
-func parseSongReleaseDate(stored string) time.Time {
+func parseSongReleaseDate(stored string) (time.Time, bool) {
 	t, err := time.Parse("2006-01-02", stored)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, false
 	}
-	return t
+	return t, true
 }
 
 func normalizePlaylistSort(raw string) string {
@@ -122,10 +123,12 @@ func (h *Handler) listSongEntries() ([]songListEntry, error) {
 
 	entries := make([]songListEntry, 0, len(records))
 	for _, record := range records {
+		rd, valid := parseSongReleaseDate(record.GetString("release_date"))
 		entries = append(entries, songListEntry{
-			song:        songFromRecord(record),
-			createdAt:   record.GetDateTime("created").Time(),
-			releaseDate: parseSongReleaseDate(record.GetString("release_date")),
+			song:              songFromRecord(record),
+			createdAt:         record.GetDateTime("created").Time(),
+			releaseDate:       rd,
+			releaseDateValid:  valid,
 		})
 	}
 
@@ -183,7 +186,12 @@ func sortNotRecentSongEntries(entries []songListEntry) {
 
 // compareByReleaseDateAsc returns true when left should sort before right by
 // ascending release date, falling through to createdAt then title then ID.
+// Invalid/legacy dates are treated as "unknown" and sort after valid dates.
 func compareByReleaseDateAsc(left, right songListEntry) bool {
+	// Invalid dates sort after valid dates
+	if left.releaseDateValid != right.releaseDateValid {
+		return left.releaseDateValid
+	}
 	if !left.releaseDate.Equal(right.releaseDate) {
 		return left.releaseDate.Before(right.releaseDate)
 	}
@@ -236,7 +244,12 @@ func compareByBatchSeqAsc(left, right songListEntry) bool {
 
 // compareByWaitingReleaseAsc sorts waiting-removal entries by release date asc,
 // then batch seq/pos asc, createdAt asc, title, ID.
+// Invalid/legacy dates are treated as "unknown" and sort after valid dates.
 func compareByWaitingReleaseAsc(left, right songListEntry) bool {
+	// Invalid dates sort after valid dates
+	if left.releaseDateValid != right.releaseDateValid {
+		return left.releaseDateValid
+	}
 	if !left.releaseDate.Equal(right.releaseDate) {
 		return left.releaseDate.Before(right.releaseDate)
 	}

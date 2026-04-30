@@ -74,6 +74,13 @@ func (l *TidalLookup) Lookup(ctx context.Context, song SongInput, primaryArtistP
 	}
 
 	trackItems := tidalIncludedTrackItems(payload)
+	limit := l.SearchLimit
+	if limit <= 0 {
+		limit = defaultTidalSearchLimit
+	}
+	if len(trackItems) > limit {
+		trackItems = trackItems[:limit]
+	}
 	candidates := make([]TrackCandidate, 0, len(trackItems))
 	for _, item := range trackItems {
 		artistNames := tidalTrackArtistNames(item, payload.Included)
@@ -172,18 +179,19 @@ func tidalIncludedTrackItems(payload tidalSearchResponse) []tidalSearchItem {
 }
 
 func tidalTrackArtistNames(track tidalSearchItem, included []tidalSearchItem) []string {
-	artistIDs := map[string]bool{}
-	for _, ref := range track.Relationships.Artists.Data {
-		artistIDs[ref.ID] = true
-	}
-
-	names := make([]string, 0, len(artistIDs))
-	seen := map[string]bool{}
+	includedArtists := make(map[string]tidalSearchItem, len(included))
 	for _, item := range included {
-		if !artistIDs[item.ID] {
+		if strings.ToUpper(strings.TrimSpace(item.Type)) != "ARTISTS" && strings.ToUpper(strings.TrimSpace(item.Type)) != "ARTIST" {
 			continue
 		}
-		if strings.ToUpper(strings.TrimSpace(item.Type)) != "ARTISTS" && strings.ToUpper(strings.TrimSpace(item.Type)) != "ARTIST" {
+		includedArtists[item.ID] = item
+	}
+
+	names := make([]string, 0, len(track.Relationships.Artists.Data))
+	seen := map[string]bool{}
+	for _, ref := range track.Relationships.Artists.Data {
+		item, ok := includedArtists[ref.ID]
+		if !ok {
 			continue
 		}
 		name := strings.TrimSpace(tidalIncludedArtistName(item.Attributes))

@@ -1,6 +1,10 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+)
 
 // NotRecentSongRows appends not-recent songs and updates pagination controls.
 templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort string) {
@@ -26,5 +30,10 @@ templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort
 }
 
 func songsNotRecentURL(offset int, playlistSort string) string {
-	return fmt.Sprintf("@get('/api/songs/not-recent?offset=%d&limit=50&playlist_sort=%s')", offset, playlistSort)
+	query := url.Values{
+		"offset":        []string{strconv.Itoa(offset)},
+		"limit":         []string{"50"},
+		"playlist_sort": []string{playlistSort},
+	}
+	return fmt.Sprintf("@get('/api/songs/not-recent?%s')", query.Encode())
 }

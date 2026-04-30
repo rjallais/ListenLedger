@@ -8,7 +8,10 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 func IconPlus(className string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -321,7 +324,7 @@ func AlbumRow(album Album) templ.Component {
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs("album-" + album.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 44, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 47, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -334,7 +337,7 @@ func AlbumRow(album Album) templ.Component {
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(album.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 45, Col: 39}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 48, Col: 39}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 		if templ_7745c5c3_Err != nil {
@@ -347,7 +350,7 @@ func AlbumRow(album Album) templ.Component {
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(album.ArtistName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 46, Col: 24}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 49, Col: 24}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 		if templ_7745c5c3_Err != nil {
@@ -406,7 +409,7 @@ func AlbumCard(album Album) templ.Component {
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs("album-card-" + album.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 60, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 63, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
@@ -419,7 +422,7 @@ func AlbumCard(album Album) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(album.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 64, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 67, Col: 42}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -432,7 +435,7 @@ func AlbumCard(album Album) templ.Component {
 		var templ_7745c5c3_Var26 string
 		templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(album.ArtistName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 65, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 68, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 		if templ_7745c5c3_Err != nil {
@@ -487,7 +490,7 @@ func AlbumSongCounter(label, apiPath string, count int) templ.Component {
 		var templ_7745c5c3_Var28 string
 		templ_7745c5c3_Var28, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 79, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 82, Col: 42}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var28))
 		if templ_7745c5c3_Err != nil {
@@ -508,7 +511,7 @@ func AlbumSongCounter(label, apiPath string, count int) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", count))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 81, Col: 79}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 84, Col: 79}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -558,7 +561,7 @@ func AlbumSongAdjustButton(apiPath, op, title string) templ.Component {
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(albumSongAdjustURL(apiPath, op))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 89, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 92, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
@@ -571,7 +574,7 @@ func AlbumSongAdjustButton(apiPath, op, title string) templ.Component {
 		var templ_7745c5c3_Var32 string
 		templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 90, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 93, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 		if templ_7745c5c3_Err != nil {
@@ -650,7 +653,7 @@ func AlbumStatusOption(albumID, currentStatus, status, badgeTone, label string) 
 		var templ_7745c5c3_Var36 string
 		templ_7745c5c3_Var36, templ_7745c5c3_Err = templ.JoinStringErrs(albumStatusUpdateURL(albumID, status))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 104, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 107, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var36))
 		if templ_7745c5c3_Err != nil {
@@ -685,7 +688,7 @@ func AlbumStatusOption(albumID, currentStatus, status, badgeTone, label string) 
 		var templ_7745c5c3_Var39 string
 		templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 107, Col: 10}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 110, Col: 10}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 		if templ_7745c5c3_Err != nil {
@@ -787,7 +790,7 @@ func AlbumStatusDropdown(albumID, currentStatus string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AlbumStatusOption(albumID, currentStatus, "waiting", "badge-ghost", "Waiting").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AlbumStatusOption(albumID, currentStatus, StatusWaiting, "badge-ghost", "Waiting").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -832,7 +835,7 @@ func AlbumStatusBadge(status string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-		case "waiting":
+		case StatusWaiting:
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 47, "<span class=\"badge badge-ghost badge-sm\">waiting</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -869,7 +872,7 @@ func AlbumRemoveElement(albumID, currentStatus string) templ.Component {
 			templ_7745c5c3_Var43 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		if currentStatus == "waiting" {
+		if currentStatus == StatusWaiting {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 49, "<div id=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -877,7 +880,7 @@ func AlbumRemoveElement(albumID, currentStatus string) templ.Component {
 			var templ_7745c5c3_Var44 string
 			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs("album-card-" + albumID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 152, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 155, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 			if templ_7745c5c3_Err != nil {
@@ -895,7 +898,7 @@ func AlbumRemoveElement(albumID, currentStatus string) templ.Component {
 			var templ_7745c5c3_Var45 string
 			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs("album-" + albumID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 154, Col: 29}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 157, Col: 29}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 			if templ_7745c5c3_Err != nil {
@@ -932,7 +935,7 @@ func AlbumInsertElement(album Album) templ.Component {
 			templ_7745c5c3_Var46 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		if album.Status == "waiting" {
+		if album.Status == StatusWaiting {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 53, "<div id=\"albums-waiting\" data-merge-mode=\"prepend\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -953,7 +956,7 @@ func AlbumInsertElement(album Album) templ.Component {
 			var templ_7745c5c3_Var47 string
 			templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinStringErrs("albums-" + album.Status)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 165, Col: 38}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 168, Col: 38}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 			if templ_7745c5c3_Err != nil {
@@ -1042,7 +1045,7 @@ func AddAlbumSuccessNotice(albumTitle string) templ.Component {
 		var templ_7745c5c3_Var50 string
 		templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(albumTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 182, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 185, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 		if templ_7745c5c3_Err != nil {
@@ -1145,7 +1148,7 @@ func AddAlbumModal() templ.Component {
 			templ_7745c5c3_Var53 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<input type=\"checkbox\" id=\"add-album-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Album</h3><label for=\"add-album-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-album-form\" data-on:submit=\"evt.preventDefault(); @post('/api/albums', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Album Title *</span></label> <label><input type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></label></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <label><input type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></label></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Status</span></label> <label><select name=\"status\" class=\"select select-bordered w-full\"><option value=\"waiting\" selected>Waiting</option> <option value=\"processed\">Processed</option> <option value=\"full\">Full</option></select></label></div><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Owned Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Total Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"total_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div></div><div class=\"modal-action\"><label for=\"add-album-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<input type=\"checkbox\" id=\"add-album-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Album</h3><label for=\"add-album-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-album-form\" data-on:submit__prevent=\"@post('/api/albums', {contentType: 'form'})\" data-on-success=\"document.getElementById('add-album-form').reset()\"><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Album Title *</span></label> <label><input type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></label></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <label><input type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></label></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Status</span></label> <label><select name=\"status\" class=\"select select-bordered w-full\"><option value=\"waiting\" selected>Waiting</option> <option value=\"processed\">Processed</option> <option value=\"full\">Full</option></select></label></div><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Owned Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Total Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"total_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div></div><div class=\"modal-action\"><label for=\"add-album-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1170,11 +1173,11 @@ func albumsWaitingURL(offset int) string {
 }
 
 func albumSongAdjustURL(apiPath, op string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/%s')", apiPath, op)
+	return fmt.Sprintf("@post('/api/albums/%s/%s')", url.PathEscape(apiPath), url.PathEscape(op))
 }
 
 func albumStatusUpdateURL(albumID, status string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/status/%s')", albumID, status)
+	return fmt.Sprintf("@post('/api/albums/%s/status/%s')", url.PathEscape(albumID), url.PathEscape(status))
 }
 
 func sectionBorderClass(color string) string {

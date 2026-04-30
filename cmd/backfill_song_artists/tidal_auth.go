@@ -22,7 +22,7 @@ type tidalCredentials struct {
 	HTTPTimeout  time.Duration
 }
 
-func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToken string) string {
+func resolveTidalToken(ctx context.Context, httpClient *http.Client, creds tidalCredentials, flagToken string) string {
 	token := strings.TrimSpace(flagToken)
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv("TIDAL_TOKEN"))
@@ -45,9 +45,9 @@ func resolveTidalToken(httpClient *http.Client, creds tidalCredentials, flagToke
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	t, err := fetchTidalAccessToken(ctx, httpClient, creds.TokenURL, clientID, clientSecret)
+	t, err := fetchTidalAccessToken(ctxWithTimeout, httpClient, creds.TokenURL, clientID, clientSecret)
 	if err != nil {
 		log.Printf("[backfill_song_artists] warning: failed to obtain TIDAL access token: %v", err)
 		return ""

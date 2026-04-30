@@ -96,7 +96,7 @@ func classifyResolutionHint(resolution songbackfill.Resolution) resolutionHints 
 	}
 
 	switch {
-	case resolution.Action == songbackfill.ActionSkipAmbiguous:
+	case resolution.Action == songbackfill.ActionSkipAmbiguous || resolution.Action == songbackfill.ActionSkipLowConfidence:
 		hint.Category = "ambiguous_external_credit"
 		hint.Priority = 4
 		hint.RetryEligible = false

@@ -32,9 +32,6 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 		}
 
 		allCandidates = append(allCandidates, candidates...)
-		if distinctCandidateGroupCount(candidates) == 1 && len(allCandidates) == len(candidates) {
-			return dedupeTrackCandidates(allCandidates), nil
-		}
 	}
 
 	allCandidates = dedupeTrackCandidates(allCandidates)

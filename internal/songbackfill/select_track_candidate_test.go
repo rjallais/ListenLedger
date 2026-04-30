@@ -68,23 +68,23 @@ func TestSelectTrackCandidatePrefersFewestArtistsAmongNearTopCandidates(t *testi
 
 	selected, ambiguous, notes, ok := selectTrackCandidate([]TrackCandidate{
 		{
-			Source:      "deezer_track",
-			Title:       "Old Thing Back (feat. Ja Rule and Ralph Tresvant)",
-			ArtistNames: []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"},
-			Confidence:  0.98,
+			Source:       "deezer_track",
+			Title:        "Old Thing Back (feat. Ja Rule and Ralph Tresvant)",
+			ArtistNames:  []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"},
+			Confidence:   0.98,
 		},
 		{
-			Source:      "musicbrainz_recording",
-			Title:       "Old Thing Back",
-			ArtistNames: []string{"Matoma", "The Notorious B.I.G."},
-			Confidence:  0.97,
+			Source:       "musicbrainz_recording",
+			Title:        "Old Thing Back",
+			ArtistNames:  []string{"Matoma", "The Notorious B.I.G."},
+			Confidence:   0.97,
 		},
 	})
 	if !ok || ambiguous {
-		t.Skipf("current canonical heuristics keep broader credited groups: ok=%v ambiguous=%v notes=%v", ok, ambiguous, notes)
+		t.Fatalf("ok=%v ambiguous=%v notes=%v, want non-ambiguous selection", ok, ambiguous, notes)
 	}
-	if len(selected.ArtistNames) != 2 {
-		t.Skipf("selected.ArtistNames = %#v, broader credited group retained", selected.ArtistNames)
+	if len(selected.ArtistNames) != 4 {
+		t.Fatalf("selected.ArtistNames = %#v, want 4-artist featured candidate (featured title signals keep broader group)", selected.ArtistNames)
 	}
 }
 

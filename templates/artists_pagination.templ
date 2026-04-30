@@ -18,7 +18,7 @@ templ PaginationSummary(p Pagination) {
 
 templ PaginationEdgeButton(button paginationNavButton) {
 	if button.Disabled {
-		<button class="join-item btn btn-sm btn-disabled">{ button.Label }</button>
+		<button type="button" class="join-item btn btn-sm btn-disabled" disabled aria-disabled="true">{ button.Label }</button>
 	} else {
 		<a href={ templ.SafeURL(button.Href) } class="join-item btn btn-sm">{ button.Label }</a>
 	}
@@ -32,7 +32,7 @@ templ PaginationPageButtons(links []paginationPageLink) {
 
 templ PaginationPageButton(link paginationPageLink) {
 	if link.Active {
-		<button class="join-item btn btn-sm btn-active">{ intString(link.Number) }</button>
+		<button type="button" class="join-item btn btn-sm btn-active" disabled aria-current="page" aria-disabled="true">{ intString(link.Number) }</button>
 	} else {
 		<a href={ templ.SafeURL(link.Href) } class="join-item btn btn-sm">{ intString(link.Number) }</a>
 	}

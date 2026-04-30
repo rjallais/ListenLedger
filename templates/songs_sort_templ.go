@@ -8,7 +8,10 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 func SongSortControls(playlistSort string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
@@ -97,7 +100,7 @@ func SongSortButton(sortValue, label, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(songsSectionsSortURL(sortValue))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sort.templ`, Line: 16, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sort.templ`, Line: 19, Col: 49}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -110,7 +113,7 @@ func SongSortButton(sortValue, label, playlistSort string) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sort.templ`, Line: 18, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sort.templ`, Line: 21, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -125,7 +128,8 @@ func SongSortButton(sortValue, label, playlistSort string) templ.Component {
 }
 
 func songsSectionsSortURL(sortValue string) string {
-	return fmt.Sprintf("@get('/api/songs/sections?playlist_sort=%s')", sortValue)
+	query := url.Values{"playlist_sort": []string{sortValue}}.Encode()
+	return fmt.Sprintf("@get('/api/songs/sections?%s')", query)
 }
 
 var _ = templruntime.GeneratedTemplate

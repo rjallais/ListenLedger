@@ -87,7 +87,7 @@ func AddArtistNameField() templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <label><input type=\"text\" name=\"name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <input type=\"text\" name=\"name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -116,7 +116,7 @@ func AddArtistSpotifyIDField() templ.Component {
 			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <label><input type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" required></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <input type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" required></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -145,7 +145,7 @@ func AddArtistGenreField(currentGenre string) templ.Component {
 			templ_7745c5c3_Var4 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Genre Group</span></label> <label><select name=\"genre_group\" class=\"select select-bordered w-full\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Genre Group</span></label> <select name=\"genre_group\" class=\"select select-bordered w-full\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -155,7 +155,7 @@ func AddArtistGenreField(currentGenre string) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</select></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</select></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -184,7 +184,7 @@ func AddArtistStatusField() templ.Component {
 			templ_7745c5c3_Var5 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Initial Status</span></label> <label><select name=\"list_status\" class=\"select select-bordered w-full\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Initial Status</span></label> <select name=\"list_status\" class=\"select select-bordered w-full\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -194,7 +194,7 @@ func AddArtistStatusField() templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</select></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</select></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -223,7 +223,7 @@ func AddArtistOptionalFields() templ.Component {
 			templ_7745c5c3_Var6 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Monthly Listeners</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"monthly_listeners\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Collection Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <label><input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></label></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Monthly Listeners</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input type=\"number\" name=\"monthly_listeners\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Collection Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -288,7 +288,7 @@ func SelectOption(option selectOption) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(option.Value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 141, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 129, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -311,7 +311,7 @@ func SelectOption(option selectOption) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(option.Label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 141, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 129, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -353,7 +353,7 @@ func AddArtistSuccessNotice(artistName string) templ.Component {
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(artistName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 152, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 140, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {

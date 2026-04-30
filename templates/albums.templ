@@ -13,7 +13,7 @@ templ AlbumsPage(fullCount, processedCount, waitingCount int) {
 		<div class="space-y-4">
 			@AlbumSectionLazy("full", "Full", "Complete Albums", "success", fullCount)
 			@AlbumSectionLazy("processed", "Processed", "Partially Complete", "warning", processedCount)
-			@AlbumSectionWaiting("waiting", "Waiting", "Not Yet Processed", waitingCount)
+			@AlbumSectionWaiting(StatusWaiting, "Waiting", "Not Yet Processed", waitingCount)
 		</div>
 		@AddAlbumModal()
 	}

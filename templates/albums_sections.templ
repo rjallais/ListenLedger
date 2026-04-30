@@ -88,7 +88,7 @@ templ AlbumSectionWaitingLoadButton() {
 
 // AlbumRowsList renders the album list portion for lazy loading.
 templ AlbumRowsList(albums []Album, status string) {
-	if status == "waiting" {
+	if status == StatusWaiting {
 		<div id={ "albums-" + status } data-merge-mode="append">
 			for _, album := range albums {
 				@AlbumCard(album)
@@ -105,7 +105,7 @@ templ AlbumRowsList(albums []Album, status string) {
 
 // AlbumLoadMore renders the load-more or all-done controls for a section.
 templ AlbumLoadMore(status string, nextOffset int, hasMore bool) {
-	if status == "waiting" {
+	if status == StatusWaiting {
 		@AlbumLoadMoreWaiting(nextOffset, hasMore)
 	} else {
 		@AlbumLoadMoreNonWaiting(status, nextOffset, hasMore)
