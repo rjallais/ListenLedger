@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -108,15 +109,16 @@ func normalizePlaylistSort(raw string) string {
 	}
 }
 
-func (h *Handler) listSongEntries() ([]songListEntry, error) {
-	records, err := h.app.FindRecordsByFilter(
-		"songs",
-		"",
-		"",
-		0,
-		0,
-		nil,
-	)
+func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) {
+	collection, err := h.app.FindCollectionByNameOrId("songs")
+	if err != nil {
+		return nil, err
+	}
+
+	var records []*core.Record
+	err = h.app.RecordQuery(collection.Id).
+		WithContext(ctx).
+		All(&records)
 	if err != nil {
 		return nil, err
 	}
@@ -317,10 +319,10 @@ func splitPlaylistBuckets(recent []songListEntry) (current, waiting []songListEn
 	return
 }
 
-func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
+func (h *Handler) buildSongPageData(ctx context.Context, playlistSort string) (songPageData, error) {
 	playlistSort = normalizePlaylistSort(playlistSort)
 
-	entries, err := h.listSongEntries()
+	entries, err := h.listSongEntries(ctx)
 	if err != nil {
 		return songPageData{}, err
 	}
@@ -351,11 +353,11 @@ func (h *Handler) buildSongPageData(playlistSort string) (songPageData, error) {
 	}, nil
 }
 
-func (h *Handler) listNotRecentSongs(offset, limit int) ([]templates.Song, int, error) {
+func (h *Handler) listNotRecentSongs(ctx context.Context, offset, limit int) ([]templates.Song, int, error) {
 	offset = clampOffset(offset)
 	limit = clampPageSize(limit)
 
-	entries, err := h.listSongEntries()
+	entries, err := h.listSongEntries(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -401,8 +403,8 @@ func paginateEntries(entries []songListEntry, offset, limit int) []templates.Son
 	return page
 }
 
-func (h *Handler) nextRecentBatchAssignment(now time.Time) (int, int, error) {
-	entries, err := h.listSongEntries()
+func (h *Handler) nextRecentBatchAssignment(ctx context.Context, now time.Time) (int, int, error) {
+	entries, err := h.listSongEntries(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -499,7 +501,7 @@ func clampRecentBatchPos(pos int) int {
 // HTTP 500 response on error. The bool return is false on failure.
 func (h *Handler) loadSongPageData(e *core.RequestEvent, caller string) (songPageData, bool) {
 	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, err := h.buildSongPageData(playlistSort)
+	pageData, err := h.buildSongPageData(e.Request.Context(), playlistSort)
 	if err != nil {
 		if caller != "" {
 			log.Printf("[%s] buildSongPageData failed: %v", caller, err)
@@ -541,7 +543,8 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 		return e.JSON(http.StatusNotFound, map[string]string{"error": "song not found"})
 	}
 
-	if err := h.applyRecentUpdate(record, isRecent); err != nil {
+	ctx := e.Request.Context()
+	if err := h.applyRecentUpdate(ctx, record, isRecent); err != nil {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -549,7 +552,7 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update song"})
 	}
 
-	pageData, err := h.buildSongPageData(playlistSort)
+	pageData, err := h.buildSongPageData(ctx, playlistSort)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load songs")
 	}
@@ -562,7 +565,7 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 	))
 }
 
-func (h *Handler) applyRecentUpdate(record *core.Record, isRecent bool) error {
+func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {
 	oldRecent := record.GetBool("is_recent")
 	record.Set("is_recent", isRecent)
 	if !isRecent {
@@ -573,7 +576,7 @@ func (h *Handler) applyRecentUpdate(record *core.Record, isRecent bool) error {
 	if !needsBatchAssignment(oldRecent, record) {
 		return nil
 	}
-	batchSeq, batchPos, err := h.nextRecentBatchAssignment(time.Now())
+	batchSeq, batchPos, err := h.nextRecentBatchAssignment(ctx, time.Now())
 	if err != nil {
 		log.Printf("[handleUpdateSongRecent] nextRecentBatchAssignment failed: %v", err)
 		return fmt.Errorf("failed to assign recent batch")
@@ -637,7 +640,8 @@ func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 	offset := parseQueryIntParam(e.Request, intParamSpec{Name: "offset", Default: 0, Min: 0, Max: 0})
 	limit := parseQueryIntParam(e.Request, intParamSpec{Name: "limit", Default: songsDefaultPageSize, Min: 1, Max: songsMaxPageSize})
 
-	songs, totalCount, err := h.listNotRecentSongs(offset, limit)
+	ctx := e.Request.Context()
+	songs, totalCount, err := h.listNotRecentSongs(ctx, offset, limit)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load songs")
 	}

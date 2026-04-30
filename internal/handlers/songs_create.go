@@ -165,7 +165,8 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 	}
 
 	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, buildErr := h.buildSongPageData(playlistSort)
+	ctx := e.Request.Context()
+	pageData, buildErr := h.buildSongPageData(ctx, playlistSort)
 	if buildErr != nil {
 		log.Printf("[handleCreateSong] buildSongPageData failed: %v", buildErr)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to load songs"})
@@ -202,7 +203,7 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 		}
 	}
 
-	return h.createSongRecord(input, artists)
+	return h.createSongRecord(ctx, input, artists)
 }
 
 type songSaveError struct {
@@ -212,12 +213,12 @@ type songSaveError struct {
 
 func (e *songSaveError) Error() string { return e.msg }
 
-func (h *Handler) createSongRecord(input songFormInput, artists []string) (*core.Record, *songSaveError) {
+func (h *Handler) createSongRecord(ctx context.Context, input songFormInput, artists []string) (*core.Record, *songSaveError) {
 	collection, err := h.app.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}
 	}
-	batchSeq, batchPos, err := h.nextRecentBatchAssignment(time.Now())
+	batchSeq, batchPos, err := h.nextRecentBatchAssignment(ctx, time.Now())
 	if err != nil {
 		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
 		return nil, &songSaveError{http.StatusInternalServerError, "failed to assign recent batch"}
