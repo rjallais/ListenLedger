@@ -53,11 +53,29 @@ FILES=(
   "cmd/seed/main.go"
 )
 
+# Emit MCP initialize + notifications (once per batch session)
+emit_mcp_init() {
+  printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}\n'
+  printf '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
+}
+
+# Emit tools/call for a single file (reused in long-lived MCP session)
+emit_tools_call() {
+  local full_path="$1"
+  local msg_id="$2"
+  local escaped_path
+  escaped_path="$(json_escape "$full_path")"
+  printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"code_health_score","arguments":{"file_path":%s}}}\n' "$msg_id" "$escaped_path"
+}
+
 score_for_file() {
   local full_path="$1"
   local escaped_path
   escaped_path="$(json_escape "$full_path")"
 
+  # NOTE: For better performance with many files, emit_mcp_init once before the loop,
+  # then emit_tools_call for each file to a single long-lived MCP process, instead of
+  # creating a new MCP session (with initialize+notifications) for each file.
   local payload
   payload=''
   payload+='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}'
@@ -71,6 +89,8 @@ score_for_file() {
 import json
 import sys
 
+response = None
+
 for line in sys.stdin:
     line = line.strip()
     if not line:
@@ -81,15 +101,16 @@ for line in sys.stdin:
         continue
     if obj.get('id') != 2:
         continue
-    if obj.get('error'):
-        print('ERROR: {}'.format(obj['error']))
-        sys.exit(0)
+    if obj.get('error') and response is None:
+        response = 'ERROR: {}'.format(obj['error'])
+        continue
     result = obj.get('result', {})
     for c in result.get('content', []):
         if c.get('type') == 'text':
-            print(c.get('text', '').strip())
-            sys.exit(0)
-print('NO_RESPONSE')
+            response = c.get('text', '').strip() or response
+            break
+
+print(response or 'NO_RESPONSE')
 "
 }
 
