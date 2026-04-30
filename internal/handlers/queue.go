@@ -113,14 +113,14 @@ func (h *Handler) collectRetryCandidates(ctx context.Context, limit int) ([]*cor
 	return records, nil
 }
 
-func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) (messaging.ScrapeRequested, *core.Record, string, string, bool) {
+func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) (messaging.ScrapeRequested, *core.Record, string, string, bool, error) {
 	artistID := strings.TrimSpace(job.GetString("artist"))
 	if artistID == "" {
 		stats.InvalidArtist++
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 	if _, seen := seenArtist[artistID]; seen {
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 	seenArtist[artistID] = struct{}{}
 
@@ -132,23 +132,24 @@ func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, see
 		if errors.Is(findErr, sql.ErrNoRows) || artist == nil {
 			stats.InvalidArtist++
 		} else {
-			log.Printf("[handlers.prepareRetryRequest] FindRecordById error for artist %s: %v", artistID, findErr)
+			// Transient DB error - propagate to caller
+			return messaging.ScrapeRequested{}, nil, "", "", false, fmt.Errorf("failed to find artist %s: %w", artistID, findErr)
 		}
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 	if artist == nil {
 		stats.InvalidArtist++
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 	if artist.GetString("fetch_status") == "pending" {
 		stats.PendingSkipped++
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 
 	spotifyID := strings.TrimSpace(artist.GetString("spotify_id"))
 	if spotifyID == "" {
 		stats.InvalidArtist++
-		return messaging.ScrapeRequested{}, nil, "", "", false
+		return messaging.ScrapeRequested{}, nil, "", "", false, nil
 	}
 
 	requestID := strings.TrimSpace(job.GetString("request_id"))
@@ -163,7 +164,7 @@ func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, see
 		artist.GetString("name"),
 		requestID,
 	)
-	return req, artist, artistID, requestID, true
+	return req, artist, artistID, requestID, true, nil
 }
 
 func (h *Handler) publishRetryRequest(ctx context.Context, req messaging.ScrapeRequested) (*jetstream.PubAck, error) {
@@ -220,7 +221,11 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 	seenArtist := make(map[string]struct{}, len(records))
 
 	for _, job := range records {
-		req, artist, artistID, requestID, ok := h.prepareRetryRequest(ctx, job, seenArtist, &stats)
+		req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, &stats)
+		if err != nil {
+			// DB error during preparation - abort the retry loop and propagate
+			return stats, fmt.Errorf("failed to prepare retry request: %w", err)
+		}
 		if !ok {
 			continue
 		}
