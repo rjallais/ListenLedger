@@ -2,96 +2,141 @@
 set -euo pipefail
 # Batch CodeScene code health check via MCP JSON-RPC
 # Usage: CS_ACCESS_TOKEN=pat_... bash tools/codescene_health_check.sh
+#
+# Uses a single long-lived cs-mcp process (via named pipe) instead of
+# spawning a new MCP session per file. The initialize + notifications/initialized
+# handshake happens once; then tools/call messages are streamed to the same
+# process. A poll loop waits for all responses before tearing down the session.
 if command -v cs-mcp &>/dev/null; then
-  CS_MCP=(cs-mcp)
+	CS_MCP=(cs-mcp)
 else
-  CS_MCP=(npx -y -p @codescene/codehealth-mcp@latest cs-mcp)
+	CS_MCP=(npx -y -p @codescene/codehealth-mcp@latest cs-mcp)
 fi
 PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
 # json_escape safely embeds a filesystem path in a JSON string value using
 # Python's json.dumps to handle all control characters and special characters.
 json_escape() {
-  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
+	python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
 # Files to check (relative paths)
 FILES=(
-  "main.go"
-  "config/config.go"
-  "internal/app/app.go"
-  "internal/app/hooks.go"
-  "internal/app/nats.go"
-  "internal/fetcher/fetcher.go"
-  "internal/handlers/handlers.go"
-  "internal/handlers/albums.go"
-  "internal/handlers/artists.go"
-  "internal/handlers/artist_refresh.go"
-  "internal/handlers/artist_update.go"
-  "internal/handlers/batch_progress.go"
-  "internal/handlers/queue.go"
-  "internal/handlers/routes.go"
-  "internal/handlers/shared.go"
-  "internal/handlers/songs.go"
-  "internal/handlers/sse.go"
-  "internal/messaging/messages.go"
-  "internal/messaging/jetstream.go"
-  "internal/quota/quota.go"
-  "internal/songbackfill/backfill_test.go"
-  "internal/spotify/apify.go"
-  "internal/spotify/client.go"
-  "internal/spotify/local.go"
-  "internal/worker/worker.go"
-  "internal/worker/dispatch.go"
-  "internal/worker/processing.go"
-  "internal/worker/jobs.go"
-  "internal/worker/artist_updates.go"
-  "internal/worker/metrics.go"
-  "cmd/backfill_song_artists/main.go"
-  "cmd/backfill_song_artists/review_queue.go"
-  "cmd/update_listeners/main.go"
-  "cmd/seed/main.go"
+	"main.go"
+	"config/config.go"
+	"internal/app/app.go"
+	"internal/app/hooks.go"
+	"internal/app/nats.go"
+	"internal/fetcher/fetcher.go"
+	"internal/handlers/handlers.go"
+	"internal/handlers/albums.go"
+	"internal/handlers/artists.go"
+	"internal/handlers/artist_refresh.go"
+	"internal/handlers/artist_update.go"
+	"internal/handlers/batch_progress.go"
+	"internal/handlers/queue.go"
+	"internal/handlers/routes.go"
+	"internal/handlers/shared.go"
+	"internal/handlers/songs.go"
+	"internal/handlers/songs_create.go"
+	"internal/handlers/sse.go"
+	"internal/messaging/messages.go"
+	"internal/messaging/jetstream.go"
+	"internal/quota/quota.go"
+	"internal/songbackfill/backfill_test.go"
+	"internal/spotify/apify.go"
+	"internal/spotify/client.go"
+	"internal/spotify/local.go"
+	"internal/worker/worker.go"
+	"internal/worker/dispatch.go"
+	"internal/worker/processing.go"
+	"internal/worker/jobs.go"
+	"internal/worker/artist_updates.go"
+	"internal/worker/metrics.go"
+	"cmd/backfill_song_artists/main.go"
+	"cmd/backfill_song_artists/review_queue.go"
+	"cmd/update_listeners/main.go"
+	"cmd/seed/main.go"
 )
 
-# Emit MCP initialize + notifications (once per batch session)
-emit_mcp_init() {
-  printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}\n'
-  printf '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n'
-}
+# Build the list of valid files upfront (skip missing ones).
+valid_files=()
+for f in "${FILES[@]}"; do
+	if [[ -f "$PROJECT/$f" ]]; then
+		valid_files+=("$f")
+	else
+		echo "[codescene] Skipping missing file: $f" >&2
+	fi
+done
 
-# Emit tools/call for a single file (reused in long-lived MCP session)
-emit_tools_call() {
-  local full_path="$1"
-  local msg_id="$2"
-  local escaped_path
-  escaped_path="$(json_escape "$full_path")"
-  printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"code_health_score","arguments":{"file_path":%s}}}\n' "$msg_id" "$escaped_path"
-}
+if [[ ${#valid_files[@]} -eq 0 ]]; then
+	echo "No files to check." >&2
+	exit 0
+fi
 
-score_for_file() {
-  local full_path="$1"
-  local escaped_path
-  escaped_path="$(json_escape "$full_path")"
+# --- Single-session MCP via named pipe ---
+FIFO="/tmp/cs_mcp_fifo_$$"
+OUT="/tmp/cs_mcp_out_$$"
+cleanup() { rm -f "$FIFO" "$OUT"; }
+trap cleanup EXIT
+mkfifo "$FIFO"
 
-  # NOTE: For better performance with many files, emit_mcp_init once before the loop,
-  # then emit_tools_call for each file to a single long-lived MCP process, instead of
-  # creating a new MCP session (with initialize+notifications) for each file.
-  local payload
-  payload=''
-  payload+='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}'
-  payload+=$'\n'
-  payload+='{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
-  payload+=$'\n'
-  payload+="{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"code_health_score\",\"arguments\":{\"file_path\":$escaped_path}}}"
-  payload+=$'\n'
+# Start cs-mcp reading from the FIFO, writing stdout to a temp file.
+"${CS_MCP[@]}" < "$FIFO" > "$OUT" 2>>"${DEBUG:-/dev/null}" &
+MCP_PID=$!
 
-  printf '%s' "$payload" | "${CS_MCP[@]}" 2>>"${DEBUG:-/dev/null}" | python3 -c "
-import json
-import sys
+# Open the FIFO for writing on fd 3 so it stays open across multiple printf calls.
+exec 3>"$FIFO"
 
-response = None
+# 1) Initialize handshake (once per session).
+printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}\n' >&3
+sleep 0.5
+printf '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n' >&3
+sleep 0.5
 
-for line in sys.stdin:
+# 2) Send one tools/call per file (id starting at 2).
+msg_id=2
+for f in "${valid_files[@]}"; do
+	escaped_path="$(json_escape "$PROJECT/$f")"
+	printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"code_health_score","arguments":{"file_path":%s}}}\n' "$msg_id" "$escaped_path" >&3
+	msg_id=$((msg_id + 1))
+done
+
+# 3) Poll the output file until all expected responses arrive or we timeout.
+expected=${#valid_files[@]}
+timeout=120
+elapsed=0
+while [ $elapsed -lt $timeout ]; do
+	count=$(python3 -c '
+import json, sys
+c = 0
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line: continue
+    try: obj = json.loads(line)
+    except: continue
+    if obj.get("id") is not None and obj.get("id") >= 2:
+        c += 1
+print(c)
+' "$OUT" 2>/dev/null || echo 0)
+	if [ "$count" -ge "$expected" ]; then
+		break
+	fi
+	sleep 1
+	elapsed=$((elapsed + 1))
+done
+
+# Close the FIFO (sends EOF to cs-mcp) and wait for it to exit.
+exec 3>&-
+kill "$MCP_PID" 2>/dev/null || true
+wait "$MCP_PID" 2>/dev/null || true
+
+# 4) Parse responses: extract scores keyed by message id (id >= 2).
+mapfile -t scores < <(python3 -c '
+import json, re, sys
+
+scores = {}
+for line in open(sys.argv[1]):
     line = line.strip()
     if not line:
         continue
@@ -99,57 +144,49 @@ for line in sys.stdin:
         obj = json.loads(line)
     except json.JSONDecodeError:
         continue
-    if obj.get('id') != 2:
+    mid = obj.get("id")
+    if mid is None or mid < 2:
         continue
-    if obj.get('error') and response is None:
-        response = 'ERROR: {}'.format(obj['error'])
-        continue
-    result = obj.get('result', {})
-    for c in result.get('content', []):
-        if c.get('type') == 'text':
-            response = c.get('text', '').strip() or response
-            break
+    text = None
+    if obj.get("error"):
+        text = "ERROR: " + str(obj["error"])
+    else:
+        for c in obj.get("result", {}).get("content", []):
+            if c.get("type") == "text":
+                text = c.get("text", "").strip()
+                break
+    if text:
+        m = re.search(r"Code Health score:\s*([0-9]+(?:\.[0-9]+)?)", text)
+        if m:
+            scores[mid] = m.group(1)
+        else:
+            scores[mid] = text.splitlines()[-1].strip() if text.strip() else "NO_RESPONSE"
+    else:
+        scores[mid] = "NO_RESPONSE"
 
-print(response or 'NO_RESPONSE')
-"
-}
+for mid in sorted(scores):
+    print(scores[mid])
+' "$OUT")
 
+# 5) Print results table.
 echo "$(printf '%-55s SCORE' 'FILE')"
 echo "-----------------------------------------------------------------"
 
-for f in "${FILES[@]}"; do
-  full_path="$PROJECT/$f"
-  if [[ ! -f "$full_path" ]]; then
-    echo "[codescene] Skipping missing file: $f" >&2
-    continue
-  fi
+for i in "${!valid_files[@]}"; do
+	f="${valid_files[$i]}"
+	score="${scores[$i]:-NO_RESPONSE}"
+	flag=''
+	if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+		is_low="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 7.0 else 0)' "$score")"
+		is_warn="$(python3 -c 'import sys; s=float(sys.argv[1]); print(1 if 7.0 <= s < 9.0 else 0)' "$score")"
+		if [[ "$is_low" == "1" ]]; then
+			flag=' X'
+		elif [[ "$is_warn" == "1" ]]; then
+			flag=' !'
+		else
+			flag=' OK'
+		fi
+	fi
 
-  raw_score="$(score_for_file "$full_path")"
-  score="$(printf '%s\n' "$raw_score" | python3 -c "
-import re
-import sys
-
-text = sys.stdin.read().strip()
-match = re.search(r'Code Health score:\\s*([0-9]+(?:\\.[0-9]+)?)', text)
-if match:
-    print(match.group(1))
-elif text:
-    print(text.splitlines()[-1].strip())
-else:
-    print('NO_RESPONSE')
-")"
-  flag=''
-  if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    is_low="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 7.0 else 0)' "$score")"
-    is_warn="$(python3 -c 'import sys; s=float(sys.argv[1]); print(1 if 7.0 <= s < 9.0 else 0)' "$score")"
-    if [[ "$is_low" == "1" ]]; then
-      flag=' X'
-    elif [[ "$is_warn" == "1" ]]; then
-      flag=' !'
-    else
-      flag=' OK'
-    fi
-  fi
-
-  printf '%-55s %s%s\n' "$f" "$score" "$flag"
+	printf '%-55s %s%s\n' "$f" "$score" "$flag"
 done
