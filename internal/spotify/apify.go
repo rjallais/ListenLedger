@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -99,7 +98,7 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close Apify response body: %v\n", closeErr)
+			log.Printf("[apify] failed to close response body: %v", closeErr)
 		}
 	}()
 
@@ -220,7 +219,7 @@ func (c *Client) executeApifyBatch(ctx context.Context, endpoint string, bodyByt
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close Apify batch response body: %v\n", closeErr)
+			log.Printf("[apify] failed to close batch response body: %v", closeErr)
 		}
 	}()
 
