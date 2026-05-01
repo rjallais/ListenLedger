@@ -22,6 +22,30 @@ var knownSingleArtists = []string{
 	"Three Days Grace",
 }
 
+// countArtistSegments splits a name on commas and conjunctions (" & ", " and "),
+// trims empty parts, and returns the count of non-empty segments.
+// For example:
+// - "Earth, Wind & Fire" → segments: ["Earth", "Wind", "Fire"] → count 3 → return 1 (stylized, not multi)
+// - "A, B & C" → segments: ["A", "B", "C"] → count 3 → return 3 (true multi-artist)
+// - "Earth Wind & Fire" → segments: ["Earth Wind", "Fire"] → count 2 → return 2 (appears multi)
+// The key insight: if only *one* logical name emerges (after removing delimiters),
+// it's a stylized single artist; otherwise it's multi-artist.
+func countArtistSegments(name string) int {
+	// Replace all conjunction delimiters with comma for uniform splitting
+	normalized := strings.ReplaceAll(name, " & ", ",")
+	normalized = strings.ReplaceAll(normalized, " and ", ",")
+
+	parts := strings.Split(normalized, ",")
+	var segments []string
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			segments = append(segments, trimmed)
+		}
+	}
+	return len(segments)
+}
+
 func isSingleArtistName(name string) bool {
 	if !strings.Contains(name, ",") {
 		return false
@@ -35,9 +59,16 @@ func isSingleArtistName(name string) bool {
 		}
 	}
 
-	// Treat names with commas AND conjunctions as single-artist stylized names.
-	if strings.Contains(name, ",") && (strings.Contains(name, " & ") || strings.Contains(name, " and ")) {
-		return true
+	// Conjunctions also appear in true multi-artist credits (e.g. "A, B & C"),
+	// so count segments after splitting on both commas and conjunctions.
+	// Only treat as single-artist stylized name if segment count indicates one artist.
+	if strings.Contains(name, " & ") || strings.Contains(name, " and ") {
+		segments := countArtistSegments(name)
+		if segments == 1 {
+			return true
+		}
+		// Multi-artist (segments > 1) or ambiguous (segments == 0) → reject
+		return false
 	}
 
 	if strings.Count(name, ",") > 1 {
