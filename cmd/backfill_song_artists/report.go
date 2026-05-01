@@ -23,13 +23,14 @@ type report struct {
 }
 
 type reportSummary struct {
-	SongsScanned      int `json:"songs_scanned"`
-	UpdateCandidates  int `json:"update_candidates"`
-	BelowThreshold    int `json:"below_threshold"`
-	UpdatesApplied    int `json:"updates_applied"`
-	ArtistNameChanges int `json:"artist_name_changes"`
-	SkippedAmbiguous  int `json:"skipped_ambiguous"`
-	SkippedUnresolved int `json:"skipped_unresolved"`
+	SongsScanned         int `json:"songs_scanned"`
+	UpdateCandidates     int `json:"update_candidates"`
+	BelowThreshold       int `json:"below_threshold"`
+	UpdatesApplied       int `json:"updates_applied"`
+	ArtistNameChanges    int `json:"artist_name_changes"`
+	SkippedAmbiguous     int `json:"skipped_ambiguous"`
+	SkippedLowConfidence int `json:"skipped_low_confidence"`
+	SkippedUnresolved    int `json:"skipped_unresolved"`
 }
 
 type priorReportSummary struct {
@@ -59,9 +60,9 @@ func buildSummary(resolutions []songbackfill.Resolution, minimumConfidence float
 	case songbackfill.ActionSkipAmbiguous:
 		summary.SkippedAmbiguous++
 	case songbackfill.ActionSkipLowConfidence:
-		summary.SkippedAmbiguous++
+		summary.SkippedLowConfidence++
 	case songbackfill.ActionSkipUnresolved:
-			summary.SkippedUnresolved++
+		summary.SkippedUnresolved++
 		}
 	}
 
