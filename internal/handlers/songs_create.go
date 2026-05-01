@@ -459,7 +459,7 @@ func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*cor
 		return records, nil
 	}
 	return h.app.FindRecordsByFilter(
-		"artists", "name ~ {:name}", "", 1, 0,
+		"artists", "name = {:name}", "", 1, 0,
 		dbx.Params{"name": artistName},
 	)
 }
