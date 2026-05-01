@@ -128,6 +128,11 @@ print(c)
 	elapsed=$((elapsed + 1))
 done
 
+if [ "${count:-0}" -lt "$expected" ]; then
+	echo "[codescene] Timed out waiting for MCP responses: got ${count:-0}/${expected}" >&2
+	exit 1
+fi
+
 # Close the FIFO (sends EOF to cs-mcp) and wait for it to exit.
 exec 3>&-
 kill "$MCP_PID" 2>/dev/null || true
