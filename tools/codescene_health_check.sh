@@ -9,8 +9,11 @@ set -euo pipefail
 # process. A poll loop waits for all responses before tearing down the session.
 if command -v cs-mcp &>/dev/null; then
 	CS_MCP=(cs-mcp)
-else
+elif command -v npx &>/dev/null; then
 	CS_MCP=(npx -y -p @codescene/codehealth-mcp@1.1.5 cs-mcp)
+else
+	echo "[codescene] Missing dependency: install cs-mcp or npx" >&2
+	exit 1
 fi
 PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
