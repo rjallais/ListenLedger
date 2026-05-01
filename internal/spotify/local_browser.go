@@ -193,7 +193,7 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 	browser = browser.Context(context.Background())
 
 	if cfg.LocalIgnoreCertErrors {
-		setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		setupCtx, setupCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer setupCancel()
 		if err := browser.Context(setupCtx).IgnoreCertErrors(true); err != nil {
 			_ = browser.Close()
