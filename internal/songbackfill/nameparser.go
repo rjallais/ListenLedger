@@ -13,15 +13,31 @@ type parsedArtists struct {
 	PreserveWhole bool
 }
 
+// Known single-artist names that contain commas and/or conjunctions.
+// Examples: "Earth, Wind & Fire", "Crosby, Stills & Nash"
+var knownSingleArtists = []string{
+	"Earth, Wind & Fire",
+	"Crosby, Stills & Nash",
+	"Crosby, Stills, Nash & Young",
+	"Three Days Grace",
+}
+
 func isSingleArtistName(name string) bool {
 	if !strings.Contains(name, ",") {
 		return false
 	}
 
-	// Exclude multi-artist patterns (" & " and " and ") but only if there's no comma.
-	// Names with commas (like "Earth, Wind & Fire") should proceed through the comma logic.
-	if !strings.Contains(name, ",") && (strings.Contains(name, " & ") || strings.Contains(name, " and ")) {
-		return false
+	// Check known single-artist whitelist first (case-insensitive).
+	lowerName := strings.ToLower(name)
+	for _, known := range knownSingleArtists {
+		if strings.ToLower(known) == lowerName {
+			return true
+		}
+	}
+
+	// Treat names with commas AND conjunctions as single-artist stylized names.
+	if strings.Contains(name, ",") && (strings.Contains(name, " & ") || strings.Contains(name, " and ")) {
+		return true
 	}
 
 	if strings.Count(name, ",") > 1 {
@@ -49,8 +65,10 @@ func isSingleArtistName(name string) bool {
 		return strings.ContainsAny(beforeComma+afterComma, ".")
 	}
 
-	for _, article := range []string{"The ", "A ", "An "} {
-		if strings.HasPrefix(afterComma, article) {
+	// Check for article prefixes (case-insensitive).
+	lowerAfterComma := strings.ToLower(afterComma)
+	for _, article := range []string{"the ", "a ", "an "} {
+		if strings.HasPrefix(lowerAfterComma, article) {
 			return true
 		}
 	}
