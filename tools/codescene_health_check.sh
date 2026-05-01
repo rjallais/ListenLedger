@@ -78,7 +78,14 @@ fi
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cs_mcp.XXXXXX")"
 FIFO="$TMP_DIR/in"
 OUT="$TMP_DIR/out"
-cleanup() { rm -rf "$TMP_DIR"; }
+cleanup() {
+	exec 3>&- 2>/dev/null || true
+	if [[ -n "${MCP_PID:-}" ]]; then
+		kill "$MCP_PID" 2>/dev/null || true
+		wait "$MCP_PID" 2>/dev/null || true
+	fi
+	rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT
 mkfifo "$FIFO"
 touch "$OUT"
@@ -134,9 +141,7 @@ if [ "${count:-0}" -lt "$expected" ]; then
 fi
 
 # Close the FIFO (sends EOF to cs-mcp) and wait for it to exit.
-exec 3>&-
-kill "$MCP_PID" 2>/dev/null || true
-wait "$MCP_PID" 2>/dev/null || true
+exec 3>&- 2>/dev/null || true
 
 # 4) Parse responses: extract scores keyed by message id (id >= 2).
 mapfile -t score_rows < <(python3 -c '
