@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Batch CodeScene code health check via MCP JSON-RPC
-# Usage: CS_ACCESS_TOKEN=pat_... bash tools/codescene_health_check.sh
+# Usage: CODESCENE_PAT=pat_... bash tools/codescene_health_check.sh
 #
 # Uses a single long-lived cs-mcp process (via named pipe) instead of
 # spawning a new MCP session per file. The initialize + notifications/initialized
