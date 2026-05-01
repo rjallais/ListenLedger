@@ -286,11 +286,10 @@ func parseSpotifyIDs(raw string) ([]string, error) {
 		if !isValidSpotifyID(spotifyID) {
 			return nil, fmt.Errorf("artist_spotify_ids must contain 22-character alphanumeric values")
 		}
-		key := strings.ToLower(spotifyID)
-		if seen[key] {
+		if seen[spotifyID] {
 			continue
 		}
-		seen[key] = true
+		seen[spotifyID] = true
 		out = append(out, spotifyID)
 	}
 	if len(out) == 0 {
