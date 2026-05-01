@@ -37,9 +37,15 @@ func isSingleArtistName(name string) bool {
 		return false
 	}
 
-	// "nothing,nowhere." style
+	// "nothing,nowhere." style, but avoid compact multi-artist values like "A,B".
 	if !strings.Contains(name, ", ") {
-		return true
+		beforeComma := strings.TrimSpace(parts[0])
+		// Reject very short tokens that look like "A,B" style multi-artist
+		if len(beforeComma) <= 2 || len(afterComma) <= 2 {
+			return false
+		}
+		// Accept stylized names that contain a period (e.g., "nothing,nowhere.")
+		return strings.ContainsAny(beforeComma+afterComma, ".")
 	}
 
 	for _, article := range []string{"The ", "A ", "An "} {
