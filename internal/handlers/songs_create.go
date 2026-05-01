@@ -365,6 +365,10 @@ func (h *Handler) fetchArtistNameFromSpotify(ctx context.Context, spotifyID stri
 		return "", http.StatusBadGateway, fmt.Errorf("failed to infer artist name from spotify_id")
 	}
 
+	if h.httpClient == nil {
+		return "", http.StatusInternalServerError, fmt.Errorf("spotify http client is not configured")
+	}
+
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify to infer artist name")
