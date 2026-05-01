@@ -667,12 +667,18 @@ func (h *Handler) createAlbumRecordTx(txApp core.App, p albumUpsertParams) error
 		return err
 	}
 
+	newTotal := p.TotalSongs
+	if newTotal < 1 {
+		newTotal = 1
+	}
+
 	record := core.NewRecord(collection)
 	record.Set("title", p.AlbumName)
 	record.Set("artist_name", p.PrimaryArtist)
-	record.Set("release_type", p.ReleaseType)
-	record.Set("total_songs", p.TotalSongs)
 	record.Set("collection_songs", 1)
+	record.Set("total_songs", newTotal)
+	record.Set("release_type", p.ReleaseType)
+	record.Set("status", "waiting")
 	return txApp.Save(record)
 }
 
