@@ -437,7 +437,8 @@ func (h *Handler) upsertAlbumForSong(p albumUpsertParams) error {
 	return h.createAlbumRecord(p)
 }
 
-func (h *Handler) updateExistingAlbum(record *core.Record, p albumUpsertParams) error {
+// mutateAlbumRecord applies field updates to an album record without persisting.
+func mutateAlbumRecord(record *core.Record, p albumUpsertParams) {
 	collectionSongs := record.GetInt("collection_songs") + 1
 	record.Set("collection_songs", collectionSongs)
 	existingTotal := record.GetInt("total_songs")
@@ -449,22 +450,16 @@ func (h *Handler) updateExistingAlbum(record *core.Record, p albumUpsertParams) 
 	if record.GetString("release_type") == "" && p.ReleaseType != "" {
 		record.Set("release_type", p.ReleaseType)
 	}
+}
+
+func (h *Handler) updateExistingAlbum(record *core.Record, p albumUpsertParams) error {
+	mutateAlbumRecord(record, p)
 	return h.app.Save(record)
 }
 
 // updateExistingAlbumTx is the transaction-aware variant of updateExistingAlbum.
 func (h *Handler) updateExistingAlbumTx(txApp core.App, record *core.Record, p albumUpsertParams) error {
-	collectionSongs := record.GetInt("collection_songs") + 1
-	record.Set("collection_songs", collectionSongs)
-	existingTotal := record.GetInt("total_songs")
-	if p.TotalSongs > existingTotal {
-		record.Set("total_songs", p.TotalSongs)
-	} else if collectionSongs > existingTotal {
-		record.Set("total_songs", collectionSongs)
-	}
-	if record.GetString("release_type") == "" && p.ReleaseType != "" {
-		record.Set("release_type", p.ReleaseType)
-	}
+	mutateAlbumRecord(record, p)
 	return txApp.Save(record)
 }
 
@@ -543,20 +538,22 @@ func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*cor
 }
 
 func (h *Handler) updateExistingArtist(record *core.Record, artistSpotifyID string) error {
-	record.Set("collection_songs", record.GetInt("collection_songs")+1)
-	if record.GetString("spotify_id") == "" {
-		record.Set("spotify_id", artistSpotifyID)
-	}
+	mutateArtistRecord(record, artistSpotifyID)
 	return h.app.Save(record)
 }
 
 // updateExistingArtistTx is the transaction-aware variant of updateExistingArtist.
 func (h *Handler) updateExistingArtistTx(txApp core.App, record *core.Record, artistSpotifyID string) error {
+	mutateArtistRecord(record, artistSpotifyID)
+	return txApp.Save(record)
+}
+
+// mutateArtistRecord applies field updates to an artist record without persisting.
+func mutateArtistRecord(record *core.Record, artistSpotifyID string) {
 	record.Set("collection_songs", record.GetInt("collection_songs")+1)
 	if record.GetString("spotify_id") == "" {
 		record.Set("spotify_id", artistSpotifyID)
 	}
-	return txApp.Save(record)
 }
 
 // lookupArtistRecordTx is the transaction-aware variant of lookupArtistRecord.
