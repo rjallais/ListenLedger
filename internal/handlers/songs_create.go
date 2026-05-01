@@ -331,17 +331,19 @@ func isBase62Char(c rune) bool {
 }
 
 func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID string) (string, int, error) {
-	if name, ok := h.lookupArtistLocally(spotifyID); ok {
+	if name, ok := h.lookupArtistLocally(ctx, spotifyID); ok {
 		return name, 0, nil
 	}
 	return h.fetchArtistNameFromSpotify(ctx, spotifyID)
 }
 
-func (h *Handler) lookupArtistLocally(spotifyID string) (string, bool) {
-	records, err := h.app.FindRecordsByFilter(
-		"artists", "spotify_id = {:spotify_id}", "", 1, 0,
-		dbx.Params{"spotify_id": spotifyID},
-	)
+func (h *Handler) lookupArtistLocally(ctx context.Context, spotifyID string) (string, bool) {
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("spotify_id = {:spotify_id}", dbx.Params{"spotify_id": spotifyID})).
+		Limit(1).
+		All(&records)
 	if err != nil || len(records) == 0 {
 		return "", false
 	}
