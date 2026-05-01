@@ -1,5 +1,6 @@
 //go:build goexperiment.jsonv2
 
+// Package songbackfill provides track-candidate selection and song backfill helpers.
 package songbackfill
 
 import "testing"
