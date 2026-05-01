@@ -474,16 +474,25 @@ func (h *Handler) upsertArtistsForSong(artists []string, artistSpotifyIDs []stri
 }
 
 func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*core.Record, error) {
-	records, err := h.app.FindRecordsByFilter(
-		"artists", "spotify_id = {:spotify_id}", "", 1, 0,
-		dbx.Params{"spotify_id": artistSpotifyID},
-	)
-	if err != nil {
-		return nil, err
+	artistSpotifyID = strings.TrimSpace(artistSpotifyID)
+	
+	// If we have a Spotify ID, search by it first
+	if artistSpotifyID != "" {
+		records, err := h.app.FindRecordsByFilter(
+			"artists", "spotify_id = {:spotify_id}", "", 1, 0,
+			dbx.Params{"spotify_id": artistSpotifyID},
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(records) > 0 {
+			return records, nil
+		}
+		// If we have a spotify_id but find no match, return empty (don't fall back to name)
+		return []*core.Record{}, nil
 	}
-	if len(records) > 0 {
-		return records, nil
-	}
+	
+	// Only use name fallback for legacy rows without a Spotify ID
 	return h.app.FindRecordsByFilter(
 		"artists", "name = {:name}", "", 1, 0,
 		dbx.Params{"name": artistName},
