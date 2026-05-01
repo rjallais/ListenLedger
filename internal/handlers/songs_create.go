@@ -32,15 +32,16 @@ type songFormInput struct {
 	ArtistSpotifyIDs  []string
 }
 
-func parseTotalSongs(r *http.Request) int {
+func parseTotalSongs(r *http.Request) (int, int, string) {
 	ts := strings.TrimSpace(r.FormValue("total_songs"))
 	if ts == "" {
-		return 0
+		return 0, 0, ""
 	}
-	if parsed, err := strconv.Atoi(ts); err == nil && parsed > 0 {
-		return parsed
+	parsed, err := strconv.Atoi(ts)
+	if err != nil || parsed < 1 {
+		return 0, http.StatusBadRequest, "total_songs must be a positive integer"
 	}
-	return 0
+	return parsed, 0, ""
 }
 
 func parseArtistIDsField(r *http.Request) ([]string, int, string) {
@@ -82,6 +83,11 @@ func validateSongForm(r *http.Request) (songFormInput, int, string) {
 		return songFormInput{}, status, errMsg
 	}
 
+	totalSongsOnAlbum, status, errMsg := parseTotalSongs(r)
+	if errMsg != "" {
+		return songFormInput{}, status, errMsg
+	}
+
 	albumName := strings.TrimSpace(r.FormValue("album"))
 	if albumName == "" {
 		return songFormInput{}, http.StatusBadRequest, "album is required"
@@ -93,7 +99,7 @@ func validateSongForm(r *http.Request) (songFormInput, int, string) {
 		ReleaseType:       releaseType,
 		ReleaseDateRaw:    releaseDateRaw,
 		ReleaseYear:       releaseYear,
-		TotalSongsOnAlbum: parseTotalSongs(r),
+		TotalSongsOnAlbum: totalSongsOnAlbum,
 		NewArtistGenre:    newArtistGenre,
 		ArtistSpotifyIDs:  artistSpotifyIDs,
 	}, 0, ""
