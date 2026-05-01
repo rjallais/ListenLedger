@@ -459,6 +459,16 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
 	}
 
+	correlation.Associate(record.Id, requestID)
+	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
+		if rollbackErr := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); rollbackErr != nil {
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
+		} else {
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
+		}
+		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
+	}
+
 	req := messaging.NewScrapeRequested(
 		record.Id,
 		record.GetString("spotify_id"),
@@ -479,16 +489,6 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	if ack != nil && ack.Duplicate {
 		return requestID, true, nil
-	}
-
-	correlation.Associate(record.Id, requestID)
-	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
-		if rollbackErr := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); rollbackErr != nil {
-			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
-		} else {
-			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
-		}
-		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
 	}
 
 	return requestID, false, nil
