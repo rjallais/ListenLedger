@@ -798,7 +798,9 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	correlation.Associate(target.ID, requestID)
 	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
 		log.Printf("[queueArtistRefreshFromSong] failed to create scrape job for artist %s: %v", target.ID, err)
-		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rollbackCancel()
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(rollbackCtx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
 			return fmt.Errorf("queueArtistRefreshFromSong: create scrape job record: %w (cleanup failed: %v)", err, rollbackErr)
 		}
 		return fmt.Errorf("queueArtistRefreshFromSong: create scrape job record: %w", err)
@@ -809,13 +811,17 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rollbackCancel()
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(rollbackCtx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
 			return fmt.Errorf("queueArtistRefreshFromSong: publish scrape request: %w (cleanup failed: %v)", err, rollbackErr)
 		}
 		return fmt.Errorf("queueArtistRefreshFromSong: publish scrape request: %w", err)
 	}
 	if ack != nil && ack.Duplicate {
-		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rollbackCancel()
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(rollbackCtx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
 			return fmt.Errorf("queueArtistRefreshFromSong: duplicate scrape request cleanup failed: %w", rollbackErr)
 		}
 		return nil
