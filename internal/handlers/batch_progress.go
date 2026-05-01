@@ -74,7 +74,7 @@ func (h *Handler) ensureBatchProgressSubscriber() {
 }
 
 func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
-	if artistID == "" || (fetchStatus != "idle" && fetchStatus != "failed") {
+	if !isCompletedFetchStatus(artistID, fetchStatus) {
 		return
 	}
 
@@ -102,6 +102,10 @@ func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
 		batch.Done = true
 	}
 	batch.UpdatedAt = time.Now()
+}
+
+func isCompletedFetchStatus(artistID, fetchStatus string) bool {
+	return artistID != "" && (fetchStatus == "idle" || fetchStatus == "failed")
 }
 
 func (h *Handler) createBatchProgress(artistIDs []string, stats map[string]int) batchProgressSnapshot {
@@ -143,6 +147,14 @@ func (h *Handler) createBatchProgress(artistIDs []string, stats map[string]int) 
 }
 
 func (h *Handler) pruneBatchStateLocked(cutoff time.Time) {
+	h.removeCompletedBatchesLocked(cutoff)
+	h.removeOrphanedArtistMappingsLocked()
+	if h.latestBatch == "" {
+		h.latestBatch = h.findLatestBatchIDLocked()
+	}
+}
+
+func (h *Handler) removeCompletedBatchesLocked(cutoff time.Time) {
 	for batchID, batch := range h.batches {
 		if !batch.Done || batch.UpdatedAt.After(cutoff) {
 			continue
@@ -152,18 +164,18 @@ func (h *Handler) pruneBatchStateLocked(cutoff time.Time) {
 			h.latestBatch = ""
 		}
 	}
+}
 
+func (h *Handler) removeOrphanedArtistMappingsLocked() {
 	for artistID, batchID := range h.artistBatch {
 		if _, ok := h.batches[batchID]; ok {
 			continue
 		}
 		delete(h.artistBatch, artistID)
 	}
+}
 
-	if h.latestBatch != "" {
-		return
-	}
-
+func (h *Handler) findLatestBatchIDLocked() string {
 	var latestID string
 	var latestTime time.Time
 	for batchID, batch := range h.batches {
@@ -172,7 +184,7 @@ func (h *Handler) pruneBatchStateLocked(cutoff time.Time) {
 			latestTime = batch.UpdatedAt
 		}
 	}
-	h.latestBatch = latestID
+	return latestID
 }
 
 func (h *Handler) getBatchSnapshot(batchID string) (batchProgressSnapshot, bool) {
@@ -191,22 +203,11 @@ func (h *Handler) getBatchSnapshot(batchID string) (batchProgressSnapshot, bool)
 }
 
 func (h *Handler) getActiveBatchSnapshot() (batchProgressSnapshot, bool) {
-	h.batchMu.RLock()
-	defer h.batchMu.RUnlock()
-
-	batchID := h.latestBatch
-	if batchID == "" {
+	snapshot, ok := h.getLatestBatchSnapshot()
+	if ok && snapshot.Done {
 		return batchProgressSnapshot{}, false
 	}
-	batch, ok := h.batches[batchID]
-	if !ok {
-		return batchProgressSnapshot{}, false
-	}
-	snapshot := h.batchSnapshotLocked(batch)
-	if snapshot.Done {
-		return batchProgressSnapshot{}, false
-	}
-	return snapshot, true
+	return snapshot, ok
 }
 
 func (h *Handler) getLatestBatchSnapshot() (batchProgressSnapshot, bool) {

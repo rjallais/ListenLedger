@@ -121,9 +121,7 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 	records, err := w.app.FindRecordsByFilter(
 		"scrape_jobs",
 		"artist = {:artist} && status = {:status} && request_id != {:request_id}",
-		"",
-		500,
-		0,
+		"", 500, 0,
 		dbx.Params{
 			"artist":     artistID,
 			"status":     "failed",
@@ -139,18 +137,26 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 		return
 	}
 
-	note := "recovered_by_retry"
-	if strings.TrimSpace(succeededRequestID) != "" {
-		note = "recovered_by_retry:" + succeededRequestID
-	}
+	note := reconciliationNote(succeededRequestID)
+	w.reconcileFailedJobs(records, note)
+}
 
+func reconciliationNote(succeededRequestID string) string {
+	if strings.TrimSpace(succeededRequestID) != "" {
+		return "recovered_by_retry:" + succeededRequestID
+	}
+	return "recovered_by_retry"
+}
+
+func (w *Worker) reconcileFailedJobs(records []*core.Record, note string) {
 	for _, rec := range records {
 		rec.Set("status", "succeeded")
 		rec.Set("finished_at", time.Now())
-		if rec.GetString("error") == "" {
+		existingErr := rec.GetString("error")
+		if existingErr == "" {
 			rec.Set("error", note)
 		} else {
-			rec.Set("error", note+" | "+rec.GetString("error"))
+			rec.Set("error", note+" | "+existingErr)
 		}
 		if saveErr := w.app.Save(rec); saveErr != nil {
 			log.Printf("[worker] Warning: failed to reconcile failed job %s: %v", rec.Id, saveErr)
