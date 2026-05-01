@@ -523,7 +523,10 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	}
 
 	correlation.Associate(target.ID, requestID)
-	h.createScrapeJobRecord(ctx, requestID, target.ID)
+	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
+		log.Printf("[queueArtistRefreshFromSong] failed to create scrape job for artist %s: %v", target.ID, err)
+		return err
+	}
 
 	record, err := h.app.FindRecordById("artists", target.ID, func(q *dbx.SelectQuery) error {
 		q.WithContext(ctx)
