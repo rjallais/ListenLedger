@@ -223,7 +223,8 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 	})
 
 	if txErr != nil {
-		return nil, &songSaveError{http.StatusInternalServerError, txErr.Error()}
+		log.Printf("[handleCreateSong] persistSongWithMetadata failed: %v", txErr)
+		return nil, &songSaveError{http.StatusInternalServerError, "failed to save song"}
 	}
 
 	// Queue artist refreshes only after transaction succeeds (post-commit)
