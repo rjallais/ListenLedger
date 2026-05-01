@@ -104,15 +104,28 @@ exec 3>"$FIFO"
 printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health-check","version":"0.1"}}}\n' >&3
 
 # Wait for initialize response (id=1) before proceeding
-timeout=30
+init_timeout_tenths=300   # 30s total with 0.1s sleep
 elapsed=0
-while [ $elapsed -lt $timeout ]; do
-	if python3 -c "import json, sys; [print(1) for line in open(sys.argv[1]) if (obj := json.loads(line.strip() or '{}')) and obj.get('id') == 1]" "$OUT" 2>/dev/null | grep -q 1; then
+init_seen=0
+while [ "$elapsed" -lt "$init_timeout_tenths" ]; do
+	if python3 -c "import json, sys
+for line in open(sys.argv[1]):
+    try: obj=json.loads(line.strip() or '{}')
+    except: continue
+    if obj.get('id') == 1 and ('result' in obj or 'error' in obj):
+        print('ok' if 'result' in obj else 'error')
+        break" "$OUT" 2>/dev/null | grep -q '^ok$'; then
+		init_seen=1
 		break
 	fi
 	sleep 0.1
 	elapsed=$((elapsed + 1))
 done
+
+if [ "$init_seen" -ne 1 ]; then
+	echo "[codescene] Timed out waiting for MCP initialize response after 30s" >&2
+	exit 1
+fi
 
 printf '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}\n' >&3
 
