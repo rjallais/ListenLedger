@@ -182,6 +182,9 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 }
 
 func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInput, artists []string) (*core.Record, *songSaveError) {
+	if len(artists) == 0 {
+		return nil, &songSaveError{http.StatusBadRequest, "at least one artist is required"}
+	}
 	if err := h.upsertAlbumForSong(albumUpsertParams{
 		AlbumName:     input.AlbumName,
 		PrimaryArtist: artists[0],
