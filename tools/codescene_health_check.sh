@@ -169,7 +169,7 @@ for mid in sorted(scores):
 ' "$OUT")
 
 # 5) Print results table.
-echo "$(printf '%-55s SCORE' 'FILE')"
+printf '%-55s SCORE\n' 'FILE'
 echo "-----------------------------------------------------------------"
 
 for i in "${!valid_files[@]}"; do
