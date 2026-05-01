@@ -507,6 +507,42 @@ func (h *Handler) updateExistingArtist(record *core.Record, artistSpotifyID stri
 	return h.app.Save(record)
 }
 
+// updateExistingArtistTx is the transaction-aware variant of updateExistingArtist.
+func (h *Handler) updateExistingArtistTx(txApp core.App, record *core.Record, artistSpotifyID string) error {
+	record.Set("collection_songs", record.GetInt("collection_songs")+1)
+	if record.GetString("spotify_id") == "" {
+		record.Set("spotify_id", artistSpotifyID)
+	}
+	return txApp.Save(record)
+}
+
+// lookupArtistRecordTx is the transaction-aware variant of lookupArtistRecord.
+func (h *Handler) lookupArtistRecordTx(txApp core.App, artistName, artistSpotifyID string) ([]*core.Record, error) {
+	artistSpotifyID = strings.TrimSpace(artistSpotifyID)
+	
+	// If we have a Spotify ID, search by it first
+	if artistSpotifyID != "" {
+		records, err := txApp.FindRecordsByFilter(
+			"artists", "spotify_id = {:spotify_id}", "", 1, 0,
+			dbx.Params{"spotify_id": artistSpotifyID},
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(records) > 0 {
+			return records, nil
+		}
+		// If we have a spotify_id but find no match, return empty (don't fall back to name)
+		return []*core.Record{}, nil
+	}
+	
+	// Only use name fallback for legacy rows without a Spotify ID
+	return txApp.FindRecordsByFilter(
+		"artists", "name = {:name}", "", 1, 0,
+		dbx.Params{"name": artistName},
+	)
+}
+
 func (h *Handler) findOrCreateArtist(collection *core.Collection, artistName, artistSpotifyID, newArtistGenre string) (songNewArtistTarget, bool, error) {
 	records, err := h.lookupArtistRecord(artistName, artistSpotifyID)
 	if err != nil {
@@ -582,16 +618,13 @@ func (h *Handler) upsertArtistRecordTx(txApp core.App, artistName, artistSpotify
 		return songNewArtistTarget{}, false, err
 	}
 
-	records, err := txApp.FindRecordsByFilter(
-		"artists", "name = {:name}", "", 1, 0,
-		dbx.Params{"name": artistName},
-	)
+	records, err := h.lookupArtistRecordTx(txApp, artistName, artistSpotifyID)
 	if err != nil {
 		return songNewArtistTarget{}, false, err
 	}
 
 	if len(records) > 0 {
-		return songNewArtistTarget{}, false, h.updateExistingArtist(records[0], artistSpotifyID)
+		return songNewArtistTarget{}, false, h.updateExistingArtistTx(txApp, records[0], artistSpotifyID)
 	}
 
 	record := core.NewRecord(collection)
