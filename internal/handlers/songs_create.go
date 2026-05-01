@@ -213,7 +213,7 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 		newArtistsToQueue = newArtists
 
 		// Create song record (within transaction)
-		songRecord, err := h.createSongRecordTx(txApp, input, artists)
+		songRecord, err := h.createSongRecordTx(ctx, txApp, input, artists)
 		if err != nil {
 			log.Printf("[handleCreateSong] createSongRecord failed: %v", err)
 			return fmt.Errorf("failed to create song record: %w", err)
@@ -683,15 +683,14 @@ func (h *Handler) createAlbumRecordTx(txApp core.App, p albumUpsertParams) error
 }
 
 // createSongRecordTx is the transaction-aware variant of createSongRecord.
-func (h *Handler) createSongRecordTx(txApp core.App, input songFormInput, artists []string) (*core.Record, *songSaveError) {
+func (h *Handler) createSongRecordTx(ctx context.Context, txApp core.App, input songFormInput, artists []string) (*core.Record, *songSaveError) {
 	collection, err := txApp.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}
 	}
 
-	// Note: nextRecentBatchAssignment uses h.app directly, which is intentional
-	// since batch assignment requires access to the actual app, not transaction variant
-	batchSeq, batchPos, err := h.nextRecentBatchAssignment(context.Background(), time.Now())
+	// Use the request context so cancellation/deadlines propagate to batch assignment
+	batchSeq, batchPos, err := h.nextRecentBatchAssignment(ctx, time.Now())
 	if err != nil {
 		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
 		return nil, &songSaveError{http.StatusInternalServerError, "failed to assign recent batch"}
