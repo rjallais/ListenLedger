@@ -185,28 +185,55 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 	if len(artists) == 0 {
 		return nil, &songSaveError{http.StatusBadRequest, "at least one artist is required"}
 	}
-	if err := h.upsertAlbumForSong(albumUpsertParams{
-		AlbumName:     input.AlbumName,
-		PrimaryArtist: artists[0],
-		ReleaseType:   input.ReleaseType,
-		TotalSongs:    input.TotalSongsOnAlbum,
-	}); err != nil {
-		log.Printf("[handleCreateSong] upsertAlbumForSong failed: %v", err)
-		return nil, &songSaveError{http.StatusInternalServerError, "failed to update album metadata"}
+
+	var song *core.Record
+	var newArtistsToQueue []songNewArtistTarget
+	var txErr error
+
+	// Wrap all mutations in a transaction to ensure atomicity:
+	// either all changes commit or none do.
+	txErr = h.app.RunInTransaction(func(txApp core.App) error {
+		// Upsert album record
+		if err := h.upsertAlbumForSongTx(txApp, albumUpsertParams{
+			AlbumName:     input.AlbumName,
+			PrimaryArtist: artists[0],
+			ReleaseType:   input.ReleaseType,
+			TotalSongs:    input.TotalSongsOnAlbum,
+		}); err != nil {
+			log.Printf("[handleCreateSong] upsertAlbumForSong failed: %v", err)
+			return fmt.Errorf("failed to update album metadata: %w", err)
+		}
+
+		// Upsert artist records
+		newArtists, err := h.upsertArtistsForSongTx(txApp, artists, input.ArtistSpotifyIDs, input.NewArtistGenre)
+		if err != nil {
+			log.Printf("[handleCreateSong] upsertArtistsForSong failed: %v", err)
+			return fmt.Errorf("failed to update artist metadata: %w", err)
+		}
+		newArtistsToQueue = newArtists
+
+		// Create song record (within transaction)
+		songRecord, err := h.createSongRecordTx(txApp, input, artists)
+		if err != nil {
+			log.Printf("[handleCreateSong] createSongRecord failed: %v", err)
+			return fmt.Errorf("failed to create song record: %w", err)
+		}
+		song = songRecord
+		return nil
+	})
+
+	if txErr != nil {
+		return nil, &songSaveError{http.StatusInternalServerError, txErr.Error()}
 	}
 
-	newArtists, err := h.upsertArtistsForSong(artists, input.ArtistSpotifyIDs, input.NewArtistGenre)
-	if err != nil {
-		log.Printf("[handleCreateSong] upsertArtistsForSong failed: %v", err)
-		return nil, &songSaveError{http.StatusInternalServerError, "failed to update artist metadata"}
-	}
-	for _, target := range newArtists {
+	// Queue artist refreshes only after transaction succeeds (post-commit)
+	for _, target := range newArtistsToQueue {
 		if queueErr := h.queueArtistRefreshFromSong(ctx, target); queueErr != nil {
 			log.Printf("[handleCreateSong] Warning: failed to queue refresh for new artist %s (%s): %v", target.Name, target.ID, queueErr)
 		}
 	}
 
-	return h.createSongRecord(ctx, input, artists)
+	return song, nil
 }
 
 type songSaveError struct {
@@ -496,6 +523,134 @@ func (h *Handler) findOrCreateArtist(collection *core.Collection, artistName, ar
 		return songNewArtistTarget{}, false, err
 	}
 	return songNewArtistTarget{ID: record.Id, Name: artistName, SpotifyID: artistSpotifyID}, true, nil
+}
+
+// upsertAlbumForSongTx is the transaction-aware variant of upsertAlbumForSong.
+func (h *Handler) upsertAlbumForSongTx(txApp core.App, p albumUpsertParams) error {
+	filter := "title = {:title} && artist_name = {:artist_name}"
+	params := dbx.Params{"title": p.AlbumName, "artist_name": p.PrimaryArtist}
+	if p.ReleaseType != "" {
+		filter += " && release_type = {:release_type}"
+		params["release_type"] = p.ReleaseType
+	}
+	records, err := txApp.FindRecordsByFilter(
+		"albums",
+		filter,
+		"", 1, 0,
+		params,
+	)
+	if err != nil {
+		return err
+	}
+	if len(records) > 0 {
+		return h.updateExistingAlbum(records[0], p)
+	}
+	return h.createAlbumRecordTx(txApp, p)
+}
+
+// upsertArtistsForSongTx is the transaction-aware variant of upsertArtistsForSong.
+func (h *Handler) upsertArtistsForSongTx(txApp core.App, artists []string, artistSpotifyIDs []string, newArtistGenre string) ([]songNewArtistTarget, error) {
+	if len(artists) != len(artistSpotifyIDs) {
+		return nil, fmt.Errorf("artists and artistSpotifyIDs length mismatch: %d vs %d", len(artists), len(artistSpotifyIDs))
+	}
+
+	results := make([]songNewArtistTarget, 0, len(artists))
+	for i, artistName := range artists {
+		target, isNew, err := h.upsertArtistRecordTx(txApp, artistName, artistSpotifyIDs[i], newArtistGenre)
+		if err != nil {
+			return nil, err
+		}
+		if isNew {
+			results = append(results, target)
+		}
+	}
+	return results, nil
+}
+
+// upsertArtistRecordTx is the transaction-aware variant for upserting a single artist.
+func (h *Handler) upsertArtistRecordTx(txApp core.App, artistName, artistSpotifyID, newArtistGenre string) (songNewArtistTarget, bool, error) {
+	collection, err := txApp.FindCollectionByNameOrId("artists")
+	if err != nil {
+		return songNewArtistTarget{}, false, err
+	}
+
+	records, err := txApp.FindRecordsByFilter(
+		"artists", "name = {:name}", "", 1, 0,
+		dbx.Params{"name": artistName},
+	)
+	if err != nil {
+		return songNewArtistTarget{}, false, err
+	}
+
+	if len(records) > 0 {
+		return songNewArtistTarget{}, false, h.updateExistingArtist(records[0], artistSpotifyID)
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("name", artistName)
+	record.Set("spotify_id", artistSpotifyID)
+	record.Set("monthly_listeners", 0)
+	record.Set("genre_group", newArtistGenre)
+	record.Set("list_status", "not_added")
+	record.Set("fetch_status", "idle")
+	record.Set("collection_songs", 1)
+	record.Set("total_songs", 0)
+	record.Set("last_updated", time.Now())
+	if err := txApp.Save(record); err != nil {
+		return songNewArtistTarget{}, false, err
+	}
+	return songNewArtistTarget{ID: record.Id, Name: artistName, SpotifyID: artistSpotifyID}, true, nil
+}
+
+// createAlbumRecordTx is the transaction-aware variant of createAlbumRecord.
+func (h *Handler) createAlbumRecordTx(txApp core.App, p albumUpsertParams) error {
+	collection, err := txApp.FindCollectionByNameOrId("albums")
+	if err != nil {
+		return err
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("title", p.AlbumName)
+	record.Set("artist_name", p.PrimaryArtist)
+	record.Set("release_type", p.ReleaseType)
+	record.Set("total_songs", p.TotalSongs)
+	record.Set("collection_songs", 1)
+	return txApp.Save(record)
+}
+
+// createSongRecordTx is the transaction-aware variant of createSongRecord.
+func (h *Handler) createSongRecordTx(txApp core.App, input songFormInput, artists []string) (*core.Record, *songSaveError) {
+	collection, err := txApp.FindCollectionByNameOrId("songs")
+	if err != nil {
+		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}
+	}
+
+	// Note: nextRecentBatchAssignment uses h.app directly, which is intentional
+	// since batch assignment requires access to the actual app, not transaction variant
+	batchSeq, batchPos, err := h.nextRecentBatchAssignment(context.Background(), time.Now())
+	if err != nil {
+		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
+		return nil, &songSaveError{http.StatusInternalServerError, "failed to assign recent batch"}
+	}
+
+	record := core.NewRecord(collection)
+	record.Set("title", input.SongName)
+	record.Set("artist_name", strings.Join(artists, ", "))
+	record.Set("album", input.AlbumName)
+	record.Set("release_type", input.ReleaseType)
+	record.Set("release_year", input.ReleaseYear)
+	record.Set("release_date", input.ReleaseDateRaw)
+	record.Set("artist_spotify_ids", strings.Join(input.ArtistSpotifyIDs, ","))
+	record.Set("spotify_id", "")
+	record.Set("is_recent", true)
+	record.Set("recent_batch_seq", batchSeq)
+	record.Set("recent_batch_pos", batchPos)
+
+	if err := txApp.Save(record); err != nil {
+		log.Printf("[handleCreateSong] song save failed: %v", err)
+		return nil, &songSaveError{http.StatusInternalServerError, "failed to create song"}
+	}
+	return record, nil
 }
 
 func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNewArtistTarget) error {
