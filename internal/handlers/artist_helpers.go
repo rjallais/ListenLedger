@@ -482,7 +482,14 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 	}
 
 	correlation.Associate(record.Id, requestID)
-	h.createScrapeJobRecord(ctx, requestID, record.Id)
+	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
+		if rollbackErr := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); rollbackErr != nil {
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
+		} else {
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
+		}
+		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
+	}
 
 	return requestID, false, nil
 }
