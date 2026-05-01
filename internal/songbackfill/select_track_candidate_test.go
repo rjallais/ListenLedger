@@ -30,8 +30,8 @@ func TestSelectTrackCandidatePrefersCorroboratedGroup(t *testing.T) {
 	if !ok || ambiguous {
 		t.Fatalf("ok=%v ambiguous=%v notes=%v, want corroborated selection", ok, ambiguous, notes)
 	}
-	if selected.Source != "deezer_track" && selected.Source != "musicbrainz_recording" {
-		t.Fatalf("selected.Source = %q", selected.Source)
+	if selected.Source != "musicbrainz_recording" {
+		t.Fatalf("selected.Source = %q, want highest-confidence corroborated candidate", selected.Source)
 	}
 	if got := normalizedArtistListKey(selected.ArtistNames); got != normalizedArtistListKey([]string{"Dimitri Vegas & Like Mike", "David Guetta", "Kiiara"}) {
 		t.Fatalf("selected artist list = %q", got)
