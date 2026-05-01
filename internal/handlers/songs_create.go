@@ -475,7 +475,7 @@ func (h *Handler) upsertArtistsForSong(artists []string, artistSpotifyIDs []stri
 
 func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*core.Record, error) {
 	artistSpotifyID = strings.TrimSpace(artistSpotifyID)
-	
+
 	// If we have a Spotify ID, search by it first
 	if artistSpotifyID != "" {
 		records, err := h.app.FindRecordsByFilter(
@@ -491,7 +491,7 @@ func (h *Handler) lookupArtistRecord(artistName, artistSpotifyID string) ([]*cor
 		// If we have a spotify_id but find no match, return empty (don't fall back to name)
 		return []*core.Record{}, nil
 	}
-	
+
 	// Only use name fallback for legacy rows without a Spotify ID
 	return h.app.FindRecordsByFilter(
 		"artists", "name = {:name}", "", 1, 0,
@@ -660,6 +660,51 @@ func (h *Handler) createSongRecordTx(txApp core.App, input songFormInput, artist
 	}
 	return record, nil
 }
+func (h *Handler) rollbackSongArtistRefreshQueue(ctx context.Context, record *core.Record, previousFetchStatus, requestID, artistID string) error {
+	correlation.Clear(artistID)
+
+	cleanupFailures := make([]string, 0, 2)
+	if err := h.deleteScrapeJobRecordByRequestID(ctx, requestID, artistID); err != nil {
+		cleanupFailures = append(cleanupFailures, fmt.Sprintf("delete scrape job: %v", err))
+	}
+	if err := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); err != nil {
+		cleanupFailures = append(cleanupFailures, fmt.Sprintf("restore artist fetch_status: %v", err))
+	}
+	if len(cleanupFailures) > 0 {
+		return fmt.Errorf("%s", strings.Join(cleanupFailures, "; "))
+	}
+
+	return nil
+}
+
+func (h *Handler) deleteScrapeJobRecordByRequestID(ctx context.Context, requestID, artistID string) error {
+	requestID = strings.TrimSpace(requestID)
+	artistID = strings.TrimSpace(artistID)
+	if requestID == "" || artistID == "" {
+		return nil
+	}
+
+	records := make([]*core.Record, 0, 1)
+	err := h.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("request_id = {:request_id} AND artist = {:artist}", dbx.Params{
+			"request_id": requestID,
+			"artist":     artistID,
+		})).
+		Limit(1).
+		All(&records)
+	if err != nil {
+		return fmt.Errorf("query scrape job for rollback: %w", err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	if err := h.app.Delete(records[0]); err != nil {
+		return fmt.Errorf("delete scrape job %s: %w", records[0].Id, err)
+	}
+	return nil
+}
 
 func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNewArtistTarget) error {
 	if target.ID == "" || target.SpotifyID == "" {
@@ -673,34 +718,44 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 		target.Name,
 		requestID,
 	)
+	record, err := h.app.FindRecordById("artists", target.ID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("queueArtistRefreshFromSong: find artist %s: %w", target.ID, err)
+	}
+	previousFetchStatus := record.GetString("fetch_status")
+
+	record.Set("fetch_status", "pending")
+	if err := h.app.SaveWithContext(ctx, record); err != nil {
+		return fmt.Errorf("queueArtistRefreshFromSong: mark artist pending: %w", err)
+	}
+
+	correlation.Associate(target.ID, requestID)
+	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
+		log.Printf("[queueArtistRefreshFromSong] failed to create scrape job for artist %s: %v", target.ID, err)
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+			return fmt.Errorf("queueArtistRefreshFromSong: create scrape job record: %w (cleanup failed: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("queueArtistRefreshFromSong: create scrape job record: %w", err)
+	}
 
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		return err
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+			return fmt.Errorf("queueArtistRefreshFromSong: publish scrape request: %w (cleanup failed: %v)", err, rollbackErr)
+		}
+		return fmt.Errorf("queueArtistRefreshFromSong: publish scrape request: %w", err)
 	}
 	if ack != nil && ack.Duplicate {
+		if rollbackErr := h.rollbackSongArtistRefreshQueue(ctx, record, previousFetchStatus, requestID, target.ID); rollbackErr != nil {
+			return fmt.Errorf("queueArtistRefreshFromSong: duplicate scrape request cleanup failed: %w", rollbackErr)
+		}
 		return nil
-	}
-
-	correlation.Associate(target.ID, requestID)
-	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
-		log.Printf("[queueArtistRefreshFromSong] failed to create scrape job for artist %s: %v", target.ID, err)
-		return err
-	}
-
-	record, err := h.app.FindRecordById("artists", target.ID, func(q *dbx.SelectQuery) error {
-		q.WithContext(ctx)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	record.Set("fetch_status", "pending")
-	if err := h.app.SaveWithContext(ctx, record); err != nil {
-		return err
 	}
 
 	return nil
