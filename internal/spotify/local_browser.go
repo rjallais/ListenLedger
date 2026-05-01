@@ -21,8 +21,9 @@ import (
 )
 
 type localBrowser struct {
-	browser *rod.Browser
-	mu      sync.Mutex
+	browser  *rod.Browser
+	launcher *launcher.Launcher
+	mu       sync.Mutex
 
 	closed        bool
 	retired       bool
@@ -47,11 +48,18 @@ func (lb *localBrowser) Close() {
 	}
 	lb.closed = true
 	browser := lb.browser
+	launched := lb.launcher
 	lb.browser = nil
+	lb.launcher = nil
 	lb.mu.Unlock()
 
 	if browser != nil {
-		_ = browser.Close()
+		if err := browser.Close(); err != nil {
+			log.Printf("[spotify] Local headless: browser close failed: %v", err)
+		}
+	}
+	if launched != nil {
+		launched.Cleanup()
 	}
 }
 
@@ -185,11 +193,17 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 	browser = browser.Context(context.Background())
 
 	if cfg.LocalIgnoreCertErrors {
-		_ = browser.IgnoreCertErrors(true)
+		if err := browser.IgnoreCertErrors(true); err != nil {
+			log.Printf("[spotify] Local headless: failed to ignore cert errors: %v", err)
+		}
 	}
 
 	log.Printf("[spotify] Local headless browser connected (go-rod)")
-	return &localBrowser{browser: browser, retireWait: make(chan struct{})}, nil
+	return &localBrowser{
+		browser:    browser,
+		launcher:   l,
+		retireWait: make(chan struct{}),
+	}, nil
 }
 
 func (c *Client) getOrCreateBrowser(ctx context.Context) (*localBrowser, error) {
