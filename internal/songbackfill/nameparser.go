@@ -128,6 +128,9 @@ func requiresMultiArtistPrefill(raw string) bool {
 	if cleaned == "" {
 		return false
 	}
+	if isSingleArtistName(cleaned) {
+		return false
+	}
 	if strings.Contains(cleaned, "...") {
 		return true
 	}
@@ -138,6 +141,9 @@ func storedArtistMultiplicity(raw string) int {
 	cleaned := normalizeEllipsis(strings.TrimSpace(raw))
 	if cleaned == "" {
 		return 0
+	}
+	if isSingleArtistName(cleaned) {
+		return 1
 	}
 	parts := splitCommaList(cleaned)
 	if strings.Contains(cleaned, "...") {
