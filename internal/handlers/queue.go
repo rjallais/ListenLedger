@@ -34,14 +34,14 @@ func (h *Handler) publishScrapeRequest(ctx context.Context, req messaging.Scrape
 	return ack, nil
 }
 
-func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID string) {
+func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID string) error {
 	if requestID == "" || artistID == "" {
-		return
+		return errors.New("requestID and artistID are required")
 	}
 	jobs, err := h.app.FindCollectionByNameOrId("scrape_jobs")
 	if err != nil {
 		log.Printf("[handlers] Warning: scrape_jobs collection not found: %v", err)
-		return
+		return fmt.Errorf("scrape_jobs collection not found: %w", err)
 	}
 
 	job := core.NewRecord(jobs)
@@ -55,7 +55,9 @@ func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID
 	job.Set("finished_at", nil)
 	if err := h.app.SaveWithContext(ctx, job); err != nil {
 		log.Printf("[handlers] Warning: failed to create scrape job record: %v", err)
+		return fmt.Errorf("failed to create scrape job record: %w", err)
 	}
+	return nil
 }
 
 type queueRetryStats struct {
@@ -129,13 +131,12 @@ func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, see
 		return nil
 	})
 	if findErr != nil {
-		if errors.Is(findErr, sql.ErrNoRows) || artist == nil {
+		if errors.Is(findErr, sql.ErrNoRows) {
 			stats.InvalidArtist++
-		} else {
-			// Transient DB error - propagate to caller
-			return messaging.ScrapeRequested{}, nil, "", "", false, fmt.Errorf("failed to find artist %s: %w", artistID, findErr)
+			return messaging.ScrapeRequested{}, nil, "", "", false, nil
 		}
-		return messaging.ScrapeRequested{}, nil, "", "", false, nil
+		// Transient DB error - propagate to caller
+		return messaging.ScrapeRequested{}, nil, "", "", false, fmt.Errorf("failed to find artist %s: %w", artistID, findErr)
 	}
 	if artist == nil {
 		stats.InvalidArtist++
