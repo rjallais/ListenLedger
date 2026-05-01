@@ -75,11 +75,13 @@ if [[ ${#valid_files[@]} -eq 0 ]]; then
 fi
 
 # --- Single-session MCP via named pipe ---
-FIFO="/tmp/cs_mcp_fifo_$$"
-OUT="/tmp/cs_mcp_out_$$"
-cleanup() { rm -f "$FIFO" "$OUT"; }
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cs_mcp.XXXXXX")"
+FIFO="$TMP_DIR/in"
+OUT="$TMP_DIR/out"
+cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 mkfifo "$FIFO"
+touch "$OUT"
 
 # Start cs-mcp reading from the FIFO, writing stdout to a temp file.
 "${CS_MCP[@]}" < "$FIFO" > "$OUT" 2>>"${DEBUG:-/dev/null}" &
