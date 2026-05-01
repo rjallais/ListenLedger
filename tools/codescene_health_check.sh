@@ -139,7 +139,7 @@ kill "$MCP_PID" 2>/dev/null || true
 wait "$MCP_PID" 2>/dev/null || true
 
 # 4) Parse responses: extract scores keyed by message id (id >= 2).
-mapfile -t scores < <(python3 -c '
+mapfile -t score_rows < <(python3 -c '
 import json, re, sys
 
 scores = {}
@@ -172,8 +172,16 @@ for line in open(sys.argv[1]):
         scores[mid] = "NO_RESPONSE"
 
 for mid in sorted(scores):
-    print(scores[mid])
+    print(f"{mid}\t{scores[mid]}")
 ' "$OUT")
+
+# Build associative array to map message IDs to scores
+declare -A score_by_id=()
+for row in "${score_rows[@]}"; do
+	mid="${row%%$'\t'*}"
+	val="${row#*$'\t'}"
+	score_by_id["$mid"]="$val"
+done
 
 # 5) Print results table.
 printf '%-55s SCORE\n' 'FILE'
@@ -181,7 +189,8 @@ echo "-----------------------------------------------------------------"
 
 for i in "${!valid_files[@]}"; do
 	f="${valid_files[$i]}"
-	score="${scores[$i]:-NO_RESPONSE}"
+	msg_id=$((i + 2))
+	score="${score_by_id[$msg_id]:-NO_RESPONSE}"
 	flag=''
 	if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
 		is_low="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 7.0 else 0)' "$score")"
