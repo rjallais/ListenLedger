@@ -193,8 +193,13 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 	browser = browser.Context(context.Background())
 
 	if cfg.LocalIgnoreCertErrors {
-		if err := browser.IgnoreCertErrors(true); err != nil {
-			log.Printf("[spotify] Local headless: failed to ignore cert errors: %v", err)
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer setupCancel()
+		if err := browser.Context(setupCtx).IgnoreCertErrors(true); err != nil {
+			_ = browser.Close()
+			l.Kill()
+			l.Cleanup()
+			return nil, fmt.Errorf("local headless: failed to enable ignore-cert-errors: %w", err)
 		}
 	}
 
