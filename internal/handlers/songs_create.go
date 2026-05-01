@@ -175,7 +175,11 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 	pageData, buildErr := h.buildSongPageData(ctx, playlistSort)
 	if buildErr != nil {
 		log.Printf("[handleCreateSong] buildSongPageData failed: %v", buildErr)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to load songs"})
+		// Song was created successfully; return minimal success response even if page build failed
+		return e.JSON(http.StatusOK, map[string]interface{}{
+			"id":    record.Id,
+			"title": record.GetString("title"),
+		})
 	}
 
 	return renderDatastar(e, templates.NewSongCreateResponse(
