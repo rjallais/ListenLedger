@@ -18,8 +18,9 @@ func isSingleArtistName(name string) bool {
 		return false
 	}
 
-	// Already exclude multi-artist patterns: " & " and " and "
-	if strings.Contains(name, " & ") || strings.Contains(name, " and ") {
+	// Exclude multi-artist patterns (" & " and " and ") but only if there's no comma.
+	// Names with commas (like "Earth, Wind & Fire") should proceed through the comma logic.
+	if !strings.Contains(name, ",") && (strings.Contains(name, " & ") || strings.Contains(name, " and ")) {
 		return false
 	}
 

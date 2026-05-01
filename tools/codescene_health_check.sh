@@ -10,7 +10,7 @@ set -euo pipefail
 if command -v cs-mcp &>/dev/null; then
 	CS_MCP=(cs-mcp)
 else
-	CS_MCP=(npx -y -p @codescene/codehealth-mcp@latest cs-mcp)
+	CS_MCP=(npx -y -p @codescene/codehealth-mcp@1.1.5 cs-mcp)
 fi
 PROJECT="${PROJECT:-$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
