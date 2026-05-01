@@ -235,7 +235,10 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 
 	// Queue artist refreshes only after transaction succeeds (post-commit)
 	for _, target := range newArtistsToQueue {
-		if queueErr := h.queueArtistRefreshFromSong(ctx, target); queueErr != nil {
+		queueCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		queueErr := h.queueArtistRefreshFromSong(queueCtx, target)
+		cancel()
+		if queueErr != nil {
 			log.Printf("[handleCreateSong] Warning: failed to queue refresh for new artist %s (%s): %v", target.Name, target.ID, queueErr)
 		}
 	}
