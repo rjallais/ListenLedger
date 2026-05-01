@@ -338,28 +338,35 @@ func isBase62Char(c rune) bool {
 }
 
 func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID string) (string, int, error) {
-	if name, ok := h.lookupArtistLocally(ctx, spotifyID); ok {
+	name, ok, err := h.lookupArtistLocally(ctx, spotifyID)
+	if err != nil {
+		return "", http.StatusBadGateway, fmt.Errorf("failed to lookup artist locally: %w", err)
+	}
+	if ok {
 		return name, 0, nil
 	}
 	return h.fetchArtistNameFromSpotify(ctx, spotifyID)
 }
 
-func (h *Handler) lookupArtistLocally(ctx context.Context, spotifyID string) (string, bool) {
+func (h *Handler) lookupArtistLocally(ctx context.Context, spotifyID string) (string, bool, error) {
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp("spotify_id = {:spotify_id}", dbx.Params{"spotify_id": spotifyID})).
 		Limit(1).
 		All(&records)
-	if err != nil || len(records) == 0 {
-		return "", false
+	if err != nil {
+		return "", false, err
+	}
+	if len(records) == 0 {
+		return "", false, nil
 	}
 	name := records[0].GetString("name")
 	if name == "" {
-		return "", false
+		return "", false, nil
 	}
 	log.Printf("[handleCreateSong] resolved artist %q from PocketBase (spotify_id=%s)", name, spotifyID)
-	return name, true
+	return name, true, nil
 }
 
 func (h *Handler) fetchArtistNameFromSpotify(ctx context.Context, spotifyID string) (string, int, error) {
