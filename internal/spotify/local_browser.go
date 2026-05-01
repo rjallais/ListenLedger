@@ -123,7 +123,7 @@ func (lb *localBrowser) isRetired() bool {
 	return lb.retired
 }
 
-func (lb *localBrowser) isAlive() bool {
+func (lb *localBrowser) isAlive(ctx context.Context) bool {
 	lb.mu.Lock()
 	closed := lb.closed
 	b := lb.browser
@@ -133,7 +133,7 @@ func (lb *localBrowser) isAlive() bool {
 		return false
 	}
 
-	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	_, err := b.Context(pingCtx).Version()
 	return err == nil
@@ -242,7 +242,7 @@ func (c *Client) tryExistingBrowser(ctx context.Context) (*localBrowser, bool, e
 	candidate := c.local
 	c.localMu.Unlock()
 
-	if candidate.isAlive() && !candidate.isRetired() {
+	if candidate.isAlive(ctx) && !candidate.isRetired() {
 		c.localMu.Lock()
 		if c.local == candidate && !candidate.isRetired() {
 			c.localMu.Unlock()
@@ -331,7 +331,7 @@ func (c *Client) launchNewBrowser(ctx context.Context) (lb *localBrowser, err er
 }
 
 func (c *Client) evictDeadBrowser(ctx context.Context, lb *localBrowser) {
-	if lb == nil || lb.isAlive() {
+	if lb == nil || lb.isAlive(ctx) {
 		return
 	}
 	c.localMu.Lock()
