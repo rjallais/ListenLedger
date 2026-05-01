@@ -426,6 +426,22 @@ func (h *Handler) updateExistingAlbum(record *core.Record, p albumUpsertParams) 
 	return h.app.Save(record)
 }
 
+// updateExistingAlbumTx is the transaction-aware variant of updateExistingAlbum.
+func (h *Handler) updateExistingAlbumTx(txApp core.App, record *core.Record, p albumUpsertParams) error {
+	collectionSongs := record.GetInt("collection_songs") + 1
+	record.Set("collection_songs", collectionSongs)
+	existingTotal := record.GetInt("total_songs")
+	if p.TotalSongs > existingTotal {
+		record.Set("total_songs", p.TotalSongs)
+	} else if collectionSongs > existingTotal {
+		record.Set("total_songs", collectionSongs)
+	}
+	if record.GetString("release_type") == "" && p.ReleaseType != "" {
+		record.Set("release_type", p.ReleaseType)
+	}
+	return txApp.Save(record)
+}
+
 func (h *Handler) createAlbumRecord(p albumUpsertParams) error {
 	collection, err := h.app.FindCollectionByNameOrId("albums")
 	if err != nil {
@@ -588,7 +604,7 @@ func (h *Handler) upsertAlbumForSongTx(txApp core.App, p albumUpsertParams) erro
 		return err
 	}
 	if len(records) > 0 {
-		return h.updateExistingAlbum(records[0], p)
+		return h.updateExistingAlbumTx(txApp, records[0], p)
 	}
 	return h.createAlbumRecordTx(txApp, p)
 }
