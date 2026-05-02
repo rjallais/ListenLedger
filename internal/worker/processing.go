@@ -509,6 +509,6 @@ func (w *Worker) persistListeners(req messaging.ScrapeRequested, label string, l
 	w.markRequestSucceeded(req.RequestID)
 	w.recordSucceeded(label, time.Since(startedAt))
 	w.queueTotalSongsRecalc(req.ArtistID)
-	w.clearFailedJobsForArtist(req.ArtistID, req.RequestID)
+	w.clearFailedJobsForArtist(persistCtx, req.ArtistID, req.RequestID)
 	return nil
 }

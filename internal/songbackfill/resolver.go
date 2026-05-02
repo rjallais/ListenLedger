@@ -1,5 +1,8 @@
 //go:build goexperiment.jsonv2
 
+// Package songbackfill provides utilities for resolving and backfilling
+// artist metadata on song records using stored artist data and external
+// track metadata lookups.
 package songbackfill
 
 import (

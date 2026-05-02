@@ -118,6 +118,9 @@ func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.
 }
 
 func highestConfidenceCandidate(candidates []songbackfill.CandidateSummary) *songbackfill.CandidateSummary {
+	if len(candidates) == 0 {
+		return nil
+	}
 	best := candidates[0]
 	for _, candidate := range candidates[1:] {
 		if candidate.Confidence > best.Confidence {

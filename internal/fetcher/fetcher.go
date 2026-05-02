@@ -10,7 +10,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +81,7 @@ func (s *Service) FetchAll(ctx context.Context, artistIDs []string) (map[string]
 
 				val, err := s.fetchWithRetry(ctx, artistID, spotify.ProviderAny)
 				if err != nil {
-					_, _ = fmt.Fprintf(os.Stderr, "[fetcher] failed to fetch %s: %v\n", artistID, err)
+					log.Printf("[fetcher] failed to fetch %s: %v", artistID, err)
 					recordMiss(artistID)
 					continue
 				}
@@ -286,7 +285,7 @@ func (s *Service) retryBatchMissed(ctx context.Context, missed []string, results
 		}
 		count, retryErr := s.fetchWithRetry(ctx, id, spotify.ProviderApify)
 		if retryErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "[fetcher] apify retry failed for %s: %v\n", id, retryErr)
+			log.Printf("[fetcher] apify retry failed for %s: %v", id, retryErr)
 			stillMissed = append(stillMissed, id)
 		} else {
 			results[id] = count

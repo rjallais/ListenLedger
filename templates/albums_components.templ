@@ -77,19 +77,19 @@ templ AlbumCard(album Album) {
 }
 
 // AlbumSongCounter renders a single increment/decrement counter row.
-templ AlbumSongCounter(label, apiPath string, count int) {
+templ AlbumSongCounter(label, albumID, field string, count int) {
 	<div class="flex items-center gap-1">
 		<span class="text-xs opacity-60">{ label }</span>
-		@AlbumSongAdjustButton(apiPath, "dec", "Decrease "+label+" songs")
+		@AlbumSongAdjustButton(albumID, field, "dec", "Decrease "+label+" songs")
 		<span class="font-mono min-w-[2.5rem] text-center">{ fmt.Sprintf("%d", count) }</span>
-		@AlbumSongAdjustButton(apiPath, "inc", "Increase "+label+" songs")
+		@AlbumSongAdjustButton(albumID, field, "inc", "Increase "+label+" songs")
 	</div>
 }
 
-templ AlbumSongAdjustButton(apiPath, op, title string) {
+templ AlbumSongAdjustButton(albumID, field, op, title string) {
 	<button
 		class="btn btn-xs btn-ghost btn-square"
-		data-on:click={ albumSongAdjustURL(apiPath, op) }
+		data-on:click={ albumSongAdjustURL(albumID, field, op) }
 		title={ title }
 	>
 		if op == "inc" {
@@ -115,8 +115,8 @@ templ AlbumStatusOption(albumID, currentStatus, status, badgeTone, label string)
 // AlbumSongControls renders collection and total song controls.
 templ AlbumSongControls(album Album) {
 	<div class="flex flex-col items-end gap-1">
-		@AlbumSongCounter("Owned", album.ID+"/collection", album.CollectionSongs)
-		@AlbumSongCounter("Total", album.ID+"/total", album.TotalSongs)
+		@AlbumSongCounter("Owned", album.ID, "collection", album.CollectionSongs)
+		@AlbumSongCounter("Total", album.ID, "total", album.TotalSongs)
 	</div>
 }
 
@@ -215,10 +215,11 @@ templ AddAlbumModal() {
 		data-on-success="document.getElementById('add-album-form').reset()"
 	>
 				<div class="form-control w-full mb-4">
-				<label class="label">
+				<label class="label" for="album-title">
 					<span class="label-text">Album Title *</span>
 				</label>
 				<input
+					id="album-title"
 					type="text"
 					name="title"
 					placeholder="Enter album title"
@@ -227,10 +228,11 @@ templ AddAlbumModal() {
 				/>
 			</div>
 			<div class="form-control w-full mb-4">
-				<label class="label">
+				<label class="label" for="album-artist-name">
 					<span class="label-text">Artist Name *</span>
 				</label>
 				<input
+					id="album-artist-name"
 					type="text"
 					name="artist_name"
 					placeholder="Enter artist name"
@@ -239,10 +241,10 @@ templ AddAlbumModal() {
 				/>
 			</div>
 			<div class="form-control w-full mb-4">
-				<label class="label">
+				<label class="label" for="album-status">
 					<span class="label-text">Status</span>
 				</label>
-				<select name="status" class="select select-bordered w-full">
+				<select id="album-status" name="status" class="select select-bordered w-full">
 					<option value="waiting" selected>Waiting</option>
 					<option value="processed">Processed</option>
 					<option value="full">Full</option>
@@ -250,11 +252,12 @@ templ AddAlbumModal() {
 			</div>
 			<div class="grid grid-cols-2 gap-4 mb-6">
 				<div class="form-control w-full">
-					<label class="label">
+					<label class="label" for="album-collection-songs">
 						<span class="label-text">Owned Songs</span>
 						<span class="label-text-alt text-base-content/50">Optional</span>
 					</label>
 					<input
+						id="album-collection-songs"
 						type="number"
 						name="collection_songs"
 						placeholder="0"
@@ -263,11 +266,12 @@ templ AddAlbumModal() {
 					/>
 				</div>
 				<div class="form-control w-full">
-					<label class="label">
+					<label class="label" for="album-total-songs">
 						<span class="label-text">Total Songs</span>
 						<span class="label-text-alt text-base-content/50">Optional</span>
 					</label>
 					<input
+						id="album-total-songs"
 						type="number"
 						name="total_songs"
 						placeholder="0"
@@ -298,8 +302,12 @@ func albumsWaitingURL(offset int) string {
 	return fmt.Sprintf("@get('/api/albums/waiting?offset=%d&limit=1')", offset)
 }
 
-func albumSongAdjustURL(apiPath, op string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/%s')", url.PathEscape(apiPath), url.PathEscape(op))
+func albumSongAdjustURL(albumID, field, op string) string {
+	return fmt.Sprintf("@post('/api/albums/%s/%s/%s')",
+		url.PathEscape(albumID),
+		url.PathEscape(field),
+		url.PathEscape(op),
+	)
 }
 
 func albumStatusUpdateURL(albumID, status string) string {

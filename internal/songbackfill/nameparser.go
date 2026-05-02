@@ -19,7 +19,6 @@ var knownSingleArtists = []string{
 	"Earth, Wind & Fire",
 	"Crosby, Stills & Nash",
 	"Crosby, Stills, Nash & Young",
-	"Three Days Grace",
 }
 
 // countArtistSegments splits a name on commas and conjunctions (" & ", " and "),

@@ -184,10 +184,7 @@ func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 		}
 	}
 	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
-		}
+		_ = Body.Close()
 	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {

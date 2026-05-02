@@ -115,7 +115,7 @@ func (w *Worker) pruneSucceededLocked(now time.Time) {
 	}
 }
 
-func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
+func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeededRequestID string) {
 	if artistID == "" {
 		return
 	}
@@ -140,7 +140,7 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 	}
 
 	note := reconciliationNote(succeededRequestID)
-	w.reconcileFailedJobs(records, note)
+	w.reconcileFailedJobs(ctx, records, note)
 }
 
 func reconciliationNote(succeededRequestID string) string {
@@ -150,8 +150,11 @@ func reconciliationNote(succeededRequestID string) string {
 	return "recovered_by_retry"
 }
 
-func (w *Worker) reconcileFailedJobs(records []*core.Record, note string) {
+func (w *Worker) reconcileFailedJobs(ctx context.Context, records []*core.Record, note string) {
 	for _, rec := range records {
+		if ctx.Err() != nil {
+			return
+		}
 		rec.Set("status", "succeeded")
 		rec.Set("finished_at", time.Now())
 		existingErr := rec.GetString("error")
@@ -160,7 +163,7 @@ func (w *Worker) reconcileFailedJobs(records []*core.Record, note string) {
 		} else {
 			rec.Set("error", note+" | "+existingErr)
 		}
-		if saveErr := w.app.Save(rec); saveErr != nil {
+		if saveErr := w.app.SaveWithContext(ctx, rec); saveErr != nil {
 			log.Printf("[worker] Warning: failed to reconcile failed job %s: %v", rec.Id, saveErr)
 		}
 	}
@@ -295,7 +298,7 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("[markStaleJobArtistFailed] artist %s not found for job %s, marking as failed", artistID, jobID)
+			log.Printf("[markStaleJobArtistFailed] artist %s not found for job %s; no-op — job already failed", artistID, jobID)
 			return nil
 		}
 		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)

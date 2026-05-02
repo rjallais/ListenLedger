@@ -229,15 +229,7 @@ for i in "${!valid_files[@]}"; do
 	score="${score_by_id[$msg_id]:-NO_RESPONSE}"
 	flag=''
 	if [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-		is_low="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < 7.0 else 0)' "$score")"
-		is_warn="$(python3 -c 'import sys; s=float(sys.argv[1]); print(1 if 7.0 <= s < 9.0 else 0)' "$score")"
-		if [[ "$is_low" == "1" ]]; then
-			flag=' X'
-		elif [[ "$is_warn" == "1" ]]; then
-			flag=' !'
-		else
-			flag=' OK'
-		fi
+		flag="$(python3 -c 'import sys; s=float(sys.argv[1]); print(" X" if s < 7.0 else " !" if s < 9.0 else " OK")' "$score")"
 	fi
 
 	printf '%-55s %s%s\n' "$f" "$score" "$flag"

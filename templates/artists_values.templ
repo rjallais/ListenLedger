@@ -9,7 +9,7 @@ templ ArtistCollectionControls(artist Artist) {
 		<button
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionDecAction(artist.ID) }
-			aria-label="Decrease collection count"
+			aria-label={ "Decrease collection count for " + artist.Name }
 			title="Decrease collection count"
 		>
 			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
@@ -20,7 +20,7 @@ templ ArtistCollectionControls(artist Artist) {
 		<button
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionIncAction(artist.ID) }
-			aria-label="Increase collection count"
+			aria-label={ "Increase collection count for " + artist.Name }
 			title="Increase collection count"
 		>
 			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">

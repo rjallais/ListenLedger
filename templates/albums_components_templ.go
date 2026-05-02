@@ -462,7 +462,7 @@ func AlbumCard(album Album) templ.Component {
 }
 
 // AlbumSongCounter renders a single increment/decrement counter row.
-func AlbumSongCounter(label, apiPath string, count int) templ.Component {
+func AlbumSongCounter(label, albumID, field string, count int) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -500,7 +500,7 @@ func AlbumSongCounter(label, apiPath string, count int) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AlbumSongAdjustButton(apiPath, "dec", "Decrease "+label+" songs").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AlbumSongAdjustButton(albumID, field, "dec", "Decrease "+label+" songs").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -521,7 +521,7 @@ func AlbumSongCounter(label, apiPath string, count int) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AlbumSongAdjustButton(apiPath, "inc", "Increase "+label+" songs").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AlbumSongAdjustButton(albumID, field, "inc", "Increase "+label+" songs").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -533,7 +533,7 @@ func AlbumSongCounter(label, apiPath string, count int) templ.Component {
 	})
 }
 
-func AlbumSongAdjustButton(apiPath, op, title string) templ.Component {
+func AlbumSongAdjustButton(albumID, field, op, title string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -559,9 +559,9 @@ func AlbumSongAdjustButton(apiPath, op, title string) templ.Component {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var31 string
-		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(albumSongAdjustURL(apiPath, op))
+		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(albumSongAdjustURL(albumID, field, op))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 92, Col: 49}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 92, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
@@ -728,11 +728,11 @@ func AlbumSongControls(album Album) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AlbumSongCounter("Owned", album.ID+"/collection", album.CollectionSongs).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AlbumSongCounter("Owned", album.ID, "collection", album.CollectionSongs).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = AlbumSongCounter("Total", album.ID+"/total", album.TotalSongs).Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AlbumSongCounter("Total", album.ID, "total", album.TotalSongs).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1148,7 +1148,7 @@ func AddAlbumModal() templ.Component {
 			templ_7745c5c3_Var53 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<input type=\"checkbox\" id=\"add-album-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Album</h3><label for=\"add-album-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-album-form\" data-on:submit__prevent=\"@post('/api/albums', {contentType: 'form'})\" data-on-success=\"document.getElementById('add-album-form').reset()\"><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Album Title *</span></label> <input type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Artist Name *</span></label> <input type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\"><span class=\"label-text\">Status</span></label> <select name=\"status\" class=\"select select-bordered w-full\"><option value=\"waiting\" selected>Waiting</option> <option value=\"processed\">Processed</option> <option value=\"full\">Full</option></select></div><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Owned Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div><div class=\"form-control w-full\"><label class=\"label\"><span class=\"label-text\">Total Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input type=\"number\" name=\"total_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div></div><div class=\"modal-action\"><label for=\"add-album-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 61, "<input type=\"checkbox\" id=\"add-album-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Album</h3><label for=\"add-album-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-album-form\" data-on:submit__prevent=\"@post('/api/albums', {contentType: 'form'})\" data-on-success=\"document.getElementById('add-album-form').reset()\"><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-title\"><span class=\"label-text\">Album Title *</span></label> <input id=\"album-title\" type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-artist-name\"><span class=\"label-text\">Artist Name *</span></label> <input id=\"album-artist-name\" type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-status\"><span class=\"label-text\">Status</span></label> <select id=\"album-status\" name=\"status\" class=\"select select-bordered w-full\"><option value=\"waiting\" selected>Waiting</option> <option value=\"processed\">Processed</option> <option value=\"full\">Full</option></select></div><div class=\"grid grid-cols-2 gap-4 mb-6\"><div class=\"form-control w-full\"><label class=\"label\" for=\"album-collection-songs\"><span class=\"label-text\">Owned Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input id=\"album-collection-songs\" type=\"number\" name=\"collection_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div><div class=\"form-control w-full\"><label class=\"label\" for=\"album-total-songs\"><span class=\"label-text\">Total Songs</span> <span class=\"label-text-alt text-base-content/50\">Optional</span></label> <input id=\"album-total-songs\" type=\"number\" name=\"total_songs\" placeholder=\"0\" min=\"0\" class=\"input input-bordered w-full\"></div></div><div class=\"modal-action\"><label for=\"add-album-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1172,8 +1172,12 @@ func albumsWaitingURL(offset int) string {
 	return fmt.Sprintf("@get('/api/albums/waiting?offset=%d&limit=1')", offset)
 }
 
-func albumSongAdjustURL(apiPath, op string) string {
-	return fmt.Sprintf("@post('/api/albums/%s/%s')", url.PathEscape(apiPath), url.PathEscape(op))
+func albumSongAdjustURL(albumID, field, op string) string {
+	return fmt.Sprintf("@post('/api/albums/%s/%s/%s')",
+		url.PathEscape(albumID),
+		url.PathEscape(field),
+		url.PathEscape(op),
+	)
 }
 
 func albumStatusUpdateURL(albumID, status string) string {
