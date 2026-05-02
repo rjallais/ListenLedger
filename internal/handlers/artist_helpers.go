@@ -504,7 +504,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 		}
 
 		record := job.Record
-		requestID, duplicate, err := h.queueArtistRefresh(ctx, record)
+		_, duplicate, err := h.queueArtistRefresh(ctx, record)
 		if err != nil {
 			log.Printf("[batch] Failed to queue %s: %v", record.GetString("name"), err)
 			continue
@@ -514,7 +514,6 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 			continue
 		}
 
-		_ = requestID
 		queuedArtistIDs = append(queuedArtistIDs, record.Id)
 		stats[job.Priority.String()]++
 	}

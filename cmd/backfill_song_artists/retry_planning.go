@@ -148,7 +148,7 @@ func prioritizeSongsForRetry(songs []songbackfill.SongInput, hints map[string]re
 			return prioritized[i].priority < prioritized[j].priority
 		}
 		if prioritized[i].previouslySeen != prioritized[j].previouslySeen {
-			return !prioritized[i].previouslySeen
+			return prioritized[i].previouslySeen
 		}
 		if prioritized[i].song.ArtistName != prioritized[j].song.ArtistName {
 			return prioritized[i].song.ArtistName < prioritized[j].song.ArtistName

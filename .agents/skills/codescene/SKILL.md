@@ -14,25 +14,29 @@ This skill provides instructions for configuring and using the CodeScene MCP ser
    [https://github.com/codescene-oss/codescene-mcp-server](https://github.com/codescene-oss/codescene-mcp-server)
 
 2. **Configuration**:
-   You need to set up a Personal Access Token (PAT) for CodeScene.
-   When the user requests CodeScene analysis, verify or set the PAT using the `set_config` tool:
+   Provide the CodeScene PAT through runtime secret injection (for example, an
+   environment variable or CI secret) rather than asking users to paste it into
+   prompts or config payloads. Use the `set_config` tool with a reference to the
+   injected secret:
 
    ```json
    {
      "key": "access_token",
-     "value": "pat_..."
+     "value": "${CODESCENE_PAT}"
    }
    ```
 
-   *Note: For the current project, use the token provided by the user in the initial request or prompt them for it.*
+   *Never ask users to paste live PATs or ACE tokens into chat. Store them in
+   the secret manager / CI settings and pass them at runtime.*
 
 3. **ACE Access (Auto-Refactoring)**:
-   To use the `code_health_auto_refactor` tool, you must configure the ACE access token:
+   To use the `code_health_auto_refactor` tool, provide the ACE access token
+   through the same secret-management path:
 
    ```json
    {
      "key": "ace_access_token",
-     "value": "<ACE_TOKEN>"
+     "value": "${ACE_TOKEN}"
    }
    ```
 

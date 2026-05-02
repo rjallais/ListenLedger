@@ -108,15 +108,19 @@ timeout=30
 elapsed=0
 found_init=0
 while [ "$elapsed" -lt "$timeout" ]; do
-	if python3 -c "import json, sys
+	init_status="$(python3 -c "import json, sys
 for line in open(sys.argv[1]):
     try: obj=json.loads(line.strip() or '{}')
     except: continue
     if obj.get('id') == 1 and ('result' in obj or 'error' in obj):
         print('ok' if 'result' in obj else 'error')
-        break" "$OUT" 2>/dev/null | grep -q '^ok$'; then
+        break" "$OUT" 2>/dev/null || true)"
+	if [ "$init_status" = "ok" ]; then
 		found_init=1
 		break
+	elif [ "$init_status" = "error" ]; then
+		echo "[codescene] MCP initialize failed; check the server response in $OUT" >&2
+		exit 1
 	fi
 	sleep 1
 	elapsed=$((elapsed + 1))

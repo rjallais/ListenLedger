@@ -9,9 +9,10 @@ templ ArtistCollectionControls(artist Artist) {
 		<button
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionDecAction(artist.ID) }
+			aria-label="Decrease collection count"
 			title="Decrease collection count"
 		>
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
 			</svg>
 		</button>
@@ -19,9 +20,10 @@ templ ArtistCollectionControls(artist Artist) {
 		<button
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionIncAction(artist.ID) }
+			aria-label="Increase collection count"
 			title="Increase collection count"
 		>
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
 			</svg>
 		</button>

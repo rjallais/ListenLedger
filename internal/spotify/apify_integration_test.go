@@ -443,11 +443,17 @@ func TestParseApifyBatchResponsePrefersRawOverInflatedNumericField(t *testing.T)
 func TestParseApifyBatchResponseSkipsUnparsableItem(t *testing.T) {
 	t.Parallel()
 
-	body := `[{"url":"https://open.spotify.com/artist/batch-bad","monthlyListenersRaw":"not listeners text"}]`
+	body := `[
+		{"url":"https://open.spotify.com/artist/batch-good","monthlyListenersRaw":"1,234 monthly listeners"},
+		{"url":"https://open.spotify.com/artist/batch-bad","monthlyListenersRaw":"not listeners text"}
+	]`
 
 	got, err := parseApifyBatchResponse([]byte(body))
 	if err != nil {
 		t.Fatalf("parseApifyBatchResponse() error = %v, want nil (bad item should be skipped)", err)
+	}
+	if got["batch-good"] != 1234 {
+		t.Fatalf("parseApifyBatchResponse() lost the valid item, got %v", got)
 	}
 	if _, present := got["batch-bad"]; present {
 		t.Fatalf("parseApifyBatchResponse() included bad item in results, want it absent")

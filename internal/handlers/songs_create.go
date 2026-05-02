@@ -162,6 +162,10 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 
 	artists, code, err := h.resolveArtistNames(e.Request.Context(), input.ArtistSpotifyIDs)
 	if err != nil {
+		if code >= http.StatusInternalServerError {
+			log.Printf("[handleCreateSong] resolveArtistNames failed: %v", err)
+			return e.JSON(code, map[string]string{"error": "failed to resolve artist metadata"})
+		}
 		return e.JSON(code, map[string]string{"error": err.Error()})
 	}
 

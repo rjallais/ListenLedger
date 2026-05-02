@@ -512,8 +512,11 @@ func isProviderReady(name string, q Info) bool {
 	if !q.Available {
 		return false
 	}
-	if name == "scrapingant" || name == "apify" {
+	if name == "scrapingant" {
 		return q.RemainingCredit > 0
+	}
+	if name == "apify" {
+		return q.TotalCredits == 0 || q.RemainingCredit > 0
 	}
 	return true
 }

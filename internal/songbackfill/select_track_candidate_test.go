@@ -3,7 +3,10 @@
 // Package songbackfill provides track-candidate selection and song backfill helpers.
 package songbackfill
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestSelectTrackCandidatePrefersCorroboratedGroup(t *testing.T) {
 	t.Parallel()
@@ -90,8 +93,12 @@ func TestSelectTrackCandidatePrefersFewestArtistsAmongNearTopCandidates(t *testi
 	if !ok || ambiguous {
 		t.Fatalf("ok=%v ambiguous=%v notes=%v, want non-ambiguous selection", ok, ambiguous, notes)
 	}
-	if len(selected.ArtistNames) != 2 {
-		t.Fatalf("selected.ArtistNames = %#v, want 2-artist candidate (corroborated by multiple sources)", selected.ArtistNames)
+	expectedArtists := []string{"Matoma", "The Notorious B.I.G."}
+	if !reflect.DeepEqual(selected.ArtistNames, expectedArtists) {
+		t.Fatalf("selected.ArtistNames = %#v, want %#v", selected.ArtistNames, expectedArtists)
+	}
+	if selected.Source != "musicbrainz_recording" {
+		t.Fatalf("selected.Source = %q, want %q", selected.Source, "musicbrainz_recording")
 	}
 }
 

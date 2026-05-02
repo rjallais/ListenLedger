@@ -88,7 +88,7 @@ func main() {
 		MinConfidence:     *minConfidence,
 	}, artists)
 
-	resolutions := resolveSongs(resolver, songs, *httpTimeout)
+	resolutions := resolveSongs(ctx, resolver, songs, *httpTimeout)
 	applied, artistNameChanges := applyApprovedResolutions(ctx, app, resolutions, *minConfidence, *apply)
 
 	summary := buildSummary(resolutions, *minConfidence)
@@ -192,12 +192,12 @@ func applyRetryPlanning(enabled bool, reportDir string, songs []songbackfill.Son
 	return applyLimit(songs)
 }
 
-func resolveSongs(resolver *songbackfill.Resolver, songs []songbackfill.SongInput, httpTimeout time.Duration) []songbackfill.Resolution {
+func resolveSongs(ctx context.Context, resolver *songbackfill.Resolver, songs []songbackfill.SongInput, httpTimeout time.Duration) []songbackfill.Resolution {
 	resolutions := make([]songbackfill.Resolution, 0, len(songs))
 	for _, song := range songs {
 		song = prepareSongForResolution(song)
-		ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
-		resolution := resolver.Resolve(ctx, song)
+		reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
+		resolution := resolver.Resolve(reqCtx, song)
 		cancel()
 		resolutions = append(resolutions, resolution)
 	}

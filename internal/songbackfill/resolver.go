@@ -138,6 +138,12 @@ func (r *Resolver) applyTrackCandidateMatch(resolution *Resolution, candidates [
 		return *resolution
 	}
 
+	if candidate.Confidence < r.minimumConfidence {
+		resolution.Action = ActionSkipLowConfidence
+		resolution.Notes = append(resolution.Notes, fmt.Sprintf("candidate confidence %.2f below threshold %.2f", candidate.Confidence, r.minimumConfidence))
+		return *resolution
+	}
+
 	resolution.applyMatches(matches, candidate.Source, candidate.Confidence)
 	return *resolution
 }
@@ -262,7 +268,13 @@ func (r *Resolver) applyPrefillMatches(resolution Resolution, candidate TrackCan
 		return resolution, true
 	}
 	if ok {
-		resolution.applyMatches(matches, candidate.Source+"_prefill", minFloat(candidate.Confidence, confidenceForMatches(matches)))
+		effectiveConf := minFloat(candidate.Confidence, confidenceForMatches(matches))
+		if effectiveConf < r.minimumConfidence {
+			resolution.Action = ActionSkipLowConfidence
+			resolution.Notes = append(resolution.Notes, fmt.Sprintf("effective confidence %.2f below threshold %.2f", effectiveConf, r.minimumConfidence))
+			return resolution, true
+		}
+		resolution.applyMatches(matches, candidate.Source+"_prefill", effectiveConf)
 		return resolution, true
 	}
 

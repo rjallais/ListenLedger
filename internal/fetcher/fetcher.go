@@ -253,8 +253,8 @@ func (s *Service) fetchAllBatch(ctx context.Context, artistIDs []string, bf spot
 func (s *Service) processBatch(ctx context.Context, batch []string, bf spotify.BatchFetcher, results map[string]int) []string {
 	batchResults, err := bf.FetchApifyBatch(ctx, batch)
 	if err != nil {
-		log.Printf("[fetcher] apify batch error: %v — marking all as missed", err)
-		return batch
+		log.Printf("[fetcher] apify batch error: %v — retrying artists individually", err)
+		return s.retryBatchMissed(ctx, batch, results)
 	}
 
 	var batchMissed []string

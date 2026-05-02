@@ -215,77 +215,67 @@ templ AddAlbumModal() {
 		data-on-success="document.getElementById('add-album-form').reset()"
 	>
 				<div class="form-control w-full mb-4">
+				<label class="label">
+					<span class="label-text">Album Title *</span>
+				</label>
+				<input
+					type="text"
+					name="title"
+					placeholder="Enter album title"
+					class="input input-bordered w-full"
+					required
+				/>
+			</div>
+			<div class="form-control w-full mb-4">
+				<label class="label">
+					<span class="label-text">Artist Name *</span>
+				</label>
+				<input
+					type="text"
+					name="artist_name"
+					placeholder="Enter artist name"
+					class="input input-bordered w-full"
+					required
+				/>
+			</div>
+			<div class="form-control w-full mb-4">
+				<label class="label">
+					<span class="label-text">Status</span>
+				</label>
+				<select name="status" class="select select-bordered w-full">
+					<option value="waiting" selected>Waiting</option>
+					<option value="processed">Processed</option>
+					<option value="full">Full</option>
+				</select>
+			</div>
+			<div class="grid grid-cols-2 gap-4 mb-6">
+				<div class="form-control w-full">
 					<label class="label">
-						<span class="label-text">Album Title *</span>
+						<span class="label-text">Owned Songs</span>
+						<span class="label-text-alt text-base-content/50">Optional</span>
 					</label>
-					<label>
-						<input
-							type="text"
-							name="title"
-							placeholder="Enter album title"
-							class="input input-bordered w-full"
-							required
-						/>
-					</label>
+					<input
+						type="number"
+						name="collection_songs"
+						placeholder="0"
+						min="0"
+						class="input input-bordered w-full"
+					/>
 				</div>
-				<div class="form-control w-full mb-4">
+				<div class="form-control w-full">
 					<label class="label">
-						<span class="label-text">Artist Name *</span>
+						<span class="label-text">Total Songs</span>
+						<span class="label-text-alt text-base-content/50">Optional</span>
 					</label>
-					<label>
-						<input
-							type="text"
-							name="artist_name"
-							placeholder="Enter artist name"
-							class="input input-bordered w-full"
-							required
-						/>
-					</label>
+					<input
+						type="number"
+						name="total_songs"
+						placeholder="0"
+						min="0"
+						class="input input-bordered w-full"
+					/>
 				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label">
-						<span class="label-text">Status</span>
-					</label>
-					<label>
-						<select name="status" class="select select-bordered w-full">
-							<option value="waiting" selected>Waiting</option>
-							<option value="processed">Processed</option>
-							<option value="full">Full</option>
-						</select>
-					</label>
-				</div>
-				<div class="grid grid-cols-2 gap-4 mb-6">
-					<div class="form-control w-full">
-						<label class="label">
-							<span class="label-text">Owned Songs</span>
-							<span class="label-text-alt text-base-content/50">Optional</span>
-						</label>
-						<label>
-							<input
-								type="number"
-								name="collection_songs"
-								placeholder="0"
-								min="0"
-								class="input input-bordered w-full"
-							/>
-						</label>
-					</div>
-					<div class="form-control w-full">
-						<label class="label">
-							<span class="label-text">Total Songs</span>
-							<span class="label-text-alt text-base-content/50">Optional</span>
-						</label>
-						<label>
-							<input
-								type="number"
-								name="total_songs"
-								placeholder="0"
-								min="0"
-								class="input input-bordered w-full"
-							/>
-						</label>
-					</div>
-				</div>
+			</div>
 				<div class="modal-action">
 					<label for="add-album-modal" class="btn btn-ghost">Cancel</label>
 					<button type="submit" class="btn btn-primary gap-2">

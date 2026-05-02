@@ -157,17 +157,18 @@ type tidalItemAttributes struct {
 }
 
 func tidalIncludedTrackItems(payload tidalSearchResponse) []tidalSearchItem {
-	trackIDs := map[string]bool{}
+	includedMap := make(map[string]tidalSearchItem, len(payload.Included))
+	for _, item := range payload.Included {
+		includedMap[item.ID] = item
+	}
+
+	items := make([]tidalSearchItem, 0, len(payload.Data.Relationships.Tracks.Data))
 	for _, ref := range payload.Data.Relationships.Tracks.Data {
 		if strings.ToUpper(strings.TrimSpace(ref.Type)) != "TRACKS" && strings.ToUpper(strings.TrimSpace(ref.Type)) != "TRACK" {
 			continue
 		}
-		trackIDs[ref.ID] = true
-	}
-
-	items := make([]tidalSearchItem, 0, len(trackIDs))
-	for _, item := range payload.Included {
-		if !trackIDs[item.ID] {
+		item, ok := includedMap[ref.ID]
+		if !ok {
 			continue
 		}
 		if strings.ToUpper(strings.TrimSpace(item.Type)) != "TRACKS" && strings.ToUpper(strings.TrimSpace(item.Type)) != "TRACK" {

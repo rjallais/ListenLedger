@@ -3,6 +3,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -26,8 +28,11 @@ func (h *Handler) handleRefresh(e *core.RequestEvent) error {
 
 	record, err := h.findArtistRecord(ctx, artistID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		}
 		log.Printf("[artist_refresh] findArtistRecord error: %v", err)
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup artist"})
 	}
 
 	_, duplicate, err := h.queueArtistRefresh(ctx, record)

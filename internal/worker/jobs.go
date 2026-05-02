@@ -4,6 +4,8 @@ package worker
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -292,6 +294,10 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[markStaleJobArtistFailed] artist %s not found for job %s, marking as failed", artistID, jobID)
+			return nil
+		}
 		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)
 	}
 	if artist.GetString("fetch_status") != "pending" {

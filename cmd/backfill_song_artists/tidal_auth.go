@@ -45,6 +45,9 @@ func resolveTidalToken(ctx context.Context, httpClient *http.Client, creds tidal
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	}
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	t, err := fetchTidalAccessToken(ctxWithTimeout, httpClient, creds.TokenURL, clientID, clientSecret)
@@ -69,7 +72,7 @@ func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, c
 	form.Set("grant_type", "client_credentials")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("build tidal token request: %w", err)
 	}
 	basic := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
 	req.Header.Set("Authorization", "Basic "+basic)
@@ -78,7 +81,7 @@ func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, c
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("request tidal token: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

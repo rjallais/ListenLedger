@@ -46,6 +46,60 @@ func countArtistSegments(name string) int {
 	return len(segments)
 }
 
+// isStylizedSingleArtistVariant detects single-artist names that use commas
+// and conjunctions stylistically, like "Earth, Wind & Fire" or "Crosby, Stills & Nash".
+// Heuristics:
+//   - Split on commas and conjunctions (" & ", " and ")
+//   - Reject if any segment contains parentheses or "feat"/"ft."
+//   - Require each segment to be a short single-token (no spaces) word
+//   - Segment count must be in reasonable band (2-5)
+//   - Each segment should start with title-case letter
+func isStylizedSingleArtistVariant(name string) bool {
+	normalized := strings.ReplaceAll(name, " & ", ",")
+	normalized = strings.ReplaceAll(normalized, " and ", ",")
+
+	parts := strings.Split(normalized, ",")
+	var segments []string
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			segments = append(segments, trimmed)
+		}
+	}
+
+	count := len(segments)
+	if count < 2 || count > 5 {
+		return false
+	}
+
+	for _, seg := range segments {
+		// Reject segments with parentheses or "feat"/"ft."
+		lowerSeg := strings.ToLower(seg)
+		if strings.Contains(seg, "(") || strings.Contains(seg, ")") {
+			return false
+		}
+		if strings.Contains(lowerSeg, "feat") || strings.Contains(lowerSeg, "ft.") {
+			return false
+		}
+
+		// Require single-token (no spaces) and reasonable length
+		if strings.Contains(seg, " ") {
+			return false
+		}
+		if len(seg) < 2 || len(seg) > 20 {
+			return false
+		}
+
+		// Check title-case on first character
+		first := seg[0]
+		if first < 'A' || first > 'Z' {
+			return false
+		}
+	}
+
+	return true
+}
+
 func isSingleArtistName(name string) bool {
 	if !strings.Contains(name, ",") {
 		return false
@@ -60,15 +114,9 @@ func isSingleArtistName(name string) bool {
 	}
 
 	// Conjunctions also appear in true multi-artist credits (e.g. "A, B & C"),
-	// so count segments after splitting on both commas and conjunctions.
-	// Only treat as single-artist stylized name if segment count indicates one artist.
+	// so check for stylized single-artist names like "Earth, Wind & Fire".
 	if strings.Contains(name, " & ") || strings.Contains(name, " and ") {
-		segments := countArtistSegments(name)
-		if segments == 1 {
-			return true
-		}
-		// Multi-artist (segments > 1) or ambiguous (segments == 0) → reject
-		return false
+		return isStylizedSingleArtistVariant(name)
 	}
 
 	if strings.Count(name, ",") > 1 {

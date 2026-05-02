@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -75,9 +76,11 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 		detailURL := fmt.Sprintf("%s/track/%d", baseURL, item.ID)
 		detailResp, err := deezerGet(ctx, client, detailURL, userAgent)
 		if err != nil {
+			log.Printf("[deezer lookup] detail request failed for id=%d: %v", item.ID, err)
 			continue
 		}
 		if detailResp.StatusCode != http.StatusOK {
+			log.Printf("[deezer lookup] detail lookup for id=%d returned %s", item.ID, detailResp.Status)
 			_ = detailResp.Body.Close()
 			continue
 		}
@@ -86,6 +89,7 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 		decodeErr := json.NewDecoder(detailResp.Body).Decode(&detail)
 		_ = detailResp.Body.Close()
 		if decodeErr != nil {
+			log.Printf("[deezer lookup] failed to decode detail for id=%d: %v", item.ID, decodeErr)
 			continue
 		}
 

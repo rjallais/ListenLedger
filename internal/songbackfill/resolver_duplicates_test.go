@@ -62,6 +62,9 @@ func TestResolverUsesTypoTolerantMatchingForStoredArtistName(t *testing.T) {
 	if got.UpdatedArtistName != "Dark Tranquility" {
 		t.Fatalf("UpdatedArtistName = %q", got.UpdatedArtistName)
 	}
+	if len(got.MatchedArtists) == 0 {
+		t.Fatalf("len(MatchedArtists) = 0, want >= 1")
+	}
 	if got.MatchedArtists[0].MatchType != "typo" {
 		t.Fatalf("MatchType = %q, want typo", got.MatchedArtists[0].MatchType)
 	}
@@ -125,6 +128,9 @@ func TestResolverUsesTypoMatchForAnathemaVariant(t *testing.T) {
 	if got.Action != ActionUpdate {
 		t.Fatalf("Action = %q, want %q (notes=%v)", got.Action, ActionUpdate, got.Notes)
 	}
+	if len(got.MatchedArtists) == 0 {
+		t.Fatalf("len(MatchedArtists) = 0, want >= 1")
+	}
 	if got.MatchedArtists[0].MatchType != "typo" {
 		t.Fatalf("MatchType = %q, want typo", got.MatchedArtists[0].MatchType)
 	}
@@ -148,6 +154,9 @@ func TestResolverUsesTypoTolerantMatchingForStoredGroupArtistName(t *testing.T) 
 	}
 	if got.UpdatedArtistName != "Gym Class Heroes" {
 		t.Fatalf("UpdatedArtistName = %q", got.UpdatedArtistName)
+	}
+	if len(got.MatchedArtists) == 0 {
+		t.Fatalf("len(MatchedArtists) = 0, want >= 1")
 	}
 	if got.MatchedArtists[0].MatchType != "typo" {
 		t.Fatalf("MatchType = %q, want typo", got.MatchedArtists[0].MatchType)

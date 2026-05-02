@@ -15,8 +15,13 @@ func classifyReviewItem(
 	selectedCandidate *songbackfill.CandidateSummary,
 	missingArtists, suggestedArtistNames []string,
 ) {
-	if resolution.Action == songbackfill.ActionSkipAmbiguous || resolution.Action == songbackfill.ActionSkipLowConfidence {
+	if resolution.Action == songbackfill.ActionSkipAmbiguous {
 		assignAmbiguousClassification(item, selectedCandidate, resolution.ExternalCandidates)
+		return
+	}
+
+	if resolution.Action == songbackfill.ActionSkipLowConfidence {
+		assignLowConfidenceClassification(item, selectedCandidate, resolution.ExternalCandidates)
 		return
 	}
 
@@ -66,6 +71,26 @@ func assignAmbiguousClassification(
 	}
 	item.Category = "ambiguous_external_credit"
 	item.RecommendedAction = "Choose the correct artist-credit group from the competing external candidates, then rerun the backfill."
+}
+
+func assignLowConfidenceClassification(
+	item *reviewItem,
+	selectedCandidate *songbackfill.CandidateSummary,
+	externalCandidates []songbackfill.CandidateSummary,
+) {
+	item.Priority = 3
+	if hasTidalCandidateAvailable(selectedCandidate, externalCandidates) {
+		item.Category = "low_confidence_tidal_prefill"
+		item.RecommendedAction = "Review the TIDAL artist list; consider updating artist_name or adding aliases to improve matching confidence."
+		return
+	}
+	if len(externalCandidates) == 0 {
+		item.Category = "low_confidence_no_match"
+		item.RecommendedAction = "No external match found. Consider adding aliases or manual artist records."
+		return
+	}
+	item.Category = "low_confidence_external"
+	item.RecommendedAction = "External candidate found but below confidence threshold. Review and decide if it should be applied manually."
 }
 
 func hasTidalCandidateAvailable(

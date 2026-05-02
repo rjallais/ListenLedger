@@ -57,6 +57,9 @@ func TestMusicBrainzLookupParsesCandidates(t *testing.T) {
 	if len(candidates) != 1 {
 		t.Fatalf("len(candidates) = %d, want 1", len(candidates))
 	}
+	if len(candidates[0].ArtistNames) < 2 {
+		t.Fatalf("len(ArtistNames) = %d, want >= 2", len(candidates[0].ArtistNames))
+	}
 	if candidates[0].ArtistNames[0] != "Kehlani" || candidates[0].ArtistNames[1] != "Ty Dolla $ign" {
 		t.Fatalf("ArtistNames = %#v", candidates[0].ArtistNames)
 	}
