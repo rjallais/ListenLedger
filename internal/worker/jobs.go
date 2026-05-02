@@ -34,6 +34,26 @@ func (w *Worker) scrapeJobByRequestID(requestID string) (*core.Record, error) {
 	return records[0], nil
 }
 
+func (w *Worker) scrapeJobByRequestIDWithContext(ctx context.Context, requestID string) (*core.Record, error) {
+	if requestID == "" {
+		return nil, nil
+	}
+
+	var records []*core.Record
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("request_id = {:request_id}", dbx.Params{"request_id": requestID})).
+		Limit(1).
+		All(&records)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return records[0], nil
+}
+
 func (w *Worker) setScrapeJobProcessing(requestID string) {
 	job, err := w.scrapeJobByRequestID(requestID)
 	if err != nil || job == nil {
@@ -61,6 +81,24 @@ func (w *Worker) setScrapeJobFinished(requestID, status, errMsg string) {
 	if err := w.app.Save(job); err != nil {
 		log.Printf("[worker] Warning: failed to update scrape job to %s: %v", status, err)
 	}
+}
+
+func (w *Worker) setScrapeJobFinishedWithContext(ctx context.Context, requestID, status, errMsg string) error {
+	job, err := w.scrapeJobByRequestIDWithContext(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("find scrape job %s: %w", requestID, err)
+	}
+	if job == nil {
+		return nil
+	}
+
+	job.Set("status", status)
+	job.Set("finished_at", time.Now())
+	job.Set("error", errMsg)
+	if err := w.app.SaveWithContext(ctx, job); err != nil {
+		return fmt.Errorf("save scrape job %s: %w", requestID, err)
+	}
+	return nil
 }
 
 func (w *Worker) isRequestAlreadySucceeded(requestID string) bool {
@@ -123,16 +161,19 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 		return
 	}
 
-	records, err := w.app.FindRecordsByFilter(
-		"scrape_jobs",
-		"artist = {:artist} && status = {:status} && request_id != {:request_id}",
-		"", 500, 0,
-		dbx.Params{
-			"artist":     artistID,
-			"status":     "failed",
-			"request_id": succeededRequestID,
-		},
-	)
+	records := make([]*core.Record, 0, 500)
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			"artist = {:artist} AND status = {:status} AND request_id != {:request_id}",
+			dbx.Params{
+				"artist":     artistID,
+				"status":     "failed",
+				"request_id": succeededRequestID,
+			},
+		)).
+		Limit(500).
+		All(&records)
 	if err != nil {
 		log.Printf("[worker] Warning: failed to load failed jobs for artist %s: %v", artistID, err)
 		return

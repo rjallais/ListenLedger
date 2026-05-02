@@ -91,6 +91,7 @@ templ AlbumSongAdjustButton(albumID, field, op, title string) {
 		class="btn btn-xs btn-ghost btn-square"
 		data-on:click={ albumSongAdjustURL(albumID, field, op) }
 		title={ title }
+		aria-label={ title }
 	>
 		if op == "inc" {
 			@IconPlus("h-3 w-3")

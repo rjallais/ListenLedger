@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 )
@@ -111,16 +110,6 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 			Confidence:  confidence,
 		})
 	}
-
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].Confidence != candidates[j].Confidence {
-			return candidates[i].Confidence > candidates[j].Confidence
-		}
-		if len(candidates[i].ArtistNames) != len(candidates[j].ArtistNames) {
-			return len(candidates[i].ArtistNames) > len(candidates[j].ArtistNames)
-		}
-		return candidates[i].Title < candidates[j].Title
-	})
 
 	return dedupeTrackCandidates(candidates), nil
 }

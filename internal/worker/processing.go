@@ -505,7 +505,9 @@ func (w *Worker) persistListeners(ctx context.Context, req messaging.ScrapeReque
 	}
 
 	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", req.ArtistName, listeners, label)
-	w.setScrapeJobFinished(req.RequestID, "succeeded", "")
+	if err := w.setScrapeJobFinishedWithContext(persistCtx, req.RequestID, "succeeded", ""); err != nil {
+		return fmt.Errorf("mark scrape job succeeded: %w", err)
+	}
 	w.markRequestSucceeded(req.RequestID)
 	w.recordSucceeded(label, time.Since(startedAt))
 	w.queueTotalSongsRecalc(req.ArtistID)

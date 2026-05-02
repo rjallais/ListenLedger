@@ -582,7 +582,11 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	filterParams := nonWaitingArtistParams(genre)
 
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
-	if err != nil || totalCount == 0 {
+	if err != nil {
+		log.Printf("[handlers] dynamicArtistTotalSongs: count failed for genre %s, artist %s: %v, falling back to collection_songs", genre, record.Id, err)
+		return collectionSongs
+	}
+	if totalCount == 0 {
 		return collectionSongs
 	}
 
@@ -594,6 +598,7 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
+		log.Printf("[handlers] dynamicArtistTotalSongs: query failed for genre %s, artist %s: %v, falling back to collection_songs", genre, record.Id, err)
 		return collectionSongs
 	}
 
