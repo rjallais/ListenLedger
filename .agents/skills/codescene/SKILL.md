@@ -14,15 +14,21 @@ This skill provides instructions for configuring and using the CodeScene MCP ser
    [https://github.com/codescene-oss/codescene-mcp-server](https://github.com/codescene-oss/codescene-mcp-server)
 
 2. **Configuration**:
-   Provide the CodeScene PAT through runtime secret injection (for example, an
-   environment variable or CI secret) rather than asking users to paste it into
-   prompts or config payloads. Use the `set_config` tool with a reference to the
-   injected secret:
+   The MCP server reads configuration from environment variables or a config file.
+   Set the canonical environment variables before running:
+
+   | Config Key      | Environment Variable   | Description                          |
+   |-----------------|------------------------|--------------------------------------|
+   | `access_token`  | `CS_ACCESS_TOKEN`      | CodeScene PAT or standalone license |
+   | `ace_access_token` | `CS_ACE_ACCESS_TOKEN` | ACE token for auto-refactoring      |
+   | `default_project_id` | `CS_DEFAULT_PROJECT_ID` | Default CodeScene project ID     |
+
+   Alternatively, use the `set_config` tool at runtime:
 
    ```json
    {
      "key": "access_token",
-     "value": "${CODESCENE_PAT}"
+     "value": "${CS_ACCESS_TOKEN}"
    }
    ```
 
@@ -30,13 +36,13 @@ This skill provides instructions for configuring and using the CodeScene MCP ser
    the secret manager / CI settings and pass them at runtime.*
 
 3. **ACE Access (Auto-Refactoring)**:
-   To use the `code_health_auto_refactor` tool, provide the ACE access token
-   through the same secret-management path:
+   To use the `code_health_auto_refactor` tool, set the `CS_ACE_ACCESS_TOKEN`
+   environment variable or configure via `set_config`:
 
    ```json
    {
      "key": "ace_access_token",
-     "value": "${ACE_TOKEN}"
+     "value": "${CS_ACE_ACCESS_TOKEN}"
    }
    ```
 

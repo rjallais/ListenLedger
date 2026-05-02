@@ -128,7 +128,7 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 func deezerGet(ctx context.Context, client *http.Client, endpoint, userAgent string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build deezer request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")

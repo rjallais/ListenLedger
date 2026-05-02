@@ -108,7 +108,7 @@ func (l *TidalLookup) Lookup(ctx context.Context, song SongInput, primaryArtistP
 func (l *TidalLookup) doRequest(ctx context.Context, client *http.Client, endpoint, userAgent string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build tidal request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/vnd.api+json")

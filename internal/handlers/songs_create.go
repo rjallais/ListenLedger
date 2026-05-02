@@ -420,7 +420,7 @@ func (h *Handler) upsertAlbumForSong(txApp core.App, p albumUpsertParams) error 
 	filter := "title = {:title} && artist_name = {:artist_name}"
 	params := dbx.Params{"title": p.AlbumName, "artist_name": p.PrimaryArtist}
 	if p.ReleaseType != "" {
-		filter += " && release_type = {:release_type}"
+		filter += " && (release_type = {:release_type} || release_type = '')"
 		params["release_type"] = p.ReleaseType
 	}
 	records, err := txApp.FindRecordsByFilter(
@@ -550,7 +550,6 @@ func (h *Handler) findOrCreateArtist(txApp core.App, artistName, artistSpotifyID
 	record.Set("fetch_status", "idle")
 	record.Set("collection_songs", 1)
 	record.Set("total_songs", 0)
-	record.Set("last_updated", time.Now())
 	if err := txApp.Save(record); err != nil {
 		return songNewArtistTarget{}, false, err
 	}

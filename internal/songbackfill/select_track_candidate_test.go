@@ -122,8 +122,9 @@ func TestSelectTrackCandidateKeepsFeaturedArtistsWhenTitleSignalsFeature(t *test
 	if !ok || ambiguous {
 		t.Fatalf("ok=%v ambiguous=%v notes=%v", ok, ambiguous, notes)
 	}
-	if len(selected.ArtistNames) != 4 {
-		t.Fatalf("selected.ArtistNames = %#v, want 4-artist featured candidate", selected.ArtistNames)
+	expectedArtists := []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"}
+	if !reflect.DeepEqual(selected.ArtistNames, expectedArtists) {
+		t.Fatalf("selected.ArtistNames = %#v, want %#v", selected.ArtistNames, expectedArtists)
 	}
 	if selected.Title != "Old Thing Back (feat. Ja Rule and Ralph Tresvant)" {
 		t.Fatalf("selected.Title = %q", selected.Title)

@@ -119,6 +119,9 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 	if artistID == "" {
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 
 	records, err := w.app.FindRecordsByFilter(
 		"scrape_jobs",

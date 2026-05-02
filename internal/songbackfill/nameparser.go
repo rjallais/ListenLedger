@@ -21,30 +21,6 @@ var knownSingleArtists = []string{
 	"Crosby, Stills, Nash & Young",
 }
 
-// countArtistSegments splits a name on commas and conjunctions (" & ", " and "),
-// trims empty parts, and returns the count of non-empty segments.
-// For example:
-// - "Earth, Wind & Fire" → segments: ["Earth", "Wind", "Fire"] → count 3 → return 1 (stylized, not multi)
-// - "A, B & C" → segments: ["A", "B", "C"] → count 3 → return 3 (true multi-artist)
-// - "Earth Wind & Fire" → segments: ["Earth Wind", "Fire"] → count 2 → return 2 (appears multi)
-// The key insight: if only *one* logical name emerges (after removing delimiters),
-// it's a stylized single artist; otherwise it's multi-artist.
-func countArtistSegments(name string) int {
-	// Replace all conjunction delimiters with comma for uniform splitting
-	normalized := strings.ReplaceAll(name, " & ", ",")
-	normalized = strings.ReplaceAll(normalized, " and ", ",")
-
-	parts := strings.Split(normalized, ",")
-	var segments []string
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			segments = append(segments, trimmed)
-		}
-	}
-	return len(segments)
-}
-
 // isStylizedSingleArtistVariant detects single-artist names that use commas
 // and conjunctions stylistically, like "Earth, Wind & Fire" or "Crosby, Stills & Nash".
 // Heuristics:

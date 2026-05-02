@@ -435,7 +435,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 		return errRequestAlreadySucceeded
 	}
 
-	return w.persistListeners(req, env.label, listeners, startedAt)
+	return w.persistListeners(ctx, req, env.label, listeners, startedAt)
 }
 
 // logProcessingStart logs the standard processing start message.
@@ -496,8 +496,8 @@ func (w *Worker) fetchListeners(ctx context.Context, req messaging.ScrapeRequest
 
 // persistListeners writes the fetched listener count to PocketBase and marks
 // the scrape job as succeeded.
-func (w *Worker) persistListeners(req messaging.ScrapeRequested, label string, listeners int, startedAt time.Time) error {
-	persistCtx, persistCancel := context.WithTimeout(w.ctx, 5*time.Second)
+func (w *Worker) persistListeners(ctx context.Context, req messaging.ScrapeRequested, label string, listeners int, startedAt time.Time) error {
+	persistCtx, persistCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer persistCancel()
 
 	if err := w.updateArtistListeners(persistCtx, req.ArtistID, listeners); err != nil {

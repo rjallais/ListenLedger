@@ -65,6 +65,9 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 
 	if prefilled, ok := r.resolveViaNamePrefill(ctx, song, parsed, resolution); ok {
 		return prefilled
+	} else {
+		resolution.Notes = append(resolution.Notes, prefilled.Notes...)
+		resolution.ExternalCandidates = prefilled.ExternalCandidates
 	}
 
 	if !parsed.HasEllipsis {
@@ -218,7 +221,7 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 	resolution := base
 	if err != nil {
 		resolution.Notes = append(resolution.Notes, fmt.Sprintf("tidal prefill lookup failed: %v", err))
-		return resolution, true
+		return resolution, false
 	}
 	if len(candidates) == 0 {
 		return Resolution{}, false
@@ -228,7 +231,7 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 	if len(multiArtistCandidates) == 0 {
 		resolution.ExternalCandidates = summarizeCandidates(candidates)
 		resolution.Notes = append(resolution.Notes, "tidal prefill did not yield a safe multi-artist expansion")
-		return resolution, true
+		return resolution, false
 	}
 
 	return r.applyPrefillCandidate(resolution, song, multiArtistCandidates)

@@ -66,7 +66,7 @@ func main() {
 		log.Fatalf("[backfill_song_artists] failed to load artists: %v", err)
 	}
 
-	songs = applyRetryPlanning(*retryFromLatestReport, *reportDir, songs, *limit)
+	songs = applyRetryPlanning(ctx, *retryFromLatestReport, *reportDir, songs, *limit)
 
 	log.Printf("[backfill_song_artists] loaded %d songs with empty artist_spotify_ids and %d artists with spotify_id", len(songs), len(artists))
 	if len(songs) == 0 {
@@ -168,7 +168,7 @@ func buildResolver(ctx context.Context, httpClient *http.Client, params buildRes
 	})
 }
 
-func applyRetryPlanning(enabled bool, reportDir string, songs []songbackfill.SongInput, limit int) []songbackfill.SongInput {
+func applyRetryPlanning(ctx context.Context, enabled bool, reportDir string, songs []songbackfill.SongInput, limit int) []songbackfill.SongInput {
 	applyLimit := func(items []songbackfill.SongInput) []songbackfill.SongInput {
 		if limit > 0 && len(items) > limit {
 			return items[:limit]
@@ -179,7 +179,7 @@ func applyRetryPlanning(enabled bool, reportDir string, songs []songbackfill.Son
 	if !enabled {
 		return applyLimit(songs)
 	}
-	plannedSongs, latestReportPath, err := planSongsFromLatestReport(reportDir, songs)
+	plannedSongs, latestReportPath, err := planSongsFromLatestReport(ctx, reportDir, songs)
 	if err != nil {
 		log.Printf("[backfill_song_artists] warning: failed to use latest report for retry planning: %v", err)
 		return applyLimit(songs)

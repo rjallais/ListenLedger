@@ -3,7 +3,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,31 +24,34 @@ type resolutionHints struct {
 
 var trailingDotEllipsisPattern = regexp.MustCompile(`(?i)(?:,\s*|\s+)(\.{2,})\s*$`)
 
-func planSongsFromLatestReport(reportDir string, songs []songbackfill.SongInput) ([]songbackfill.SongInput, string, error) {
-	reportPath, err := latestBackfillReportPath(reportDir)
+func planSongsFromLatestReport(ctx context.Context, reportDir string, songs []songbackfill.SongInput) ([]songbackfill.SongInput, string, error) {
+	reportPath, err := latestBackfillReportPath(ctx, reportDir)
 	if err != nil {
-		return songs, "", err
+		return songs, "", fmt.Errorf("latest backfill report path: %w", err)
 	}
 	if reportPath == "" {
 		return songs, "", nil
 	}
 
-	hints, err := loadResolutionHints(reportPath)
+	hints, err := loadResolutionHints(ctx, reportPath)
 	if err != nil {
-		return songs, reportPath, err
+		return songs, reportPath, fmt.Errorf("load resolution hints: %w", err)
 	}
 
 	planned := prioritizeSongsForRetry(songs, hints)
 	return planned, reportPath, nil
 }
 
-func latestBackfillReportPath(reportDir string) (string, error) {
+func latestBackfillReportPath(ctx context.Context, reportDir string) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	entries, err := os.ReadDir(reportDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
-		return "", err
+		return "", fmt.Errorf("read backfill report directory: %w", err)
 	}
 
 	latest := ""
@@ -66,15 +71,18 @@ func latestBackfillReportPath(reportDir string) (string, error) {
 	return latest, nil
 }
 
-func loadResolutionHints(path string) (map[string]resolutionHints, error) {
+func loadResolutionHints(ctx context.Context, path string) (map[string]resolutionHints, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read resolution hints file: %w", err)
 	}
 
 	var payload priorReportSummary
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal resolution hints: %w", err)
 	}
 
 	hints := make(map[string]resolutionHints, len(payload.Resolutions))
