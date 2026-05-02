@@ -3,6 +3,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -187,7 +189,7 @@ func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
 func (h *Handler) findAlbumRecord(albumID string) (*core.Record, error) {
 	record, err := h.app.FindRecordById("albums", albumID)
 	if err != nil {
-		return nil, fmt.Errorf("album not found: %w", err)
+		return nil, err
 	}
 	return record, nil
 }
@@ -289,7 +291,11 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 
 	record, err := h.findAlbumRecord(albumID)
 	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+		if errors.Is(err, sql.ErrNoRows) {
+			return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+		}
+		log.Printf("[albums] findAlbumRecord error: %v", err)
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup album"})
 	}
 
 	oldStatus := albumStatusForUI(record.GetString("status"))
@@ -351,7 +357,11 @@ func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*cor
 
 		record, err := h.findAlbumRecord(albumID)
 		if err != nil {
-			return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+			if errors.Is(err, sql.ErrNoRows) {
+				return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+			}
+			log.Printf("[albums] findAlbumRecord error: %v", err)
+			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup album"})
 		}
 
 		adjust(record, delta)

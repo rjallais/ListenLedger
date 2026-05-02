@@ -16,6 +16,10 @@ import (
 
 func applyApprovedResolutions(ctx context.Context, app *pocketbase.PocketBase, resolutions []songbackfill.Resolution, minConf float64, doApply bool) (applied, nameChanges int) {
 	for _, resolution := range resolutions {
+		if err := ctx.Err(); err != nil {
+			log.Printf("[backfill_song_artists] warning: apply cancelled: %v", err)
+			return applied, nameChanges
+		}
 		if !resolution.Approved(minConf) && !resolution.NamePrefillApproved(minConf) {
 			continue
 		}
@@ -47,6 +51,9 @@ func applyApprovedResolutions(ctx context.Context, app *pocketbase.PocketBase, r
 }
 
 func writeReviewOutputs(ctx context.Context, reportDir, timestamp, reportPath string, resolutions []songbackfill.Resolution, artists []songbackfill.ArtistInput) (reviewQueue, string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return reviewQueue{}, "", "", fmt.Errorf("write review outputs cancelled: %w", err)
+	}
 	queue := buildReviewQueue(reportPath, resolutions, artists)
 	if len(queue.ReviewEntries) == 0 {
 		return queue, "", "", nil
@@ -57,6 +64,10 @@ func writeReviewOutputs(ctx context.Context, reportDir, timestamp, reportPath st
 	queue.CSVPath = csvPath
 	if err := writeReviewQueueJSON(jsonPath, queue); err != nil {
 		return queue, jsonPath, csvPath, fmt.Errorf("write review queue json: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(jsonPath)
+		return queue, jsonPath, csvPath, fmt.Errorf("write review outputs cancelled: %w", err)
 	}
 	if err := writeReviewQueueCSV(csvPath, queue); err != nil {
 		_ = os.Remove(jsonPath)

@@ -495,6 +495,12 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 	}
 
 	if ack != nil && ack.Duplicate {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		correlation.Clear(record.Id)
+		if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
+			log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+		}
 		return requestID, true, nil
 	}
 

@@ -183,9 +183,9 @@ func (w *Worker) Start() error {
 	w.accepting.Store(true)
 	w.dispatchMu.Unlock()
 
-	consume, ok := w.createAndAlignConsumer(totalConc)
-	if !ok {
-		return fmt.Errorf("failed to create or align JetStream consumer")
+	consume, err := w.createAndAlignConsumer(totalConc)
+	if err != nil {
+		return fmt.Errorf("failed to create or align JetStream consumer: %w", err)
 	}
 	w.consume = consume
 
@@ -256,8 +256,8 @@ func (w *Worker) resolveJetStreamTuning() {
 
 // createAndAlignConsumer ensures the durable JetStream consumer exists, reads back
 // the server-side config, and returns the active ConsumeContext.
-// Returns (consume, true) on success or (nil, false) on failure.
-func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext, bool) {
+// Returns (consume, nil) on success or (nil, error) on failure.
+func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext, error) {
 	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 	defer cancel()
 
@@ -271,8 +271,7 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 		MaxAckPending: totalConc,
 	})
 	if err != nil {
-		log.Printf("[worker] Failed to ensure scrape consumer: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("ensure scrape consumer: %w", err)
 	}
 
 	alignCtx, alignCancel := context.WithTimeout(w.ctx, 2*time.Second)
@@ -281,10 +280,9 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 
 	consume, err := consumer.Consume(w.dispatchToChannel)
 	if err != nil {
-		log.Printf("[worker] Failed to start consumer: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("start consumer: %w", err)
 	}
-	return consume, true
+	return consume, nil
 }
 
 func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.Consumer) {

@@ -51,7 +51,7 @@ Most hand-authored runtime/test `.go` files start with the jsonv2 build constrai
 ```go
 //go:build goexperiment.jsonv2
 ```
-Exceptions exist for generated Templ output (`templates/*_templ.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
+Exceptions exist for the `templates/` package (generated `*_templ.go` files, `types.go`, and `artists_helpers.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
 
 ### Import Ordering
 Group imports in this order with blank lines between groups (matches `goimports` convention):

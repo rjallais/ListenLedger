@@ -307,8 +307,10 @@ func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackC
 		return
 	}
 	if candidate.Confidence >= r.minimumConfidence {
-		resolution.Action = ActionUpdateNameOnly
-		resolution.UpdatedArtistSpotifyIDs = ""
+		resolution.Notes = append(
+			resolution.Notes,
+			"prefill candidate did not match any known artists; manual review required before updating artist_name",
+		)
 		return
 	}
 	resolution.Action = ActionSkipLowConfidence

@@ -3,7 +3,11 @@
 // Package songbackfill provides utilities to parse and backfill song metadata with artist information.
 package songbackfill
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 type parsedArtists struct {
 	Names         []string
@@ -66,8 +70,8 @@ func isStylizedSingleArtistVariant(name string) bool {
 		}
 
 		// Check title-case on first character
-		first := seg[0]
-		if first < 'A' || first > 'Z' {
+		firstRune, _ := utf8.DecodeRuneInString(seg)
+		if firstRune == utf8.RuneError || !unicode.IsUpper(firstRune) {
 			return false
 		}
 	}

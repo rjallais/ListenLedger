@@ -110,13 +110,17 @@ func normalizePlaylistSort(raw string) string {
 }
 
 func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) {
-	collection, err := h.app.FindCollectionByNameOrId("songs")
+	return h.listSongEntriesWithApp(ctx, h.app)
+}
+
+func (h *Handler) listSongEntriesWithApp(ctx context.Context, app core.App) ([]songListEntry, error) {
+	collection, err := app.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return nil, err
 	}
 
 	var records []*core.Record
-	err = h.app.RecordQuery(collection.Id).
+	err = app.RecordQuery(collection.Id).
 		WithContext(ctx).
 		All(&records)
 	if err != nil {
@@ -404,7 +408,11 @@ func paginateEntries(entries []songListEntry, offset, limit int) []templates.Son
 }
 
 func (h *Handler) nextRecentBatchAssignment(ctx context.Context, now time.Time) (int, int, error) {
-	entries, err := h.listSongEntries(ctx)
+	return h.nextRecentBatchAssignmentWithApp(ctx, h.app, now)
+}
+
+func (h *Handler) nextRecentBatchAssignmentWithApp(ctx context.Context, app core.App, now time.Time) (int, int, error) {
+	entries, err := h.listSongEntriesWithApp(ctx, app)
 	if err != nil {
 		return 0, 0, err
 	}

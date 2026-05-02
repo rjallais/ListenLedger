@@ -100,7 +100,7 @@ func hasTidalCandidateAvailable(
 	if selectedCandidate != nil && selectedCandidate.Source == "tidal_track" {
 		return true
 	}
-	return selectedCandidate == nil && hasTidalCandidate(externalCandidates)
+	return hasTidalCandidate(externalCandidates)
 }
 
 func selectCandidateForReview(resolution songbackfill.Resolution) *songbackfill.CandidateSummary {

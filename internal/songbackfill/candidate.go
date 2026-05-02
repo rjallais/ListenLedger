@@ -4,6 +4,7 @@ package songbackfill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,7 +16,7 @@ type ChainTrackLookup struct {
 
 func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArtistPrefix string) ([]TrackCandidate, error) {
 	allCandidates := []TrackCandidate{}
-	errorsSeen := []string{}
+	errorsSeen := []error{}
 
 	for _, lookup := range l.Lookups {
 		if lookup == nil {
@@ -24,7 +25,7 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 
 		candidates, err := lookup.Lookup(ctx, song, primaryArtistPrefix)
 		if err != nil {
-			errorsSeen = append(errorsSeen, err.Error())
+			errorsSeen = append(errorsSeen, err)
 			continue
 		}
 		if len(candidates) == 0 {
@@ -39,7 +40,7 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 		return allCandidates, nil
 	}
 	if len(errorsSeen) > 0 {
-		return nil, fmt.Errorf("%s", strings.Join(errorsSeen, "; "))
+		return nil, errors.Join(errorsSeen...)
 	}
 	return nil, nil
 }

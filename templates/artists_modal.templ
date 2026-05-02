@@ -28,10 +28,11 @@ templ AddArtistModal(currentGenre string) {
 
 templ AddArtistNameField() {
 	<div class="form-control w-full mb-4">
-		<label class="label">
+		<label class="label" for="artist-name">
 			<span class="label-text">Artist Name *</span>
 		</label>
 		<input
+			id="artist-name"
 			type="text"
 			name="name"
 			placeholder="Enter artist name"
@@ -43,10 +44,11 @@ templ AddArtistNameField() {
 
 templ AddArtistSpotifyIDField() {
 	<div class="form-control w-full mb-4">
-		<label class="label">
+		<label class="label" for="spotify-id">
 			<span class="label-text">Artist ID (Spotify ID) *</span>
 		</label>
 		<input
+			id="spotify-id"
 			type="text"
 			name="spotify_id"
 			placeholder="e.g., 0L8ExT028jH3ddEcZwqJJ5"
@@ -58,10 +60,10 @@ templ AddArtistSpotifyIDField() {
 
 templ AddArtistGenreField(currentGenre string) {
 	<div class="form-control w-full mb-4">
-		<label class="label">
+		<label class="label" for="genre-group">
 			<span class="label-text">Genre Group</span>
 		</label>
-		<select name="genre_group" class="select select-bordered w-full">
+		<select id="genre-group" name="genre_group" class="select select-bordered w-full">
 			for _, option := range artistGenreOptions(currentGenre) {
 				@SelectOption(option)
 			}
@@ -71,10 +73,10 @@ templ AddArtistGenreField(currentGenre string) {
 
 templ AddArtistStatusField() {
 	<div class="form-control w-full mb-4">
-		<label class="label">
+		<label class="label" for="list-status">
 			<span class="label-text">Initial Status</span>
 		</label>
-		<select name="list_status" class="select select-bordered w-full">
+		<select id="list-status" name="list_status" class="select select-bordered w-full">
 			for _, option := range artistListStatusOptions() {
 				@SelectOption(option)
 			}
@@ -85,11 +87,12 @@ templ AddArtistStatusField() {
 templ AddArtistOptionalFields() {
 	<div class="grid grid-cols-2 gap-4 mb-6">
 		<div class="form-control w-full">
-			<label class="label">
+			<label class="label" for="monthly-listeners">
 				<span class="label-text">Monthly Listeners</span>
 				<span class="label-text-alt text-base-content/50">Optional</span>
 			</label>
 			<input
+				id="monthly-listeners"
 				type="number"
 				name="monthly_listeners"
 				placeholder="0"
@@ -98,11 +101,12 @@ templ AddArtistOptionalFields() {
 			/>
 		</div>
 		<div class="form-control w-full">
-			<label class="label">
+			<label class="label" for="collection-songs">
 				<span class="label-text">Collection Songs</span>
 				<span class="label-text-alt text-base-content/50">Optional</span>
 			</label>
 			<input
+				id="collection-songs"
 				type="number"
 				name="collection_songs"
 				placeholder="0"

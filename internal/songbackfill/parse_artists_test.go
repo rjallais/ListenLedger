@@ -24,10 +24,10 @@ func TestParseStoredArtistsPreservesNothingNowhereAsSingleArtist(t *testing.T) {
 
 	parsed := parseStoredArtists("nothing,nowhere.")
 	if parsed.HasEllipsis {
-		t.Fatal("expected HasEllipsis = false")
+		t.Fatalf("HasEllipsis = %v, want false", parsed.HasEllipsis)
 	}
 	if !parsed.PreserveWhole {
-		t.Fatal("expected PreserveWhole = true")
+		t.Fatalf("PreserveWhole = %v, want true", parsed.PreserveWhole)
 	}
 	if len(parsed.Names) != 1 || parsed.Names[0] != "nothing,nowhere." {
 		t.Fatalf("Names = %#v, want single preserved artist", parsed.Names)
@@ -56,7 +56,7 @@ func TestIsStylizedSingleArtistVariant(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isStylizedSingleArtistVariant(tt.input)
 			if got != tt.expected {
-				t.Errorf("isStylizedSingleArtistVariant(%q) = %v, want %v", tt.input, got, tt.expected)
+				t.Fatalf("isStylizedSingleArtistVariant(%q) = %v, want %v", tt.input, got, tt.expected)
 			}
 		})
 	}
@@ -79,7 +79,7 @@ func TestIsSingleArtistNameWithConjunction(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isSingleArtistName(tt.input)
 			if got != tt.expected {
-				t.Errorf("isSingleArtistName(%q) = %v, want %v", tt.input, got, tt.expected)
+				t.Fatalf("isSingleArtistName(%q) = %v, want %v", tt.input, got, tt.expected)
 			}
 		})
 	}

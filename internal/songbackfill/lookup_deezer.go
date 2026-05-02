@@ -75,6 +75,9 @@ func (l *DeezerLookup) Lookup(ctx context.Context, song SongInput, primaryArtist
 		detailURL := fmt.Sprintf("%s/track/%d", baseURL, item.ID)
 		detailResp, err := deezerGet(ctx, client, detailURL, userAgent)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			log.Printf("[deezer lookup] detail request failed for id=%d: %v", item.ID, err)
 			continue
 		}

@@ -174,41 +174,45 @@ func (h *Handler) publishRetryRequest(ctx context.Context, req messaging.ScrapeR
 	return h.publishScrapeRequest(pubCtx, req)
 }
 
-func (h *Handler) saveRetryPublishFailure(ctx context.Context, job *core.Record, pubErr error) {
+func (h *Handler) saveRetryPublishFailure(ctx context.Context, job *core.Record, pubErr error) error {
 	job.Set("status", "failed")
 	job.Set("error", fmt.Sprintf("retry publish failed: %v", pubErr))
 	job.Set("finished_at", time.Now())
 	if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
-		log.Printf("[queue-retry] Warning: failed to save publish error for job %s: %v", job.Id, saveErr)
+		return fmt.Errorf("save publish error for job %s: %w", job.Id, saveErr)
 	}
+	return nil
 }
 
-func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) {
+func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) error {
 	job.Set("status", "succeeded")
 	job.Set("error", "deduped_existing_request")
 	job.Set("finished_at", time.Now())
 	if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
-		log.Printf("[queue-retry] Warning: failed to save deduped status for job %s: %v", job.Id, saveErr)
+		return fmt.Errorf("save deduped status for job %s: %w", job.Id, saveErr)
 	}
+	return nil
 }
 
-func (h *Handler) saveRetryQueued(ctx context.Context, job *core.Record) {
+func (h *Handler) saveRetryQueued(ctx context.Context, job *core.Record) error {
 	job.Set("status", "queued")
 	job.Set("queued_at", time.Now())
 	job.Set("error", "")
 	job.Set("started_at", nil)
 	job.Set("finished_at", nil)
 	if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
-		log.Printf("[queue-retry] Warning: failed to save queued status for job %s: %v", job.Id, saveErr)
+		return fmt.Errorf("save queued status for job %s: %w", job.Id, saveErr)
 	}
+	return nil
 }
 
-func (h *Handler) markArtistRetryPending(ctx context.Context, artist *core.Record, artistID, requestID string) {
+func (h *Handler) markArtistRetryPending(ctx context.Context, artist *core.Record, artistID, requestID string) error {
 	correlation.Associate(artistID, requestID)
 	artist.Set("fetch_status", "pending")
 	if saveErr := h.app.SaveWithContext(ctx, artist); saveErr != nil {
-		log.Printf("[queue-retry] Warning: failed to mark artist %s pending: %v", artistID, saveErr)
+		return fmt.Errorf("mark artist %s pending: %w", artistID, saveErr)
 	}
+	return nil
 }
 
 func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queueRetryStats, error) {
@@ -234,18 +238,26 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		ack, pubErr := h.publishRetryRequest(ctx, req)
 		if pubErr != nil {
 			stats.PublishFailed++
-			h.saveRetryPublishFailure(ctx, job, pubErr)
+			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
+				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
+			}
 			continue
 		}
 
 		if ack != nil && ack.Duplicate {
 			stats.Duplicate++
-			h.saveRetryDeduped(ctx, job)
+			if saveErr := h.saveRetryDeduped(ctx, job); saveErr != nil {
+				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
+			}
 			continue
 		}
 
-		h.saveRetryQueued(ctx, job)
-		h.markArtistRetryPending(ctx, artist, artistID, requestID)
+		if err := h.saveRetryQueued(ctx, job); err != nil {
+			return stats, err
+		}
+		if err := h.markArtistRetryPending(ctx, artist, artistID, requestID); err != nil {
+			return stats, err
+		}
 		stats.Retried++
 	}
 

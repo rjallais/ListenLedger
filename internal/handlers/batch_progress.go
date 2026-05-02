@@ -203,11 +203,27 @@ func (h *Handler) getBatchSnapshot(batchID string) (batchProgressSnapshot, bool)
 }
 
 func (h *Handler) getActiveBatchSnapshot() (batchProgressSnapshot, bool) {
-	snapshot, ok := h.getLatestBatchSnapshot()
-	if ok && snapshot.Done {
+	h.batchMu.RLock()
+	defer h.batchMu.RUnlock()
+
+	var activeBatch *batchProgress
+	var latestTime time.Time
+
+	for _, batch := range h.batches {
+		done := batch.Done || (batch.Total > 0 && batch.Completed >= batch.Total)
+		if !done {
+			if batch.UpdatedAt.After(latestTime) {
+				activeBatch = batch
+				latestTime = batch.UpdatedAt
+			}
+		}
+	}
+
+	if activeBatch == nil {
 		return batchProgressSnapshot{}, false
 	}
-	return snapshot, ok
+
+	return h.batchSnapshotLocked(activeBatch), true
 }
 
 func (h *Handler) getLatestBatchSnapshot() (batchProgressSnapshot, bool) {

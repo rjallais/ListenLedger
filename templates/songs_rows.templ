@@ -14,7 +14,7 @@ templ SongRow(song Song, playlistSort string) {
 		@SongReleaseTypeCell(song.ReleaseType)
 		<td>{ song.ReleaseDate }</td>
 		@SongBatchCell(song.BatchSeq, song.BatchPos)
-		@SongRecentToggleCell(song.ID, song.IsRecent, playlistSort)
+		@SongRecentToggleCell(song.ID, song.Title, song.IsRecent, playlistSort)
 	</tr>
 }
 
@@ -36,11 +36,12 @@ templ SongBatchCell(batchSeq, batchPos int) {
 	</td>
 }
 
-templ SongRecentToggleCell(songID string, isRecent bool, playlistSort string) {
+templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort string) {
 	<td class="text-center">
 		<input
 			type="checkbox"
 			class="checkbox checkbox-sm checkbox-primary"
+			aria-label={ fmt.Sprintf("Mark %s as recently added", songTitle) }
 			checked?={ isRecent }
 			data-on:change={ songRecentToggleAction(songID, playlistSort) }
 		/>

@@ -259,7 +259,7 @@ func (h *Handler) createSongRecord(ctx context.Context, txApp core.App, input so
 		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}
 	}
 
-	batchSeq, batchPos, err := h.nextRecentBatchAssignment(ctx, time.Now())
+	batchSeq, batchPos, err := h.nextRecentBatchAssignmentWithApp(ctx, txApp, time.Now())
 	if err != nil {
 		log.Printf("[handleCreateSong] nextRecentBatchAssignment failed: %v", err)
 		return nil, &songSaveError{http.StatusInternalServerError, "failed to assign recent batch"}
@@ -370,7 +370,7 @@ func (h *Handler) fetchArtistNameFromSpotify(ctx context.Context, spotifyID stri
 	endpoint := "https://open.spotify.com/oembed?url=" + url.QueryEscape("spotify:artist:"+spotifyID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", http.StatusBadGateway, fmt.Errorf("failed to infer artist name from spotify_id")
+		return "", http.StatusBadGateway, fmt.Errorf("failed to create spotify request: %w", err)
 	}
 
 	if h.httpClient == nil {
@@ -379,7 +379,7 @@ func (h *Handler) fetchArtistNameFromSpotify(ctx context.Context, spotifyID stri
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify to infer artist name")
+		return "", http.StatusBadGateway, fmt.Errorf("failed to reach spotify: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

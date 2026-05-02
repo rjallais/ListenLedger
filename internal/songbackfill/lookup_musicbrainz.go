@@ -114,7 +114,7 @@ func (l *MusicBrainzLookup) doRequest(ctx context.Context, client *http.Client, 
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("build musicbrainz request: %w", err)
 		}
 		req.Header.Set("User-Agent", userAgent)
 		req.Header.Set("Accept", "application/json")
@@ -122,7 +122,7 @@ func (l *MusicBrainzLookup) doRequest(ctx context.Context, client *http.Client, 
 		resp, err := client.Do(req)
 		if err != nil {
 			if attempt >= maxRetries || ctx.Err() != nil {
-				return nil, err
+				return nil, fmt.Errorf("perform musicbrainz request: %w", err)
 			}
 			if sleepErr := sleepWithContext(ctx, l.retryDelay(nil, attempt)); sleepErr != nil {
 				return nil, sleepErr

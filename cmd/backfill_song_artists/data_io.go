@@ -14,6 +14,9 @@ import (
 )
 
 func loadSongs(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.SongInput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("songs load canceled before query: %w", err)
+	}
 	records, err := app.FindRecordsByFilter("songs", "", "", 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read songs collection: %w", err)
@@ -21,6 +24,9 @@ func loadSongs(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.
 
 	songs := make([]songbackfill.SongInput, 0, len(records))
 	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("songs load canceled during iteration: %w", err)
+		}
 		if strings.TrimSpace(record.GetString("artist_spotify_ids")) != "" {
 			continue
 		}
@@ -44,6 +50,9 @@ func loadSongs(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.
 }
 
 func loadArtists(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.ArtistInput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("artists load canceled before query: %w", err)
+	}
 	records, err := app.FindRecordsByFilter("artists", "", "", 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read artists collection: %w", err)
@@ -51,6 +60,9 @@ func loadArtists(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfil
 
 	artists := make([]songbackfill.ArtistInput, 0, len(records))
 	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("artists load canceled during iteration: %w", err)
+		}
 		spotifyID := strings.TrimSpace(record.GetString("spotify_id"))
 		if spotifyID == "" {
 			continue

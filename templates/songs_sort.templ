@@ -16,6 +16,7 @@ templ SongSortControls(playlistSort string) {
 templ SongSortButton(sortValue, label, playlistSort string) {
 	<button
 		class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == sortValue), templ.KV("btn-outline", playlistSort != sortValue) }
+		aria-pressed={ fmt.Sprintf("%v", playlistSort == sortValue) }
 		data-on:click={ songsSectionsSortURL(sortValue) }
 	>
 		{ label }

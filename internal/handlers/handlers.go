@@ -44,17 +44,40 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	
+	dialTimeout := 10 * time.Second
+	if cfg != nil && cfg.RequestTimeout > 0 {
+		dialTimeout = cfg.RequestTimeout
+	}
+	
 	transport.DialContext = (&net.Dialer{
-		Timeout:   10 * time.Second,
+		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
-	transport.MaxIdleConns = 100
+	
+	if cfg != nil && cfg.MaxIdleConns > 0 {
+		transport.MaxIdleConns = cfg.MaxIdleConns
+	} else {
+		transport.MaxIdleConns = 100
+	}
+	
 	transport.MaxIdleConnsPerHost = 2
-	transport.IdleConnTimeout = 90 * time.Second
+	
+	if cfg != nil && cfg.IdleConnTimeout > 0 {
+		transport.IdleConnTimeout = cfg.IdleConnTimeout
+	} else {
+		transport.IdleConnTimeout = 90 * time.Second
+	}
+	
 	transport.TLSHandshakeTimeout = 10 * time.Second
 
+	httpTimeout := 30 * time.Second
+	if cfg != nil && cfg.HTTPTimeout > 0 {
+		httpTimeout = cfg.HTTPTimeout
+	}
+
 	httpClient := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   httpTimeout,
 		Transport: transport,
 	}
 
