@@ -34,9 +34,17 @@ func applyApprovedResolutions(ctx context.Context, app *pocketbase.PocketBase, r
 			log.Printf("[backfill_song_artists] warning: failed to load song %s for update: %v", resolution.SongID, err)
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			log.Printf("[backfill_song_artists] warning: apply cancelled: %v", err)
+			return applied, nameChanges
+		}
 		record.Set("artist_name", resolution.UpdatedArtistName)
 		if resolution.UpdatedArtistSpotifyIDs != "" {
 			record.Set("artist_spotify_ids", resolution.UpdatedArtistSpotifyIDs)
+		}
+		if err := ctx.Err(); err != nil {
+			log.Printf("[backfill_song_artists] warning: apply cancelled: %v", err)
+			return applied, nameChanges
 		}
 		if err := app.Save(record); err != nil {
 			log.Printf("[backfill_song_artists] warning: failed to save song %s: %v", resolution.SongID, err)

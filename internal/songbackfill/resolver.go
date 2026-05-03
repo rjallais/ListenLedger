@@ -173,7 +173,7 @@ func (r *Resolver) applyExternalEllipsisFilter(resolution *Resolution, hasEllips
 		if len(candidates) == 0 {
 			resolution.Notes = append(
 				resolution.Notes,
-				"external lookup did not find a confident multi-artist credit for an ellipsis-based song",
+				NoteEllipsisMultiArtistNotFound,
 			)
 			return nil, true
 		}
@@ -246,13 +246,13 @@ func (r *Resolver) applyPrefillCandidate(resolution Resolution, song SongInput, 
 		return resolution, true
 	}
 	if !ok {
-		return resolution, true
+		return resolution, false
 	}
 
 	prefilledNames := dedupeArtistNames(candidate.ArtistNames)
 	if !preservesStoredMultiplicity(song.ArtistName, prefilledNames) {
 		resolution.Notes = append(resolution.Notes, "tidal prefill candidate would collapse a known multi-artist credit")
-		return resolution, true
+		return resolution, false
 	}
 
 	resolution.UpdatedArtistName = strings.Join(prefilledNames, ", ")

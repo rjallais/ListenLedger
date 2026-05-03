@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -150,8 +151,13 @@ func albumFilterConfigForStatus(status string) (albumFilterConfig, error) {
 	}
 }
 
-func (h *Handler) fetchAlbumRecords(cfg albumFilterConfig, offset, limit int) ([]*core.Record, int, error) {
-	totalCount, err := h.app.CountRecords("albums", cfg.filter)
+func (h *Handler) fetchAlbumRecords(ctx context.Context, cfg albumFilterConfig, offset, limit int) ([]*core.Record, int, error) {
+	var totalCount int
+	err := h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(cfg.filter).
+		Row(&totalCount)
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting albums: %w", err)
 	}
@@ -159,6 +165,7 @@ func (h *Handler) fetchAlbumRecords(cfg albumFilterConfig, offset, limit int) ([
 	records := make([]*core.Record, 0, limit)
 	if totalCount > 0 {
 		if err := h.app.RecordQuery("albums").
+			WithContext(ctx).
 			AndWhere(cfg.filter).
 			OrderBy(cfg.order).
 			Offset(int64(offset)).
@@ -168,7 +175,7 @@ func (h *Handler) fetchAlbumRecords(cfg albumFilterConfig, offset, limit int) ([
 		}
 	}
 
-	return records, int(totalCount), nil
+	return records, totalCount, nil
 }
 
 func albumsFromRecords(records []*core.Record) []templates.Album {
@@ -186,8 +193,11 @@ func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
 	return renderDatastar(e, templates.AlbumRow(album))
 }
 
-func (h *Handler) findAlbumRecord(albumID string) (*core.Record, error) {
-	record, err := h.app.FindRecordById("albums", albumID)
+func (h *Handler) findAlbumRecord(ctx context.Context, albumID string) (*core.Record, error) {
+	record, err := h.app.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +214,7 @@ func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 
 	params := parseAlbumListParams(e.Request, status)
 
-	records, totalCount, err := h.fetchAlbumRecords(cfg, params.offset, params.limit)
+	records, totalCount, err := h.fetchAlbumRecords(e.Request.Context(), cfg, params.offset, params.limit)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
@@ -289,7 +299,7 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid status value"})
 	}
 
-	record, err := h.findAlbumRecord(albumID)
+	record, err := h.findAlbumRecord(e.Request.Context(), albumID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
@@ -355,7 +365,7 @@ func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*cor
 			return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 
-		record, err := h.findAlbumRecord(albumID)
+		record, err := h.findAlbumRecord(e.Request.Context(), albumID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})

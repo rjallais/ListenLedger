@@ -441,7 +441,7 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priori
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
-		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
+		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (last_updated IS NULL OR last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
 		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)

@@ -46,7 +46,7 @@ func classifyReviewItem(
 		return
 	}
 
-	if hasNote(resolution.Notes, "external lookup did not find a confident multi-artist credit for an ellipsis-based song") {
+	if hasNote(resolution.Notes, songbackfill.NoteEllipsisMultiArtistNotFound) {
 		item.Priority = 4
 		item.Category = "needs_manual_credit_lookup"
 		item.RecommendedAction = "Look up the missing collaborators manually and seed them before rerunning the backfill."

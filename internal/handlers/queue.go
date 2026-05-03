@@ -228,16 +228,24 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 	for _, job := range records {
 		req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, &stats)
 		if err != nil {
-			// DB error during preparation - abort the retry loop and propagate
 			return stats, fmt.Errorf("failed to prepare retry request: %w", err)
 		}
 		if !ok {
 			continue
 		}
 
+		previousFetchStatus := artist.GetString("fetch_status")
+		if err := h.saveRetryQueued(ctx, job); err != nil {
+			return stats, err
+		}
+		if err := h.markArtistRetryPending(ctx, artist, artistID, requestID); err != nil {
+			return stats, err
+		}
+
 		ack, pubErr := h.publishRetryRequest(ctx, req)
 		if pubErr != nil {
 			stats.PublishFailed++
+			h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus)
 			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
 				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
 			}
@@ -246,22 +254,32 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 
 		if ack != nil && ack.Duplicate {
 			stats.Duplicate++
+			h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus)
 			if saveErr := h.saveRetryDeduped(ctx, job); saveErr != nil {
 				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
 			}
 			continue
 		}
 
-		if err := h.saveRetryQueued(ctx, job); err != nil {
-			return stats, err
-		}
-		if err := h.markArtistRetryPending(ctx, artist, artistID, requestID); err != nil {
-			return stats, err
-		}
 		stats.Retried++
 	}
 
 	return stats, nil
+}
+
+func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) {
+	correlation.Clear(artistID)
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.deleteScrapeJobRecordByRequestID(rollbackCtx, requestID, artistID); err != nil {
+		log.Printf("[queue-retry] warning: failed to delete scrape job during rollback for artist %s: %v", artistID, err)
+	}
+	if previousFetchStatus != "" {
+		artist.Set("fetch_status", previousFetchStatus)
+		if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
+			log.Printf("[queue-retry] warning: failed to restore fetch_status for artist %s: %v", artistID, err)
+		}
+	}
 }
 
 func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.StreamInfo, bool, uint64, uint64) {

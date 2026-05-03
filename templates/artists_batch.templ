@@ -30,10 +30,10 @@ templ BatchRefreshModal() {
 
 templ BatchRefreshCountField() {
 	<div class="form-control w-full mb-4">
-		<label class="label">
+		<label class="label" for="batch-refresh-count">
 			<span class="label-text">Number of Artists to Refresh</span>
 		</label>
-		<select name="count" class="select select-bordered w-full">
+		<select id="batch-refresh-count" name="count" class="select select-bordered w-full">
 			for _, option := range batchRefreshCountOptions() {
 				@SelectOption(option)
 			}
@@ -47,6 +47,6 @@ templ BatchRefreshCountField() {
 templ BatchRefreshModalActions() {
 	<div class="modal-action">
 		<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
-		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight || $batchDone}">Start Refresh</button>
+		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight}">Start Refresh</button>
 	</div>
 }

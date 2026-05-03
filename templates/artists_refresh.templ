@@ -4,6 +4,8 @@ package templates
 templ FetchStatusDot(artistID string) {
 	<span class="w-2 h-2 rounded-full bg-warning animate-pulse" title="Fetching..." data-show={ artistFetchStatusSignal(artistID) + " === 'pending'" }></span>
 	<span class="w-2 h-2 rounded-full bg-error" title="Fetch failed" data-show={ artistFetchStatusSignal(artistID) + " === 'failed'" }></span>
+	<span role="status" aria-live="polite" class="sr-only" data-show={ artistFetchStatusSignal(artistID) + " === 'pending'" }>Fetching</span>
+	<span role="status" aria-live="polite" class="sr-only" data-show={ artistFetchStatusSignal(artistID) + " === 'failed'" }>Fetch failed</span>
 }
 
 // ArtistRefreshAction renders the refresh control bound to fetch status signal.

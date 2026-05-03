@@ -173,17 +173,34 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 }
 
 func (w *Worker) Start() error {
+	w.dispatchMu.Lock()
+	if w.started {
+		w.dispatchMu.Unlock()
+		return fmt.Errorf("worker already started")
+	}
+	w.started = true
+	w.accepting.Store(true)
+	w.dispatchMu.Unlock()
+
+	startedOK := false
+	defer func() {
+		if startedOK {
+			return
+		}
+		w.dispatchMu.Lock()
+		w.started = false
+		w.accepting.Store(false)
+		w.dispatchMu.Unlock()
+	}()
+
 	w.initMetrics()
 	w.initFetcherClient()
 	w.resolveJetStreamTuning()
 
 	totalConc := w.totalConcurrency()
 	w.work = make(chan inflightMsg, totalConc)
-	w.dispatchMu.Lock()
-	w.accepting.Store(true)
-	w.dispatchMu.Unlock()
 
-	consume, err := w.createAndAlignConsumer(totalConc)
+	consume, err := w.createAndAlignConsumer(w.ctx, totalConc)
 	if err != nil {
 		return fmt.Errorf("failed to create or align JetStream consumer: %w", err)
 	}
@@ -193,7 +210,7 @@ func (w *Worker) Start() error {
 	w.providerCount = max(1, len(slots))
 	w.spawnProviderPools(slots)
 	w.launchBackgroundWorkers()
-	w.started = true
+	startedOK = true
 
 	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
 	return nil
@@ -257,11 +274,11 @@ func (w *Worker) resolveJetStreamTuning() {
 // createAndAlignConsumer ensures the durable JetStream consumer exists, reads back
 // the server-side config, and returns the active ConsumeContext.
 // Returns (consume, nil) on success or (nil, error) on failure.
-func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext, error) {
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+func (w *Worker) createAndAlignConsumer(ctx context.Context, totalConc int) (jetstream.ConsumeContext, error) {
+	ensureCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	consumer, err := messaging.EnsureScrapeWorkerConsumer(ctx, w.js, jetstream.ConsumerConfig{
+	consumer, err := messaging.EnsureScrapeWorkerConsumer(ensureCtx, w.js, jetstream.ConsumerConfig{
 		Durable:       messaging.ScrapeWorkerConsumerName,
 		FilterSubject: messaging.SubjectScrapeRequest,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -274,7 +291,7 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 		return nil, fmt.Errorf("ensure scrape consumer: %w", err)
 	}
 
-	alignCtx, alignCancel := context.WithTimeout(w.ctx, 2*time.Second)
+	alignCtx, alignCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer alignCancel()
 	w.alignFromConsumerInfo(alignCtx, consumer)
 
@@ -369,6 +386,7 @@ func (w *Worker) Stop() {
 		w.dispatchMu.Lock()
 		defer w.dispatchMu.Unlock()
 
+		w.started = false
 		w.accepting.Store(false)
 		if w.consume != nil {
 			w.consume.Drain()

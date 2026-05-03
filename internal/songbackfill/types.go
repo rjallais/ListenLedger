@@ -18,6 +18,8 @@ const (
 	ActionSkipUnresolved    = "skip_unresolved"
 )
 
+const NoteEllipsisMultiArtistNotFound = "external lookup did not find a confident multi-artist credit for an ellipsis-based song"
+
 type SongInput struct {
 	ID               string
 	Title            string

@@ -125,9 +125,9 @@ func listStatusOptions(artistID, currentStatus string) []artistStatusOption {
 		{
 			Label:       "Move to Queue",
 			DotClass:    "badge badge-warning badge-xs",
-			ButtonClass: statusOptionButtonClass(true, currentStatus == "waiting"),
+			ButtonClass: statusOptionButtonClass(true, currentStatus == StatusWaiting),
 			ItemClass:   "border-t border-base-300 mt-1 pt-1",
-			Action:      artistStatusPostAction(artistID, "waiting"),
+			Action:      artistStatusPostAction(artistID, StatusWaiting),
 		},
 	}
 }
@@ -170,7 +170,7 @@ func listStatusBadgeProps(status string) artistBadgeProps {
 			IconPath: "M6 18L18 6M6 6l12 12",
 			ShowIcon: true,
 		}
-	case "waiting":
+	case StatusWaiting:
 		return artistBadgeProps{
 			Classes:  "badge badge-warning badge-sm gap-1",
 			Label:    "queued",
@@ -287,7 +287,7 @@ func artistListStatusOptions() []selectOption {
 		{Value: "recently_added", Label: "Recently Added", Selected: true},
 		{Value: "included", Label: "Included"},
 		{Value: "not_added", Label: "Not Added"},
-		{Value: "waiting", Label: "Waiting (Queue)"},
+		{Value: StatusWaiting, Label: "Waiting (Queue)"},
 	}
 }
 

@@ -25,6 +25,9 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 
 		candidates, err := lookup.Lookup(ctx, song, primaryArtistPrefix)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			errorsSeen = append(errorsSeen, err)
 			continue
 		}
