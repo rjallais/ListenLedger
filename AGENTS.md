@@ -170,12 +170,14 @@ A skill is a set of local instructions in a `SKILL.md` file.
   - file: `.agents/skills/karpathy-guidelines/SKILL.md`
 
 ### Trigger rules
+
 - If the user asks about PocketBase setup, collections/schema, API rules, auth, files, relations, migrations, deployment, realtime, or PocketBase Go extension hooks, use the `pocketbase` skill.
 - If the user explicitly names `$pocketbase` (or "pocketbase skill"), use this skill for that turn.
 - If the user asks about coding best practices, avoiding LLM pitfalls, simplifying code, making surgical changes, or goal-driven development, use the `karpathy-guidelines` skill.
 - If the user explicitly names `$karpathy-guidelines` (or "karpathy skill"), use this skill for that turn.
 
 ### How to use this skill
+
 1. Open `SKILL.md` first and only load the minimal referenced files needed for the request.
 2. Resolve relative paths from the skill root directory first:
    - `.agents/skills/whamp-pocketbase/`

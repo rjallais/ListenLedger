@@ -344,7 +344,7 @@ func isBase62Char(c rune) bool {
 func (h *Handler) inferArtistNameFromSpotifyID(ctx context.Context, spotifyID string) (string, int, error) {
 	name, ok, err := h.lookupArtistLocally(ctx, spotifyID)
 	if err != nil {
-		return "", http.StatusBadGateway, fmt.Errorf("failed to lookup artist locally: %w", err)
+		return "", http.StatusInternalServerError, fmt.Errorf("failed to lookup artist locally: %w", err)
 	}
 	if ok {
 		return name, 0, nil

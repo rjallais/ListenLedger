@@ -184,13 +184,19 @@ func summarizeCandidates(candidates []TrackCandidate) []CandidateSummary {
 
 func normalizedArtistListKey(names []string) string {
 	parts := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		key := normalizeLooseKey(name)
 		if key == "" {
 			continue
 		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		parts = append(parts, key)
 	}
+	sort.Strings(parts)
 	return strings.Join(parts, "|")
 }
 
@@ -316,10 +322,14 @@ func hasExplicitFeatureSignals(candidates []TrackCandidate) bool {
 
 func canonicalTrackTitle(title string) string {
 	normalized := normalizeLooseKey(title)
+	cut := len(normalized)
 	for _, marker := range canonicalPenaltyKeywords {
-		if idx := strings.Index(normalized, marker); idx >= 0 {
-			normalized = strings.TrimSpace(normalized[:idx])
+		if idx := strings.Index(normalized, marker); idx >= 0 && idx < cut {
+			cut = idx
 		}
+	}
+	if cut < len(normalized) {
+		normalized = strings.TrimSpace(normalized[:cut])
 	}
 	return normalized
 }

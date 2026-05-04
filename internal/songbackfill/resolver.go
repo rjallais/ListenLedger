@@ -110,6 +110,10 @@ func (r *Resolver) resolveEllipsis(ctx context.Context, song SongInput, parsed p
 		return *resolution
 	}
 
+	if err := ctx.Err(); err != nil {
+		return *resolution
+	}
+
 	candidates, err := r.trackLookup.Lookup(ctx, song, parsed.PrimaryPrefix)
 	if err != nil {
 		resolution.Notes = append(resolution.Notes, fmt.Sprintf("external lookup failed: %v", err))
@@ -216,6 +220,10 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 	primaryArtistPrefix := parsed.PrimaryPrefix
 	if primaryArtistPrefix == "" && len(parsed.Names) > 0 {
 		primaryArtistPrefix = parsed.Names[0]
+	}
+
+	if err := ctx.Err(); err != nil {
+		return base, false
 	}
 
 	candidates, err := r.namePrefillLookup.Lookup(ctx, song, primaryArtistPrefix)

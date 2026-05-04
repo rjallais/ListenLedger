@@ -215,6 +215,30 @@ func (h *Handler) markArtistRetryPending(ctx context.Context, artist *core.Recor
 	return nil
 }
 
+func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, job *core.Record, artist *core.Record, artistID, requestID, previousFetchStatus string) error {
+	err := h.app.RunInTransaction(func(txApp core.App) error {
+		job.Set("status", "queued")
+		job.Set("queued_at", time.Now())
+		job.Set("error", "")
+		job.Set("started_at", nil)
+		job.Set("finished_at", nil)
+		if saveErr := txApp.SaveWithContext(ctx, job); saveErr != nil {
+			return fmt.Errorf("save queued status for job %s: %w", job.Id, saveErr)
+		}
+
+		artist.Set("fetch_status", "pending")
+		if saveErr := txApp.SaveWithContext(ctx, artist); saveErr != nil {
+			return fmt.Errorf("mark artist %s pending: %w", artistID, saveErr)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	correlation.Associate(artistID, requestID)
+	return nil
+}
+
 func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queueRetryStats, error) {
 	limit = normalizeQueueRetryLimit(limit)
 	records, err := h.collectRetryCandidates(ctx, limit)
@@ -235,10 +259,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		}
 
 		previousFetchStatus := artist.GetString("fetch_status")
-		if err := h.saveRetryQueued(ctx, job); err != nil {
-			return stats, err
-		}
-		if err := h.markArtistRetryPending(ctx, artist, artistID, requestID); err != nil {
+		if err := h.saveRetryQueuedAndMarkPending(ctx, job, artist, artistID, requestID, previousFetchStatus); err != nil {
 			return stats, err
 		}
 
@@ -249,7 +270,6 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
 				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
 			}
-			h.deleteRetryScrapeJob(requestID, artistID)
 			continue
 		}
 
@@ -271,13 +291,11 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 
 func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) {
 	correlation.Clear(artistID)
-	if previousFetchStatus != "" {
-		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		artist.Set("fetch_status", previousFetchStatus)
-		if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
-			log.Printf("[queue-retry] warning: failed to restore fetch_status for artist %s: %v", artistID, err)
-		}
+	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	artist.Set("fetch_status", previousFetchStatus)
+	if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
+		log.Printf("[queue-retry] warning: failed to restore fetch_status for artist %s: %v", artistID, err)
 	}
 }
 

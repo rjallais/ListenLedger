@@ -366,21 +366,37 @@ func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*cor
 			return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 
-		record, err := h.findAlbumRecord(e.Request.Context(), albumID)
+		record, err := h.atomicUpdateAlbumSongField(e.Request.Context(), albumID, adjust, delta)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
 			}
-			log.Printf("[albums] findAlbumRecord error: %v", err)
-			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup album"})
-		}
-
-		adjust(record, delta)
-
-		if err := h.app.Save(record); err != nil {
+			log.Printf("[albums] atomicUpdateAlbumSongField error: %v", err)
 			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
 		}
 
 		return renderAlbumResponse(e, albumFromRecord(record))
 	}
+}
+
+func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string, adjust albumSongAdjuster, delta int) (*core.Record, error) {
+	var record *core.Record
+	err := h.app.RunInTransaction(func(txApp core.App) error {
+		var txErr error
+		record, txErr = txApp.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
+		if txErr != nil {
+			return txErr
+		}
+
+		adjust(record, delta)
+
+		return txApp.Save(record)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return record, nil
 }

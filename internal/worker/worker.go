@@ -216,7 +216,7 @@ func (w *Worker) Start() error {
 	w.launchBackgroundWorkers()
 	startedOK = true
 
-	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
+	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, w.providerCount)
 	return nil
 }
 
@@ -388,15 +388,17 @@ func (w *Worker) Stop() {
 	// Drain NATS consumer (idempotent with watchAllGroups via drainOnce).
 	w.drainOnce.Do(func() {
 		w.dispatchMu.Lock()
-		defer w.dispatchMu.Unlock()
-
 		w.started = false
 		w.accepting.Store(false)
-		if w.consume != nil {
-			w.consume.Drain()
+		consume := w.consume
+		allGroupsDead := w.allGroupsDead
+		w.dispatchMu.Unlock()
+
+		if consume != nil {
+			consume.Drain()
 		}
-		if w.allGroupsDead != nil {
-			close(w.allGroupsDead)
+		if allGroupsDead != nil {
+			close(allGroupsDead)
 		}
 
 		w.dispatching.Wait()
