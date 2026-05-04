@@ -178,6 +178,10 @@ func (w *Worker) Start() error {
 		w.dispatchMu.Unlock()
 		return fmt.Errorf("worker already started")
 	}
+	if err := w.ctx.Err(); err != nil {
+		w.dispatchMu.Unlock()
+		return fmt.Errorf("worker cannot be restarted after stop: %w", err)
+	}
 	w.started = true
 	w.accepting.Store(true)
 	w.dispatchMu.Unlock()

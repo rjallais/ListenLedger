@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -20,6 +21,12 @@ import (
 	"ListenLedger/internal/messaging"
 	"ListenLedger/templates"
 )
+
+var scrapeRequestSeq atomic.Uint64
+
+func newScrapeRequestID() string {
+	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), scrapeRequestSeq.Add(1))
+}
 
 type songFormInput struct {
 	SongName          string
@@ -398,7 +405,7 @@ func decodeSpotifyArtistName(resp *http.Response) (string, int, error) {
 		Title string `json:"title"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", http.StatusBadGateway, fmt.Errorf("could not infer artist name from spotify response")
+		return "", http.StatusBadGateway, fmt.Errorf("could not infer artist name from spotify response: %w", err)
 	}
 
 	artistName := strings.TrimSpace(payload.Title)
@@ -614,7 +621,7 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 		return nil
 	}
 
-	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
+	requestID := newScrapeRequestID()
 	req := messaging.NewScrapeRequested(
 		target.ID,
 		target.SpotifyID,

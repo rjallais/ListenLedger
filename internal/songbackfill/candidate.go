@@ -15,10 +15,16 @@ type ChainTrackLookup struct {
 }
 
 func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArtistPrefix string) ([]TrackCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	allCandidates := []TrackCandidate{}
 	errorsSeen := []error{}
 
 	for _, lookup := range l.Lookups {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if lookup == nil {
 			continue
 		}

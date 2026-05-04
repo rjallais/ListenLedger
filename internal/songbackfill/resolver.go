@@ -138,6 +138,7 @@ func (r *Resolver) applyTrackCandidateMatch(resolution *Resolution, candidates [
 	resolution.Notes = append(resolution.Notes, notes...)
 	if ambiguous {
 		resolution.Action = ActionSkipAmbiguous
+		return *resolution
 	}
 	if !ok {
 		r.applyPartialMatchUpdate(resolution, candidate)

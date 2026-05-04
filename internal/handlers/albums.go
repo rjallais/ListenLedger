@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -228,17 +229,17 @@ func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
 		return albumCreateInput{}, fmt.Errorf("invalid form data: %w", err)
 	}
 
-	title := r.FormValue("title")
+	title := strings.TrimSpace(r.FormValue("title"))
 	if title == "" {
 		return albumCreateInput{}, fmt.Errorf("album title is required")
 	}
 
-	artistName := r.FormValue("artist_name")
+	artistName := strings.TrimSpace(r.FormValue("artist_name"))
 	if artistName == "" {
 		return albumCreateInput{}, fmt.Errorf("artist name is required")
 	}
 
-	statusValue := r.FormValue("status")
+	statusValue := strings.TrimSpace(r.FormValue("status"))
 	if statusValue == "" {
 		statusValue = "waiting"
 	}

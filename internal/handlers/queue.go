@@ -207,11 +207,11 @@ func (h *Handler) saveRetryQueued(ctx context.Context, job *core.Record) error {
 }
 
 func (h *Handler) markArtistRetryPending(ctx context.Context, artist *core.Record, artistID, requestID string) error {
-	correlation.Associate(artistID, requestID)
 	artist.Set("fetch_status", "pending")
 	if saveErr := h.app.SaveWithContext(ctx, artist); saveErr != nil {
 		return fmt.Errorf("mark artist %s pending: %w", artistID, saveErr)
 	}
+	correlation.Associate(artistID, requestID)
 	return nil
 }
 
@@ -249,6 +249,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
 				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
 			}
+			h.deleteRetryScrapeJob(requestID, artistID)
 			continue
 		}
 
@@ -258,6 +259,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			if saveErr := h.saveRetryDeduped(ctx, job); saveErr != nil {
 				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
 			}
+			h.deleteRetryScrapeJob(requestID, artistID)
 			continue
 		}
 
@@ -269,16 +271,21 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 
 func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) {
 	correlation.Clear(artistID)
-	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := h.deleteScrapeJobRecordByRequestID(rollbackCtx, requestID, artistID); err != nil {
-		log.Printf("[queue-retry] warning: failed to delete scrape job during rollback for artist %s: %v", artistID, err)
-	}
 	if previousFetchStatus != "" {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		artist.Set("fetch_status", previousFetchStatus)
 		if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
 			log.Printf("[queue-retry] warning: failed to restore fetch_status for artist %s: %v", artistID, err)
 		}
+	}
+}
+
+func (h *Handler) deleteRetryScrapeJob(requestID, artistID string) {
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.deleteScrapeJobRecordByRequestID(deleteCtx, requestID, artistID); err != nil {
+		log.Printf("[queue-retry] warning: failed to delete scrape job for artist %s: %v", artistID, err)
 	}
 }
 
