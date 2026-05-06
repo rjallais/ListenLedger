@@ -100,19 +100,19 @@ func TestParseBatchRefreshCountRequiresPositiveInteger(t *testing.T) {
 	}
 }
 
-func TestParseCollectionSongsAction(t *testing.T) {
-	inc, err := parseCollectionSongsAction("inc")
+func TestParseSongCountAction(t *testing.T) {
+	inc, err := parseSongCountAction("inc")
 	if err != nil || inc != 1 {
-		t.Fatalf("parseCollectionSongsAction(inc) = (%d, %v), want (1, nil)", inc, err)
+		t.Fatalf("parseSongCountAction(inc) = (%d, %v), want (1, nil)", inc, err)
 	}
 
-	dec, err := parseCollectionSongsAction("dec")
+	dec, err := parseSongCountAction("dec")
 	if err != nil || dec != -1 {
-		t.Fatalf("parseCollectionSongsAction(dec) = (%d, %v), want (-1, nil)", dec, err)
+		t.Fatalf("parseSongCountAction(dec) = (%d, %v), want (-1, nil)", dec, err)
 	}
 
-	_, err = parseCollectionSongsAction("noop")
+	_, err = parseSongCountAction("noop")
 	if err == nil || err.Error() != "action must be 'inc' or 'dec'" {
-		t.Fatalf("parseCollectionSongsAction(noop) error = %v, want invalid action error", err)
+		t.Fatalf("parseSongCountAction(noop) error = %v, want invalid action error", err)
 	}
 }

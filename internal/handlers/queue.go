@@ -263,29 +263,35 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 			return stats, err
 		}
 
-		ack, pubErr := h.publishRetryRequest(ctx, req)
-		if pubErr != nil {
-			stats.PublishFailed++
-			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
-				return stats, err
-			}
-			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
-				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
-			}
-			continue
+	ack, pubErr := h.publishRetryRequest(ctx, req)
+	if pubErr != nil {
+		stats.PublishFailed++
+		if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+			return stats, err
 		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if saveErr := h.saveRetryPublishFailure(cleanupCtx, job, pubErr); saveErr != nil {
+			cleanupCancel()
+			return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
+		}
+		cleanupCancel()
+		continue
+	}
 
-		if ack != nil && ack.Duplicate {
-			stats.Duplicate++
-			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
-				return stats, err
-			}
-			if saveErr := h.saveRetryDeduped(ctx, job); saveErr != nil {
-				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
-			}
-			h.deleteRetryScrapeJob(requestID, artistID)
-			continue
+	if ack != nil && ack.Duplicate {
+		stats.Duplicate++
+		if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+			return stats, err
 		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if saveErr := h.saveRetryDeduped(cleanupCtx, job); saveErr != nil {
+			cleanupCancel()
+			return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
+		}
+		cleanupCancel()
+		h.deleteRetryScrapeJob(requestID, artistID)
+		continue
+	}
 
 		stats.Retried++
 	}

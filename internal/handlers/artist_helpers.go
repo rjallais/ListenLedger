@@ -186,7 +186,7 @@ func parseBatchRefreshCount(r *http.Request) (int, error) {
 	return min(count, maxBatchRefreshCount), nil
 }
 
-func parseCollectionSongsAction(action string) (int, error) {
+func parseSongCountAction(action string) (int, error) {
 	switch action {
 	case "inc":
 		return 1, nil

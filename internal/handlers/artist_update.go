@@ -63,7 +63,7 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": "artist ID required"})
 	}
 
-	delta, err := parseCollectionSongsAction(e.Request.PathValue("action"))
+	delta, err := parseSongCountAction(e.Request.PathValue("action"))
 	if err != nil {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
