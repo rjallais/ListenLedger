@@ -52,25 +52,42 @@ func (h *Handler) handleIndex(e *core.RequestEvent) error {
 }
 
 func (h *Handler) handleAlbums(e *core.RequestEvent) error {
-	fullCount, err := h.app.CountRecords("albums", dbx.HashExp{"status": "full"})
+	ctx := e.Request.Context()
+
+	var fullCount int
+	err := h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(dbx.HashExp{"status": "full"}).
+		Row(&fullCount)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
 
-	processedCount, err := h.app.CountRecords("albums", dbx.HashExp{"status": "processed_once"})
+	var processedCount int
+	err = h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(dbx.HashExp{"status": "processed_once"}).
+		Row(&processedCount)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
 
-	waitingCount, err := h.app.CountRecords("albums", dbx.NewExp(
-		"status != {:full} AND status != {:processed}",
-		dbx.Params{"full": "full", "processed": "processed_once"},
-	))
+	var waitingCount int
+	err = h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(dbx.NewExp(
+			"status != {:full} AND status != {:processed}",
+			dbx.Params{"full": "full", "processed": "processed_once"},
+		)).
+		Row(&waitingCount)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
 
-	return renderTempl(e, templates.AlbumsPage(int(fullCount), int(processedCount), int(waitingCount)))
+	return renderTempl(e, templates.AlbumsPage(fullCount, processedCount, waitingCount))
 }
 
 func albumStatusForUI(status string) string {

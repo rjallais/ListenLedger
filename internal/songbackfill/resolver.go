@@ -66,8 +66,9 @@ func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 	if prefilled, ok := r.resolveViaNamePrefill(ctx, song, parsed, resolution); ok {
 		return prefilled
 	} else {
-		resolution.Notes = append(resolution.Notes, prefilled.Notes...)
-		resolution.ExternalCandidates = prefilled.ExternalCandidates
+		if prefilled.Action != "" || len(prefilled.Notes) > 0 || len(prefilled.ExternalCandidates) > 0 {
+			resolution = prefilled
+		}
 	}
 
 	if !parsed.HasEllipsis {
@@ -229,7 +230,7 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 	candidates, err := r.namePrefillLookup.Lookup(ctx, song, primaryArtistPrefix)
 	resolution := base
 	if err != nil {
-		resolution.Notes = append(resolution.Notes, fmt.Sprintf("tidal prefill lookup failed: %v", err))
+		resolution.Notes = append(resolution.Notes, fmt.Sprintf("name prefill lookup failed: %v", err))
 		return resolution, false
 	}
 	if len(candidates) == 0 {
@@ -239,7 +240,7 @@ func (r *Resolver) resolveViaNamePrefill(ctx context.Context, song SongInput, pa
 	multiArtistCandidates := filterCandidatesForStoredMultiplicity(song.ArtistName, candidates)
 	if len(multiArtistCandidates) == 0 {
 		resolution.ExternalCandidates = summarizeCandidates(candidates)
-		resolution.Notes = append(resolution.Notes, "tidal prefill did not yield a safe multi-artist expansion")
+		resolution.Notes = append(resolution.Notes, "name prefill did not yield a safe multi-artist expansion")
 		return resolution, false
 	}
 
@@ -260,7 +261,7 @@ func (r *Resolver) applyPrefillCandidate(resolution Resolution, song SongInput, 
 
 	prefilledNames := dedupeArtistNames(candidate.ArtistNames)
 	if !preservesStoredMultiplicity(song.ArtistName, prefilledNames) {
-		resolution.Notes = append(resolution.Notes, "tidal prefill candidate would collapse a known multi-artist credit")
+		resolution.Notes = append(resolution.Notes, "prefill candidate would collapse a known multi-artist credit")
 		return resolution, false
 	}
 
@@ -323,7 +324,7 @@ func (r *Resolver) applyPrefillNameOnly(resolution *Resolution, candidate TrackC
 		return
 	}
 	resolution.Action = ActionSkipLowConfidence
-	resolution.Notes = append(resolution.Notes, "tidal prefill candidate requires manual review before updating artist_name")
+	resolution.Notes = append(resolution.Notes, "prefill candidate requires manual review before updating artist_name")
 }
 
 type matchNamesResult struct {

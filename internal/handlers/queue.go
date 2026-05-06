@@ -266,7 +266,9 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		ack, pubErr := h.publishRetryRequest(ctx, req)
 		if pubErr != nil {
 			stats.PublishFailed++
-			h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus)
+			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+				return stats, err
+			}
 			if saveErr := h.saveRetryPublishFailure(ctx, job, pubErr); saveErr != nil {
 				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
 			}
@@ -275,7 +277,9 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 
 		if ack != nil && ack.Duplicate {
 			stats.Duplicate++
-			h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus)
+			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+				return stats, err
+			}
 			if saveErr := h.saveRetryDeduped(ctx, job); saveErr != nil {
 				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
 			}
@@ -289,14 +293,15 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 	return stats, nil
 }
 
-func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) {
-	correlation.Clear(artistID)
+func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) error {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	artist.Set("fetch_status", previousFetchStatus)
 	if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
-		log.Printf("[queue-retry] warning: failed to restore fetch_status for artist %s: %v", artistID, err)
+		return fmt.Errorf("restore fetch_status for artist %s: %w", artistID, err)
 	}
+	correlation.Clear(artistID)
+	return nil
 }
 
 func (h *Handler) deleteRetryScrapeJob(requestID, artistID string) {

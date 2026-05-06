@@ -34,7 +34,7 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			errorsSeen = append(errorsSeen, err)
+			errorsSeen = append(errorsSeen, fmt.Errorf("%T lookup failed: %w", lookup, err))
 			continue
 		}
 		if len(candidates) == 0 {
@@ -213,9 +213,12 @@ func distinctCandidateGroupCount(candidates []TrackCandidate) int {
 }
 
 func dedupeTrackCandidates(candidates []TrackCandidate) []TrackCandidate {
-	out := make([]TrackCandidate, 0, len(candidates))
+	sorted := append([]TrackCandidate(nil), candidates...)
+	sortTrackCandidates(sorted)
+
+	out := make([]TrackCandidate, 0, len(sorted))
 	seen := map[string]bool{}
-	for _, candidate := range candidates {
+	for _, candidate := range sorted {
 		key := candidate.Source + "|" + normalizeLooseKey(candidate.Title) + "|" + normalizedArtistListKey(candidate.ArtistNames)
 		if seen[key] {
 			continue
@@ -223,7 +226,6 @@ func dedupeTrackCandidates(candidates []TrackCandidate) []TrackCandidate {
 		seen[key] = true
 		out = append(out, candidate)
 	}
-	sortTrackCandidates(out)
 	return out
 }
 
