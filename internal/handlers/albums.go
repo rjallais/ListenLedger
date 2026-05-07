@@ -256,7 +256,7 @@ func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
 	if err != nil {
 		return albumCreateInput{}, fmt.Errorf("invalid total_songs: %w", err)
 	}
-	if totalSongs > 0 && collectionSongs > totalSongs {
+	if collectionSongs > totalSongs {
 		totalSongs = collectionSongs
 	}
 
@@ -365,38 +365,14 @@ func (h *Handler) atomicUpdateAlbumStatus(ctx context.Context, albumID string, s
 	return record, oldStatus, nil
 }
 
-func applyAlbumSongDelta(record *core.Record, field string, delta int) {
-	current := record.GetInt(field)
-	next := current + delta
-	if next < 0 {
-		next = 0
-	}
-	record.Set(field, next)
-}
+type albumSongField string
 
-type albumSongAdjuster func(record *core.Record, delta int)
+const (
+	albumCollectionSongs albumSongField = "collection_songs"
+	albumTotalSongs      albumSongField = "total_songs"
+)
 
-func clampAlbumCollectionSongs(record *core.Record, delta int) {
-	applyAlbumSongDelta(record, "collection_songs", delta)
-
-	total := record.GetInt("total_songs")
-	collection := record.GetInt("collection_songs")
-	if total > 0 && collection > total {
-		record.Set("total_songs", collection)
-	}
-}
-
-func clampAlbumTotalSongs(record *core.Record, delta int) {
-	applyAlbumSongDelta(record, "total_songs", delta)
-
-	total := record.GetInt("total_songs")
-	collection := record.GetInt("collection_songs")
-	if total < collection {
-		record.Set("collection_songs", total)
-	}
-}
-
-func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*core.RequestEvent) error {
+func (h *Handler) handleUpdateAlbumSongField(field albumSongField) func(*core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		albumID := e.Request.PathValue("albumId")
 		if albumID == "" {
@@ -408,7 +384,7 @@ func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*cor
 			return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 
-		record, err := h.atomicUpdateAlbumSongField(e.Request.Context(), albumID, adjust, delta)
+		record, err := h.atomicUpdateAlbumSongField(e.Request.Context(), albumID, field, delta)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
@@ -421,22 +397,35 @@ func (h *Handler) handleUpdateAlbumSongField(adjust albumSongAdjuster) func(*cor
 	}
 }
 
-func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string, adjust albumSongAdjuster, delta int) (*core.Record, error) {
+func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string, field albumSongField, delta int) (*core.Record, error) {
 	var record *core.Record
 	err := h.app.RunInTransaction(func(txApp core.App) error {
-		var txErr error
+		query, err := albumSongUpdateQuery(field)
+		if err != nil {
+			return err
+		}
+
+		result, txErr := txApp.DB().NewQuery(query).
+			Bind(dbx.Params{"albumID": albumID, "delta": delta}).
+			WithContext(ctx).
+			Execute()
+		if txErr != nil {
+			return fmt.Errorf("update albums record %s field %s by delta %d: %w", albumID, field, delta, txErr)
+		}
+		rowsAffected, txErr := result.RowsAffected()
+		if txErr != nil {
+			return fmt.Errorf("read affected rows for albums record %s field %s: %w", albumID, field, txErr)
+		}
+		if rowsAffected == 0 {
+			return sql.ErrNoRows
+		}
+
 		record, txErr = txApp.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
 			q.WithContext(ctx)
 			return nil
 		})
 		if txErr != nil {
-			return fmt.Errorf("find albums record %s for song field delta %d: %w", albumID, delta, txErr)
-		}
-
-		adjust(record, delta)
-
-		if txErr := txApp.Save(record); txErr != nil {
-			return fmt.Errorf("save albums record %s for song field delta %d: %w", albumID, delta, txErr)
+			return fmt.Errorf("find updated albums record %s after field %s delta %d: %w", albumID, field, delta, txErr)
 		}
 		return nil
 	})
@@ -444,4 +433,31 @@ func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string
 		return nil, fmt.Errorf("atomic update album song field %s: %w", albumID, err)
 	}
 	return record, nil
+}
+
+func albumSongUpdateQuery(field albumSongField) (string, error) {
+	switch field {
+	case albumCollectionSongs:
+		return `
+			UPDATE albums
+			SET collection_songs = MAX(COALESCE(collection_songs, 0) + {:delta}, 0),
+				total_songs = CASE
+					WHEN MAX(COALESCE(collection_songs, 0) + {:delta}, 0) > COALESCE(total_songs, 0) THEN MAX(COALESCE(collection_songs, 0) + {:delta}, 0)
+					ELSE COALESCE(total_songs, 0)
+				END
+			WHERE id = {:albumID}
+		`, nil
+	case albumTotalSongs:
+		return `
+			UPDATE albums
+			SET total_songs = MAX(COALESCE(total_songs, 0) + {:delta}, 0),
+				collection_songs = CASE
+					WHEN MAX(COALESCE(total_songs, 0) + {:delta}, 0) < COALESCE(collection_songs, 0) THEN MAX(COALESCE(total_songs, 0) + {:delta}, 0)
+					ELSE COALESCE(collection_songs, 0)
+				END
+			WHERE id = {:albumID}
+		`, nil
+	default:
+		return "", fmt.Errorf("unsupported album song field %q", field)
+	}
 }

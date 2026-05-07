@@ -156,13 +156,22 @@ func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
 		return artistCreateInput{}, fmt.Errorf("list_status must be included, recently_added, not_added, or waiting")
 	}
 
+	monthlyListeners, err := parseOptionalNonNegativeFormInt(r.FormValue("monthly_listeners"))
+	if err != nil {
+		return artistCreateInput{}, fmt.Errorf("invalid monthly_listeners: %w", err)
+	}
+	collectionSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("collection_songs"))
+	if err != nil {
+		return artistCreateInput{}, fmt.Errorf("invalid collection_songs: %w", err)
+	}
+
 	return artistCreateInput{
 		name:             name,
 		spotifyID:        spotifyID,
 		genreGroup:       genreGroup,
 		listStatus:       listStatus,
-		monthlyListeners: parseNonNegativeInt(r.FormValue("monthly_listeners")),
-		collectionSongs:  parseNonNegativeInt(r.FormValue("collection_songs")),
+		monthlyListeners: monthlyListeners,
+		collectionSongs:  collectionSongs,
 	}, nil
 }
 
@@ -443,7 +452,7 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priori
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
-		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (last_updated IS NULL OR last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
+		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (fetch_status IS NULL OR fetch_status != 'pending') AND (last_updated IS NULL OR last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
 		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)
