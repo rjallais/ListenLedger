@@ -464,11 +464,11 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelCleanup()
-		correlation.Clear(record.Id)
-		_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
 		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
 			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
 		} else {
+			correlation.Clear(record.Id)
+			_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
 			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
 		}
 		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
@@ -488,11 +488,11 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 	if err != nil {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelCleanup()
-		correlation.Clear(record.Id)
-		_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
 		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
 			return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w (rollback queued state failed: %v)", err, rollbackErr)
 		}
+		correlation.Clear(record.Id)
+		_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
 		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 

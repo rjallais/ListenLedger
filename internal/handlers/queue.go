@@ -6,7 +6,6 @@ package handlers
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/internal/correlation"
@@ -133,7 +133,7 @@ func (h *Handler) prepareRetryRequest(ctx context.Context, job *core.Record, see
 		return nil
 	})
 	if findErr != nil {
-		if errors.Is(findErr, sql.ErrNoRows) {
+		if router.ToApiError(findErr).Status == http.StatusNotFound {
 			stats.InvalidArtist++
 			return messaging.ScrapeRequested{}, nil, "", "", false, nil
 		}
@@ -283,7 +283,11 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) error {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	artist.Set("fetch_status", previousFetchStatus)
+	status := strings.TrimSpace(previousFetchStatus)
+	if status == "" {
+		status = "idle"
+	}
+	artist.Set("fetch_status", status)
 	if err := h.app.SaveWithContext(rollbackCtx, artist); err != nil {
 		return fmt.Errorf("restore fetch_status for artist %s: %w", artistID, err)
 	}

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pocketbase/dbx"
@@ -247,8 +248,14 @@ func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
 		return albumCreateInput{}, fmt.Errorf("invalid status value")
 	}
 
-	collectionSongs := parseNonNegativeInt(r.FormValue("collection_songs"))
-	totalSongs := parseNonNegativeInt(r.FormValue("total_songs"))
+	collectionSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("collection_songs"))
+	if err != nil {
+		return albumCreateInput{}, fmt.Errorf("invalid collection_songs: %w", err)
+	}
+	totalSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("total_songs"))
+	if err != nil {
+		return albumCreateInput{}, fmt.Errorf("invalid total_songs: %w", err)
+	}
 	if totalSongs > 0 && collectionSongs > totalSongs {
 		totalSongs = collectionSongs
 	}
@@ -260,6 +267,19 @@ func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
 		collectionSongs: collectionSongs,
 		totalSongs:      totalSongs,
 	}, nil
+}
+
+func parseOptionalNonNegativeFormInt(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("must be a non-negative integer")
+	}
+	return n, nil
 }
 
 func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
