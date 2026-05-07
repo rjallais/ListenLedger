@@ -32,7 +32,7 @@ func TestLatestBackfillReportPathChoosesNewestJSON(t *testing.T) {
 		}
 	}
 
-	got, err := latestBackfillReportPath(dir)
+	got, err := latestBackfillReportPath(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("latestBackfillReportPath() error = %v", err)
 	}
