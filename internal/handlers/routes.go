@@ -26,8 +26,8 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 	r.GET("/api/albums/{status}", h.handleAlbumsAPI)
 	r.POST("/api/albums", h.handleCreateAlbum)
 	r.POST("/api/albums/{albumId}/status/{status}", h.handleUpdateAlbumStatus)
-	r.POST("/api/albums/{albumId}/collection/{action}", h.handleUpdateAlbumCollectionSongs)
-	r.POST("/api/albums/{albumId}/total/{action}", h.handleUpdateAlbumTotalSongs)
+	r.POST("/api/albums/{albumId}/collection/{action}", h.handleUpdateAlbumSongField(albumCollectionSongs))
+	r.POST("/api/albums/{albumId}/total/{action}", h.handleUpdateAlbumSongField(albumTotalSongs))
 
 	// Artist lazy loading endpoints
 	r.GET("/api/artists/waiting", h.handleWaitingArtistsAPI)

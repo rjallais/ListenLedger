@@ -1,0 +1,113 @@
+package templates
+
+// ArtistQueueSection renders the waiting artists queue with lazy loading.
+templ ArtistQueueSection(count int) {
+	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
+		<input type="checkbox" class="artist-queue-toggle" aria-label="Toggle artists queue"/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-warning">Queue</span>
+			<span>{ artistQueueTitle(count) }</span>
+		</div>
+		<div class="collapse-content">
+			<p class="text-sm text-base-content/70 mb-4">
+				Artists queued for potential inclusion. Click "Show Next" to reveal one at a time.
+				Use the dropdown to change their status when you decide to include them.
+			</p>
+			<div id="artists-waiting" class="space-y-3">
+				<!-- Lazy loaded -->
+			</div>
+			<div id="load-more-artists" class="mt-4">
+				<button
+					class="btn btn-warning btn-sm gap-2"
+					data-on:click="@get('/api/artists/waiting?offset=0&limit=1')"
+				>
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+					</svg>
+					Show First Artist
+				</button>
+			</div>
+		</div>
+	</div>
+}
+
+// WaitingArtistRows renders waiting artist cards for lazy loading responses.
+templ WaitingArtistRows(artists []Artist, nextOffset int, hasMore bool) {
+	<div id="artists-waiting" data-merge-mode="append">
+		for _, artist := range artists {
+			@WaitingArtistCard(artist)
+		}
+	</div>
+	if hasMore {
+		@WaitingArtistsLoadMore(nextOffset)
+	} else {
+		@WaitingArtistsCompleteNotice()
+	}
+}
+
+templ WaitingArtistsLoadMore(nextOffset int) {
+	<div id="load-more-artists" data-merge-mode="morph">
+		<button
+			class="btn btn-warning btn-sm gap-2"
+			data-on:click={ artistQueueLoadMoreAction(nextOffset) }
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+			</svg>
+			{ artistQueueLoadMoreLabel(nextOffset) }
+		</button>
+	</div>
+}
+
+templ WaitingArtistsCompleteNotice() {
+	<div id="load-more-artists" data-merge-mode="morph">
+		<p class="text-sm text-success">✓ All waiting artists shown</p>
+	</div>
+}
+
+// WaitingArtistCard renders a waiting artist as a card with actions.
+templ WaitingArtistCard(artist Artist) {
+	<div id={ artistCardID(artist.ID) } class="card bg-base-200 shadow-sm border border-base-300" data-signals={ artistSignalsJSON(artist) }>
+		<div class="card-body py-4 px-5">
+			<div class="flex justify-between items-start gap-4">
+				<div class="flex-1">
+					<h3 class="font-semibold text-lg">{ artist.Name }</h3>
+					@WaitingArtistMeta(artist)
+				</div>
+				<div class="flex flex-col gap-2 items-end">
+					@ListStatusDropdown(artist.ID, artist.ListStatus)
+					@ArtistRefreshAction(artist.ID)
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+templ WaitingArtistMeta(artist Artist) {
+	<div class="flex flex-wrap gap-2 mt-2 text-sm text-base-content/70">
+		<span class="flex items-center gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
+			</svg>
+			@ArtistSignalTextValue(artistCardListenerElementID(artist.ID), artistListenerSignal(artist.ID), FormatNumber(artist.MonthlyListeners)) monthly listeners
+		</span>
+		<span class="flex items-center gap-1">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+			</svg>
+			@ArtistSignalTextValue(artistCardUpdatedElementID(artist.ID), artistUpdatedSignal(artist.ID), artist.LastUpdated)
+		</span>
+		<span class="badge badge-ghost badge-sm">{ artist.GenreGroup }</span>
+	</div>
+}
+
+// RemovedArtistCard replaces a card in the queue when the artist is moved to the main list.
+templ RemovedArtistCard(artistID string) {
+	<div id={ artistCardID(artistID) } class="alert alert-success py-2">
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+		</svg>
+		<span class="text-sm">Moved to main list</span>
+	</div>
+}

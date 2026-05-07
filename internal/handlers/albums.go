@@ -3,10 +3,15 @@
 package handlers
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -14,37 +19,68 @@ import (
 	"ListenLedger/templates"
 )
 
-// handleStatic serves static files from the static directory.
+const (
+	defaultAlbumPageSize     = 50
+	maxAlbumPageSize         = 100
+	defaultWaitingAlbumLimit = 1
+)
+
+type albumListParams struct {
+	offset int
+	limit  int
+}
+
+type albumFilterConfig struct {
+	filter dbx.Expression
+	order  string
+}
+
+type albumCreateInput struct {
+	title           string
+	artistName      string
+	statusDB        string
+	collectionSongs int
+	totalSongs      int
+}
+
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
 	return e.FileFS(os.DirFS(h.staticDir), path)
 }
 
-// handleIndex redirects to albums view.
 func (h *Handler) handleIndex(e *core.RequestEvent) error {
 	return e.Redirect(http.StatusFound, "/albums")
 }
 
 func (h *Handler) handleAlbums(e *core.RequestEvent) error {
-	fullCount, err := h.app.CountRecords("albums", dbx.HashExp{"status": "full"})
-	if err != nil {
+	ctx := e.Request.Context()
+
+	type albumStatusCount struct {
+		Status string `db:"status"`
+		Count  int    `db:"cnt"`
+	}
+	var rows []albumStatusCount
+	if err := h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("status", "COUNT(*) AS cnt").
+		GroupBy("status").
+		All(&rows); err != nil {
+		log.Printf("[albums] count by status: %v", err)
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
-
-	processedCount, err := h.app.CountRecords("albums", dbx.HashExp{"status": "processed_once"})
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load albums")
+	var fullCount, processedCount, waitingCount int
+	for _, r := range rows {
+		switch r.Status {
+		case "full":
+			fullCount = r.Count
+		case "processed_once":
+			processedCount = r.Count
+		default:
+			waitingCount += r.Count
+		}
 	}
 
-	waitingCount, err := h.app.CountRecords("albums", dbx.NewExp(
-		"status != {:full} AND status != {:processed}",
-		dbx.Params{"full": "full", "processed": "processed_once"},
-	))
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load albums")
-	}
-
-	return renderTempl(e, templates.AlbumsPage(int(fullCount), int(processedCount), int(waitingCount)))
+	return renderTempl(e, templates.AlbumsPage(fullCount, processedCount, waitingCount))
 }
 
 func albumStatusForUI(status string) string {
@@ -87,141 +123,192 @@ func albumFromRecord(r *core.Record) templates.Album {
 	}
 }
 
-// handleAlbumsAPI returns album rows for lazy loading.
-func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
-	status := e.Request.PathValue("status")
-
-	// Parse pagination params
-	offset := 0
-	limit := 50
-	if o := e.Request.URL.Query().Get("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
-			offset = parsed
-		}
+func parseAlbumListParams(r *http.Request, status string) albumListParams {
+	params := albumListParams{
+		offset: parseNonNegativeInt(r.URL.Query().Get("offset")),
+		limit:  parseBoundedPositiveInt(r.URL.Query().Get("limit"), defaultAlbumPageSize, maxAlbumPageSize),
 	}
-	if l := e.Request.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 100 {
-			limit = parsed
-		}
+	if status == templates.StatusWaiting && r.URL.Query().Get("limit") == "" {
+		params.limit = defaultWaitingAlbumLimit
 	}
+	return params
+}
 
-	// Map status param to database expression and query ordering.
-	var filterExpr dbx.Expression
-	var orderExpr string
+func albumFilterConfigForStatus(status string) (albumFilterConfig, error) {
 	switch status {
 	case "full":
-		filterExpr = dbx.HashExp{"status": "full"}
-		orderExpr = "`total_songs` DESC, LOWER(`title`) ASC"
+		return albumFilterConfig{
+			filter: dbx.HashExp{"status": "full"},
+			order:  "`total_songs` DESC, LOWER(`title`) ASC",
+		}, nil
 	case "processed":
-		filterExpr = dbx.HashExp{"status": "processed_once"}
-		orderExpr = "(`total_songs` - `collection_songs`) DESC, " +
-			"CASE WHEN `total_songs` > 0 THEN CAST(`collection_songs` AS REAL) / `total_songs` ELSE 0 END DESC, " +
-			"LOWER(`title`) ASC"
+		return albumFilterConfig{
+			filter: dbx.HashExp{"status": "processed_once"},
+			order: "(`total_songs` - `collection_songs`) DESC, " +
+				"CASE WHEN `total_songs` > 0 THEN CAST(`collection_songs` AS REAL) / `total_songs` ELSE 0 END DESC, " +
+				"LOWER(`title`) ASC",
+		}, nil
 	case "waiting":
-		filterExpr = dbx.NewExp(
-			"status != {:full} AND status != {:processed}",
-			dbx.Params{"full": "full", "processed": "processed_once"},
-		)
-		orderExpr = "CASE WHEN `total_songs` > 0 THEN CAST(`collection_songs` AS REAL) / `total_songs` ELSE 0 END DESC, " +
-			"`collection_songs` DESC, LOWER(`title`) ASC"
-		// For waiting albums, default to 1 at a time
-		if e.Request.URL.Query().Get("limit") == "" {
-			limit = 1
-		}
+		return albumFilterConfig{
+			filter: dbx.NewExp(
+				"status != {:full} AND status != {:processed}",
+				dbx.Params{"full": "full", "processed": "processed_once"},
+			),
+			order: "CASE WHEN `total_songs` > 0 THEN CAST(`collection_songs` AS REAL) / `total_songs` ELSE 0 END DESC, " +
+				"`collection_songs` DESC, LOWER(`title`) ASC",
+		}, nil
 	default:
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return albumFilterConfig{}, fmt.Errorf("invalid status: %s", status)
 	}
+}
 
-	totalCount64, err := h.app.CountRecords("albums", filterExpr)
+func (h *Handler) fetchAlbumRecords(ctx context.Context, cfg albumFilterConfig, offset, limit int) ([]*core.Record, int, error) {
+	var totalCount int
+	err := h.app.RecordQuery("albums").
+		WithContext(ctx).
+		Select("COUNT(*)").
+		AndWhere(cfg.filter).
+		Row(&totalCount)
 	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load albums")
+		return nil, 0, fmt.Errorf("counting albums: %w", err)
 	}
-	totalCount := int(totalCount64)
 
 	records := make([]*core.Record, 0, limit)
 	if totalCount > 0 {
 		if err := h.app.RecordQuery("albums").
-			AndWhere(filterExpr).
-			OrderBy(orderExpr).
+			WithContext(ctx).
+			AndWhere(cfg.filter).
+			OrderBy(cfg.order).
 			Offset(int64(offset)).
 			Limit(int64(limit)).
 			All(&records); err != nil {
-			return e.String(http.StatusInternalServerError, "Failed to load albums")
+			return nil, 0, fmt.Errorf("querying albums: %w", err)
 		}
 	}
-	hasMore := offset+len(records) < totalCount
 
-	// Convert to type-safe structs
+	return records, totalCount, nil
+}
+
+func albumsFromRecords(records []*core.Record) []templates.Album {
 	albums := make([]templates.Album, 0, len(records))
 	for _, r := range records {
 		albums = append(albums, albumFromRecord(r))
 	}
-
-	return renderDatastar(e, templates.AlbumRows(albums, status, offset+len(records), hasMore))
+	return albums
 }
 
-// handleCreateAlbum creates a new album from form data.
-func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
-	if err := e.Request.ParseForm(); err != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid form data"})
+func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
+	if album.Status == templates.StatusWaiting {
+		return renderDatastar(e, templates.AlbumCard(album))
+	}
+	return renderDatastar(e, templates.AlbumRow(album))
+}
+
+func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
+	status := e.Request.PathValue("status")
+
+	cfg, err := albumFilterConfigForStatus(status)
+	if err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid status"})
 	}
 
-	title := e.Request.FormValue("title")
+	params := parseAlbumListParams(e.Request, status)
+
+	records, totalCount, err := h.fetchAlbumRecords(e.Request.Context(), cfg, params.offset, params.limit)
+	if err != nil {
+		log.Printf("[albums] handleAlbumsAPI fetch error (status=%q): %v", status, err)
+		return e.String(http.StatusInternalServerError, "Failed to load albums")
+	}
+
+	hasMore := params.offset+len(records) < totalCount
+	return renderDatastar(e, templates.AlbumRows(albumsFromRecords(records), status, params.offset+len(records), hasMore))
+}
+
+func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
+	if err := r.ParseForm(); err != nil {
+		return albumCreateInput{}, fmt.Errorf("invalid form data: %w", err)
+	}
+
+	title := strings.TrimSpace(r.FormValue("title"))
 	if title == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "album title is required"})
+		return albumCreateInput{}, fmt.Errorf("album title is required")
 	}
 
-	artistName := e.Request.FormValue("artist_name")
+	artistName := strings.TrimSpace(r.FormValue("artist_name"))
 	if artistName == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "artist name is required"})
+		return albumCreateInput{}, fmt.Errorf("artist name is required")
 	}
 
-	statusValue := e.Request.FormValue("status")
+	statusValue := strings.TrimSpace(r.FormValue("status"))
 	if statusValue == "" {
 		statusValue = "waiting"
 	}
 	statusDB, ok := albumStatusForDB(statusValue)
 	if !ok {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid status value"})
+		return albumCreateInput{}, fmt.Errorf("invalid status value")
 	}
 
-	collectionSongs := 0
-	if cs := e.Request.FormValue("collection_songs"); cs != "" {
-		if parsed, err := strconv.Atoi(cs); err == nil && parsed >= 0 {
-			collectionSongs = parsed
-		}
+	collectionSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("collection_songs"))
+	if err != nil {
+		return albumCreateInput{}, fmt.Errorf("invalid collection_songs: %w", err)
 	}
-
-	totalSongs := 0
-	if ts := e.Request.FormValue("total_songs"); ts != "" {
-		if parsed, err := strconv.Atoi(ts); err == nil && parsed >= 0 {
-			totalSongs = parsed
-		}
+	totalSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("total_songs"))
+	if err != nil {
+		return albumCreateInput{}, fmt.Errorf("invalid total_songs: %w", err)
 	}
-	if totalSongs > 0 && collectionSongs > totalSongs {
+	if collectionSongs > totalSongs {
 		totalSongs = collectionSongs
+	}
+
+	return albumCreateInput{
+		title:           title,
+		artistName:      artistName,
+		statusDB:        statusDB,
+		collectionSongs: collectionSongs,
+		totalSongs:      totalSongs,
+	}, nil
+}
+
+func parseOptionalNonNegativeFormInt(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("must be a non-negative integer")
+	}
+	return n, nil
+}
+
+func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
+	input, err := parseAlbumCreateInput(e.Request)
+	if err != nil {
+		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
 	collection, err := h.app.FindCollectionByNameOrId("albums")
 	if err != nil {
+		log.Printf("[albums] handleCreateAlbum FindCollectionByNameOrId error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "albums collection not found"})
 	}
 
 	record := core.NewRecord(collection)
-	record.Set("title", title)
-	record.Set("artist_name", artistName)
-	record.Set("status", statusDB)
-	record.Set("collection_songs", collectionSongs)
-	record.Set("total_songs", totalSongs)
+	record.Set("title", input.title)
+	record.Set("artist_name", input.artistName)
+	record.Set("status", input.statusDB)
+	record.Set("collection_songs", input.collectionSongs)
+	record.Set("total_songs", input.totalSongs)
 
 	if err := h.app.Save(record); err != nil {
+		log.Printf("[albums] handleCreateAlbum Save error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create album"})
 	}
 
 	return renderDatastar(e, templates.NewAlbumCreateResponse(albumFromRecord(record)))
 }
 
-// handleUpdateAlbumStatus updates the status of an album.
 func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 	albumID := e.Request.PathValue("albumId")
 	if albumID == "" {
@@ -234,106 +321,143 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid status value"})
 	}
 
-	record, err := h.app.FindRecordById("albums", albumID)
+	record, oldStatus, err := h.atomicUpdateAlbumStatus(e.Request.Context(), albumID, statusDB)
 	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
-	}
-
-	oldStatus := albumStatusForUI(record.GetString("status"))
-	record.Set("status", statusDB)
-	if err := h.app.Save(record); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+		}
+		log.Printf("[albums] atomicUpdateAlbumStatus error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
 	}
 
 	album := albumFromRecord(record)
 	if oldStatus == album.Status {
-		if album.Status == "waiting" {
-			return renderDatastar(e, templates.AlbumCard(album))
-		}
-		return renderDatastar(e, templates.AlbumRow(album))
+		return renderAlbumResponse(e, album)
 	}
 
 	return renderDatastar(e, templates.AlbumStatusTransition(oldStatus, album))
 }
 
-// handleUpdateAlbumCollectionSongs increments or decrements collection songs.
-func (h *Handler) handleUpdateAlbumCollectionSongs(e *core.RequestEvent) error {
-	albumID := e.Request.PathValue("albumId")
-	if albumID == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "album ID required"})
-	}
+func (h *Handler) atomicUpdateAlbumStatus(ctx context.Context, albumID string, statusDB string) (*core.Record, string, error) {
+	var record *core.Record
+	var oldStatus string
+	err := h.app.RunInTransaction(func(txApp core.App) error {
+		var txErr error
+		record, txErr = txApp.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
+		if txErr != nil {
+			return fmt.Errorf("find albums record %s: %w", albumID, txErr)
+		}
 
-	action := e.Request.PathValue("action")
-	if action != "inc" && action != "dec" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "action must be 'inc' or 'dec'"})
-	}
+		oldStatus = albumStatusForUI(record.GetString("status"))
+		record.Set("status", statusDB)
 
-	record, err := h.app.FindRecordById("albums", albumID)
+		if txErr := txApp.Save(record); txErr != nil {
+			return fmt.Errorf("save albums record %s: %w", albumID, txErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+		return nil, "", fmt.Errorf("atomic update album status %s: %w", albumID, err)
 	}
-
-	current := record.GetInt("collection_songs")
-	total := record.GetInt("total_songs")
-	if action == "inc" {
-		current++
-	} else if action == "dec" && current > 0 {
-		current--
-	}
-	record.Set("collection_songs", current)
-	if total > 0 && current > total {
-		record.Set("total_songs", current)
-	}
-
-	if err := h.app.Save(record); err != nil {
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
-	}
-
-	album := albumFromRecord(record)
-	if album.Status == "waiting" {
-		return renderDatastar(e, templates.AlbumCard(album))
-	}
-	return renderDatastar(e, templates.AlbumRow(album))
+	return record, oldStatus, nil
 }
 
-// handleUpdateAlbumTotalSongs increments or decrements total songs.
-func (h *Handler) handleUpdateAlbumTotalSongs(e *core.RequestEvent) error {
-	albumID := e.Request.PathValue("albumId")
-	if albumID == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "album ID required"})
-	}
+type albumSongField string
 
-	action := e.Request.PathValue("action")
-	if action != "inc" && action != "dec" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "action must be 'inc' or 'dec'"})
-	}
+const (
+	albumCollectionSongs albumSongField = "collection_songs"
+	albumTotalSongs      albumSongField = "total_songs"
+)
 
-	record, err := h.app.FindRecordById("albums", albumID)
+func (h *Handler) handleUpdateAlbumSongField(field albumSongField) func(*core.RequestEvent) error {
+	return func(e *core.RequestEvent) error {
+		albumID := e.Request.PathValue("albumId")
+		if albumID == "" {
+			return e.JSON(http.StatusBadRequest, map[string]string{"error": "album ID required"})
+		}
+
+		delta, err := parseSongCountAction(e.Request.PathValue("action"))
+		if err != nil {
+			return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+
+		record, err := h.atomicUpdateAlbumSongField(e.Request.Context(), albumID, field, delta)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+			}
+			log.Printf("[albums] atomicUpdateAlbumSongField error: %v", err)
+			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
+		}
+
+		return renderAlbumResponse(e, albumFromRecord(record))
+	}
+}
+
+func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string, field albumSongField, delta int) (*core.Record, error) {
+	var record *core.Record
+	err := h.app.RunInTransaction(func(txApp core.App) error {
+		query, err := albumSongUpdateQuery(field)
+		if err != nil {
+			return err
+		}
+
+		result, txErr := txApp.DB().NewQuery(query).
+			Bind(dbx.Params{"albumID": albumID, "delta": delta}).
+			WithContext(ctx).
+			Execute()
+		if txErr != nil {
+			return fmt.Errorf("update albums record %s field %s by delta %d: %w", albumID, field, delta, txErr)
+		}
+		rowsAffected, txErr := result.RowsAffected()
+		if txErr != nil {
+			return fmt.Errorf("read affected rows for albums record %s field %s: %w", albumID, field, txErr)
+		}
+		if rowsAffected == 0 {
+			return sql.ErrNoRows
+		}
+
+		record, txErr = txApp.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
+		if txErr != nil {
+			return fmt.Errorf("find updated albums record %s after field %s delta %d: %w", albumID, field, delta, txErr)
+		}
+		return nil
+	})
 	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+		return nil, fmt.Errorf("atomic update album song field %s: %w", albumID, err)
 	}
+	return record, nil
+}
 
-	total := record.GetInt("total_songs")
-	if action == "inc" {
-		total++
-	} else if action == "dec" && total > 0 {
-		total--
+func albumSongUpdateQuery(field albumSongField) (string, error) {
+	switch field {
+	case albumCollectionSongs:
+		return `
+			UPDATE albums
+			SET collection_songs = MAX(COALESCE(collection_songs, 0) + {:delta}, 0),
+				total_songs = CASE
+					WHEN MAX(COALESCE(collection_songs, 0) + {:delta}, 0) > COALESCE(total_songs, 0) THEN MAX(COALESCE(collection_songs, 0) + {:delta}, 0)
+					ELSE COALESCE(total_songs, 0)
+				END
+			WHERE id = {:albumID}
+		`, nil
+	case albumTotalSongs:
+		return `
+			UPDATE albums
+			SET total_songs = MAX(COALESCE(total_songs, 0) + {:delta}, 0),
+				collection_songs = CASE
+					WHEN MAX(COALESCE(total_songs, 0) + {:delta}, 0) < COALESCE(collection_songs, 0) THEN MAX(COALESCE(total_songs, 0) + {:delta}, 0)
+					ELSE COALESCE(collection_songs, 0)
+				END
+			WHERE id = {:albumID}
+		`, nil
+	default:
+		return "", fmt.Errorf("unsupported album song field %q", field)
 	}
-
-	collection := record.GetInt("collection_songs")
-	if total < collection {
-		collection = total
-		record.Set("collection_songs", collection)
-	}
-	record.Set("total_songs", total)
-
-	if err := h.app.Save(record); err != nil {
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
-	}
-
-	album := albumFromRecord(record)
-	if album.Status == "waiting" {
-		return renderDatastar(e, templates.AlbumCard(album))
-	}
-	return renderDatastar(e, templates.AlbumRow(album))
 }

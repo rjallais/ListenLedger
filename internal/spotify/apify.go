@@ -1,6 +1,6 @@
 //go:build goexperiment.jsonv2
 
-// Package spotify provides Apify Actor-based scraping for Spotify artist listener data.
+// apify.go provides Apify Actor-based scraping for Spotify artist listener data.
 // It uses the apify~puppeteer-scraper Actor, which exposes the raw Puppeteer page object
 // in the pageFunction context — required for waitForFunction and evaluate calls.
 package spotify
@@ -13,84 +13,47 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 )
 
 var listenersRe = regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
 
-// apifyRunInput is the payload sent to the Apify Actor run endpoint.
 type apifyRunInput struct {
 	StartURLs []apifyURL `json:"startUrls"`
-	// MaxConcurrency controls how many browser pages the Actor opens at once.
-	// Note: the Crawlee v3 autoscaler always ramps from desiredConcurrency=1 and
-	// increases ~5% per 10 s interval regardless of maxConcurrency; empirically
-	// this limits throughput to ~7 requests/min on an 8 GB Actor regardless of
-	// how high maxConcurrency is set. minConcurrency is not exposed by
-	// apify~puppeteer-scraper and therefore cannot be used to lock concurrency.
-	WaitUntil []string `json:"waitUntil,omitzero"`
+	WaitUntil []string   `json:"waitUntil,omitzero"`
 
 	PageFunction string `json:"pageFunction"`
 
 	MaxRequestsPerCrawl int `json:"maxRequestsPerCrawl"`
 	MaxConcurrency      int `json:"maxConcurrency,omitzero"`
-	// WaitUntil maps to Puppeteer's page.goto() waitUntil option.
-	// "networkidle2" waits until there are ≤2 active network connections for
-	// 500 ms, giving React time to fetch and render dynamic content (e.g. the
-	// monthly listeners count) before pageFunction is called.
-	// NavigationTimeoutSecs caps the time the actor waits for the page to reach
-	// the WaitUntil condition. Keep this generous when using networkidle2.
+
 	NavigationTimeoutSecs int `json:"navigationTimeoutSecs,omitzero"`
-	// HandlePageTimeoutSecs is the maximum wall-clock time the pageFunction may
-	// run. Must be larger than the longest wait inside the function itself.
 	HandlePageTimeoutSecs int `json:"handlePageTimeoutSecs,omitzero"`
 }
 
-// BatchFetcher is optionally implemented by clients that support sending
-// multiple artist URLs to a single Apify Actor run for concurrent processing.
-// The fetcher layer uses this interface when available to maximise throughput.
 type BatchFetcher interface {
 	FetchApifyBatch(ctx context.Context, artistIDs []string) (map[string]int, error)
 }
 
-// apifyURL wraps a single URL entry for the Apify startUrls list.
 type apifyURL struct {
 	URL string `json:"url"`
 }
 
-// apifyDatasetItem represents a single result item from the Apify dataset.
-// When the Actor fails to process a URL it emits a sentinel item with
-// IsError=true and a #debug object containing errorMessages; we surface those
-// so the caller sees a meaningful error rather than "no listener data".
 type apifyDatasetItem struct {
 	Debug struct {
 		ErrorMessages []string `json:"errorMessages,omitzero"`
 	} `json:"#debug,omitzero"`
 
-	URL                 string `json:"url"`
-	MonthlyListenersRaw string `json:"monthlyListenersRaw,omitzero"`
-	// Raw text fallback in case the actor returns a string value.
-	// Error is set by our own pageFunction when it cannot find listener text.
-	Error            string `json:"error,omitzero"`
-	MonthlyListeners *int   `json:"monthlyListeners,omitzero"`
-	// IsError is the #error sentinel emitted by the Apify framework itself
-	// when the browser/navigation fails before the pageFunction even runs.
-	IsError bool `json:"#error,omitzero"`
+	URL                  string `json:"url"`
+	MonthlyListenersRaw  string `json:"monthlyListenersRaw,omitzero"`
+	Error                string `json:"error,omitzero"`
+	MonthlyListeners     *int   `json:"monthlyListeners,omitzero"`
+	IsError              bool   `json:"#error,omitzero"`
 }
 
-// apifyRunResponse is the response body from the synchronous run-sync-get-dataset-items endpoint.
-// The endpoint returns a JSON array of dataset items directly.
 type apifyRunResponse []apifyDatasetItem
 
-// fetchViaApify fetches the monthly listener count via Apify by running
-// the configured Actor (default: apify~puppeteer-scraper) synchronously and
-// reading the first dataset item.
-//
-// The puppeteer-scraper Actor is required because it exposes the raw Puppeteer
-// page object in the pageFunction context. apify~web-scraper only provides
-// jQuery/Cheerio and does not have context.page, causing waitForFunction and
-// evaluate calls to fail with "Cannot read properties of undefined".
 func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error) {
 	if !c.config.HasApify() {
 		return 0, fmt.Errorf("apify not configured")
@@ -99,17 +62,12 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	spotifyURL := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 
 	input := apifyRunInput{
-		StartURLs:           []apifyURL{{URL: spotifyURL}},
-		PageFunction:        buildApifyPageFunction(),
-		MaxRequestsPerCrawl: 1,
-		MaxConcurrency:      1,
-		// networkidle2: wait until ≤2 active connections remain for 500 ms so
-		// that React has fetched and rendered the monthly listeners count before
-		// our pageFunction starts looking for it.
+		StartURLs:             []apifyURL{{URL: spotifyURL}},
+		PageFunction:          buildApifyPageFunction(),
+		MaxRequestsPerCrawl:   1,
+		MaxConcurrency:        1,
 		WaitUntil:             []string{"networkidle2"},
 		NavigationTimeoutSecs: 45,
-		// pageFunction waits up to 25 s for the span after network-idle, then
-		// does further evaluation — give it 90 s of headroom in total.
 		HandlePageTimeoutSecs: 90,
 	}
 
@@ -118,19 +76,12 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 		return 0, fmt.Errorf("apify: failed to marshal run input: %w", err)
 	}
 
-	// Use the synchronous run endpoint so we block until the Actor finishes and
-	// get the dataset items in one round-trip.
-	// Endpoint: POST /v2/acts/{actorId}/run-sync-get-dataset-items?token=...
-	//
-	// Use configured memory (default 8192 MB). Even a single-artist run benefits
-	// from extra headroom; the memory parameter drives Actor container sizing.
-	// timeout=90 gives the Actor 90 s to navigate and render the Spotify page.
 	endpoint := buildApifyEndpoint(apifyEndpointParams{
-		BaseEndpoint:   c.config.ApifyEndpoint,
-		ActorID:        c.config.ApifyActorID,
-		Token:          c.config.ApifyToken,
-		MemoryMB:       c.config.ApifyMemoryMB,
-		TimeoutSeconds: 90,
+		BaseEndpoint:    c.config.ApifyEndpoint,
+		ActorID:         c.config.ApifyActorID,
+		Token:           c.config.ApifyToken,
+		MemoryMB:        c.config.ApifyMemoryMB,
+		TimeoutSeconds:  90,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
@@ -147,7 +98,7 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close Apify response body: %v\n", closeErr)
+			log.Printf("[apify] failed to close response body: %v", closeErr)
 		}
 	}()
 
@@ -163,7 +114,6 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	return parseApifyResponse(body)
 }
 
-// parseApifyResponse extracts the monthly listener count from the Apify dataset items JSON.
 func parseApifyResponse(body []byte) (int, error) {
 	var items apifyRunResponse
 	if err := json.Unmarshal(body, &items); err != nil {
@@ -175,8 +125,6 @@ func parseApifyResponse(body []byte) (int, error) {
 
 	item := items[0]
 
-	// The Apify framework sets #error=true when the browser or navigation
-	// fails before our pageFunction even runs (e.g. OOM, page-creation timeout).
 	if item.IsError {
 		return 0, apifyFrameworkError(item)
 	}
@@ -186,8 +134,6 @@ func parseApifyResponse(body []byte) (int, error) {
 	return resolveListenerCount(item)
 }
 
-// truncateRunes truncates s to at most max runes, appending an ellipsis if
-// truncation occurred. It avoids splitting multi-byte UTF-8 sequences.
 func truncateRunes(s string, max int) string {
 	runes := []rune(s)
 	if len(runes) <= max {
@@ -196,8 +142,6 @@ func truncateRunes(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
-// apifyFrameworkError builds an error from an Apify #error sentinel item,
-// surfacing any embedded errorMessages so callers see a useful message.
 func apifyFrameworkError(item apifyDatasetItem) error {
 	if len(item.Debug.ErrorMessages) == 0 {
 		return fmt.Errorf("apify: actor framework error for %s (no details)", item.URL)
@@ -211,9 +155,6 @@ func apifyFrameworkError(item apifyDatasetItem) error {
 	return fmt.Errorf("apify: actor framework error for %s: %s", item.URL, strings.Join(msgs, " | "))
 }
 
-// resolveListenerCount picks the listener value from a dataset item, preferring
-// the raw text field (re-parsed locally) over the pre-parsed integer to avoid
-// actor-side M-suffix inflation.
 func resolveListenerCount(item apifyDatasetItem) (int, error) {
 	if item.MonthlyListenersRaw == "" {
 		if item.MonthlyListeners != nil {
@@ -226,9 +167,6 @@ func resolveListenerCount(item apifyDatasetItem) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parsing monthly listeners for %s: %w", item.URL, err)
 	}
-	// Prefer reparsing the raw text ourselves. The actor's numeric field has
-	// occasionally been observed to over-apply the M suffix and inflate values
-	// by 1,000,000. Raw text from the page is the safer source of truth.
 	if item.MonthlyListeners != nil && *item.MonthlyListeners != rawCount {
 		log.Printf(
 			"[apify] listener mismatch for %s: actor=%d raw=%d raw_text=%q; using raw value",
@@ -238,11 +176,6 @@ func resolveListenerCount(item apifyDatasetItem) (int, error) {
 	return rawCount, nil
 }
 
-// FetchApifyBatch sends a slice of Spotify artist IDs to a single Apify Actor
-// run, with all URLs processed concurrently up to cfg.ApifyMaxConcurrency.
-// It returns a map of artistID → monthly listener count for every artist that
-// succeeded; artists that fail are simply absent from the map (callers treat
-// them as misses and may retry via the single-artist path).
 func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[string]int, error) {
 	if !c.config.HasApify() {
 		return nil, fmt.Errorf("apify batch: not configured")
@@ -252,20 +185,27 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	}
 
 	input, tuning := c.buildApifyBatchInput(artistIDs)
-
 	bodyBytes, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("apify batch: failed to marshal input: %w", err)
 	}
 
 	endpoint := buildApifyEndpoint(apifyEndpointParams{
-		BaseEndpoint:   c.config.ApifyEndpoint,
-		ActorID:        c.config.ApifyActorID,
-		Token:          c.config.ApifyToken,
-		MemoryMB:       c.config.ApifyMemoryMB,
-		TimeoutSeconds: tuning.TimeoutSeconds,
+		BaseEndpoint:    c.config.ApifyEndpoint,
+		ActorID:         c.config.ApifyActorID,
+		Token:           c.config.ApifyToken,
+		MemoryMB:        c.config.ApifyMemoryMB,
+		TimeoutSeconds:  tuning.TimeoutSeconds,
 	})
 
+	maxConc := input.MaxConcurrency
+	log.Printf("[apify] batch run: %d artists, maxConcurrency=%d, actorTimeout=%ds, memory=%dMB",
+		len(artistIDs), maxConc, tuning.TimeoutSeconds, c.config.ApifyMemoryMB)
+
+	return c.executeApifyBatch(ctx, endpoint, bodyBytes)
+}
+
+func (c *Client) executeApifyBatch(ctx context.Context, endpoint string, bodyBytes []byte) (map[string]int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("apify batch: failed to create request: %w", err)
@@ -273,17 +213,13 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "ListenLedger/1.0")
 
-	maxConc := input.MaxConcurrency
-	log.Printf("[apify] batch run: %d artists, maxConcurrency=%d, actorTimeout=%ds, memory=%dMB",
-		len(artistIDs), maxConc, tuning.TimeoutSeconds, c.config.ApifyMemoryMB)
-
 	resp, err := c.httpClientApify.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("apify batch: http request failed: %w", err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close Apify batch response body: %v\n", closeErr)
+			log.Printf("[apify] failed to close batch response body: %v", closeErr)
 		}
 	}()
 
@@ -364,11 +300,6 @@ func checkApifyBatchHTTPStatus(resp *http.Response) error {
 	return checkApifyHTTPStatusWithPrefix(resp, "apify batch")
 }
 
-// parseApifyBatchResponse extracts a map of artistID → listenerCount from the
-// Apify dataset items array returned by run-sync-get-dataset-items.
-// Items that contain an error (either the Apify #error sentinel or our own
-// pageFunction error field) are logged and skipped. Raw-text parse failures
-// are returned with the item URL so callers can surface the bad payload.
 func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	var items apifyRunResponse
 	if err := json.Unmarshal(body, &items); err != nil {
@@ -399,7 +330,6 @@ func parseApifyBatchResponse(body []byte) (map[string]int, error) {
 	return results, nil
 }
 
-// logApifyItemError logs the first error message from an Apify #error sentinel item.
 func logApifyItemError(artistID string, msgs []string) {
 	if len(msgs) == 0 {
 		log.Printf("[apify] batch: #error for artist %s (no details)", artistID)
@@ -409,9 +339,6 @@ func logApifyItemError(artistID string, msgs []string) {
 	log.Printf("[apify] batch: #error for artist %s: %s", artistID, first)
 }
 
-// extractArtistIDFromSpotifyURL returns the artist ID from a URL of the form
-// https://open.spotify.com/artist/{artistID}, or an empty string if the URL
-// does not match.
 func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 	trimmed := strings.TrimRight(spotifyURL, "/")
 	idx := strings.LastIndex(trimmed, "/")
@@ -421,17 +348,14 @@ func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 	return trimmed[idx+1:]
 }
 
-// apifyEndpointParams bundles the parameters needed to construct a
-// run-sync-get-dataset-items URL, avoiding an excess-argument function.
 type apifyEndpointParams struct {
-	BaseEndpoint   string
-	ActorID        string
-	Token          string
-	MemoryMB       int
-	TimeoutSeconds int
+	BaseEndpoint    string
+	ActorID         string
+	Token           string
+	MemoryMB        int
+	TimeoutSeconds  int
 }
 
-// buildApifyEndpoint constructs the run-sync-get-dataset-items URL.
 func buildApifyEndpoint(p apifyEndpointParams) string {
 	return fmt.Sprintf(
 		"%s/%s/run-sync-get-dataset-items?token=%s&timeout=%d&memory=%d",
@@ -439,8 +363,6 @@ func buildApifyEndpoint(p apifyEndpointParams) string {
 	)
 }
 
-// parseListenersFromRawText extracts the numeric listener count from a string
-// such as "1,234,567 monthly listeners".
 func parseListenersFromRawText(raw string) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -461,48 +383,28 @@ func parseListenersFromRawText(raw string) (int, error) {
 	return parseListenerCountFromSuffix(numberStr, strings.ToUpper(parts[2]), "apify")
 }
 
-// buildApifyPageFunction returns the JavaScript page function that the Apify
-// puppeteer-scraper Actor will execute inside each page to extract monthly listeners.
-// It relies on context.page (a Puppeteer Page object) being available, which is
-// only provided by apify~puppeteer-scraper — not by apify~web-scraper.
+// buildApifyPageFunction returns a JavaScript pageFunction used by the Apify
+// puppeteer-scraper Actor to extract a Spotify artist's monthly listeners.
+// It relies on context.page (a Puppeteer Page object) being available, which
+// is only provided by apify~puppeteer-scraper — not by apify~web-scraper.
 //
-// Extraction is attempted in three stages so that at least one succeeds even
-// when Spotify's SPA is slow to hydrate or the network-idle signal fires a
-// little early:
+// The function navigates back to the artist URL if silently redirected, then
+// tries three extraction strategies:
+//  1. JSON fast-path — search <script> tags for "monthlyListeners" literals.
+//  2. Span wait — wait up to 25 s for a <span> containing the listeners text.
+//  3. Body text fallback — scan document.body.innerText with a regex.
 //
-//  1. JSON fast-path — search every <script> tag (including __NEXT_DATA__) for
-//     a "monthlyListeners":<number> literal. This works without waiting for any
-//     dynamic element and is therefore the fastest path.
-//
-//  2. Span wait — wait up to 25 s for a <span> whose text matches
-//     /[\d,]+ monthly listeners/i, then read it back via page.evaluate.
-//
-//  3. Body text fallback — scan document.body.innerText with the same regex.
-//     This catches cases where the count appears in a non-span element or
-//     where the span query selector doesn't match due to DOM structure changes.
-//
-// On failure the function returns an item with an `error` field containing the
-// page title, which surfaces whether Spotify served a real artist page or a
-// buildApifyPageFunction returns a JavaScript pageFunction used by the Apify actor to extract a Spotify artist's monthly listeners.
-//
-// The generated pageFunction navigates back to the requested artist URL if the page was silently redirected, then attempts extraction using three strategies:
-// 1) read embedded JSON script state, 2) wait briefly for a span containing the listeners text, and 3) scan the rendered page text.
-// It parses numeric formats with commas, optional decimals and optional "M"/"K" suffixes, producing an integer listener count.
-//
-// The returned JavaScript string resolves to an object with at least the source `url`. On success it includes `monthlyListeners` (integer);
-// when available it also includes `monthlyListenersRaw` (the original matched text). If no listener data is found the object contains an `error` message.
+// Returns an object with url, monthlyListeners (int), and optionally
+// monthlyListenersRaw. On failure, the object contains an error field.
 func buildApifyPageFunction() string {
-	return `
+	return apifyPageFunctionPreamble + apifyPageFunctionJSON +
+		apifyPageFunctionSpanWait + apifyPageFunctionTextFallback
+}
+
+const apifyPageFunctionPreamble = `
 async function pageFunction(context) {
     const { page, request, log } = context;
 
-    // ------------------------------------------------------------------
-    // URL guard: Spotify's SPA sometimes silently redirects the browser to
-    // the generic web player home page ("Spotify – Web Player") instead of
-    // the requested artist page. When that happens no artist-specific content
-    // ever renders, so all extraction strategies fail. Detect the redirect
-    // and navigate back to the original artist URL before proceeding.
-    // ------------------------------------------------------------------
     const currentUrl = page.url();
     if (!currentUrl.includes('/artist/')) {
         log.warning('Redirected away from artist page (now at: ' + currentUrl + ') — re-navigating to: ' + request.url);
@@ -512,43 +414,36 @@ async function pageFunction(context) {
             log.warning('Re-navigation failed: ' + e.message);
         }
     }
+`
 
-    // ------------------------------------------------------------------
-    // Strategy 1: JSON fast-path via embedded <script> tags.
-    // Spotify's Next.js app serialises server-side state into <script> tags
-    // (most notably <script id="__NEXT_DATA__">). If the monthly listeners
-    // count is present there we can return immediately without touching the
-    // live DOM at all — no React hydration required.
-    // ------------------------------------------------------------------
+const apifyPageFunctionJSON = `
     const fromJson = await page.evaluate(() => {
         const extractListeners = (text) => {
-        const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
-        if (m) {
-            return parseInt(m[1], 10);
-        }
+            const m = text.match(/"monthlyListeners"\s*:\s*(\d+)/);
+            if (m) {
+                return parseInt(m[1], 10);
+            }
 
-        const match = text.match(/([\d,\.]+)\s*([mMkK]?)\s+monthly listeners/i);
-        if (match) {
-            let num = parseFloat(match[1].replace(/,/g, ''));
-            let suffix = match[2].toUpperCase();
-            if (suffix === 'M') { num *= 1000000; }
-            else if (suffix === 'K') { num *= 1000; }
-			return Math.round(num);
-        }
+            const match = text.match(/([\d,\.]+)\s*([mMkK]?)\s+monthly listeners/i);
+            if (match) {
+                let num = parseFloat(match[1].replace(/,/g, ''));
+                let suffix = match[2].toUpperCase();
+                if (suffix === 'M') { num *= 1000000; }
+                else if (suffix === 'K') { num *= 1000; }
+                return Math.round(num);
+            }
 
-        if (text.includes('"artistUnion"')) {
+            if (text.includes('"artistUnion"')) {
+                return null;
+            }
+
             return null;
-        }
-
-        return null;
-    };
-        // Check __NEXT_DATA__ first (cheapest).
+        };
         const nextEl = document.getElementById('__NEXT_DATA__');
         if (nextEl) {
             const v = extractListeners(nextEl.textContent || '');
             if (v !== null) return v;
         }
-        // Walk all other <script> tags.
         for (const s of document.querySelectorAll('script')) {
             const v = extractListeners(s.textContent || '');
             if (v !== null) return v;
@@ -560,36 +455,27 @@ async function pageFunction(context) {
         log.info('Got monthlyListeners from embedded JSON: ' + fromJson);
         return { url: request.url, monthlyListeners: fromJson };
     }
+`
 
-    // ------------------------------------------------------------------
-    // Strategy 2: wait for the monthly listeners <span> to appear.
-    // The actor already waited for networkidle2 before calling us, so React
-    // should have fetched the listener count. Give it 25 s of additional
-    // grace — enough for slower pages or lightly rate-limited responses.
-    // ------------------------------------------------------------------
+const apifyPageFunctionSpanWait = `
     try {
         await page.waitForFunction(
             () => Array.from(document.querySelectorAll('span'))
-                       .some(el => /[\d,\.]+\s*[mMkK]?\s*monthly listeners/i.test(el.textContent)),
+                .some(el => /[\d,\.]+\s*[mMkK]?\s*monthly listeners/i.test(el.textContent)),
             { timeout: 25000 }
         );
     } catch (e) {
-        // Log the page title so we can tell whether Spotify served a real
-        // artist page or a bot-detection / CAPTCHA page.
         const title = await page.title().catch(() => '(title unavailable)');
         log.warning('Span wait timed out: ' + e.message + ' | page title: "' + title + '"');
     }
+`
 
-    // ------------------------------------------------------------------
-    // Strategy 3: read the span text, then fall back to full body text.
-    // ------------------------------------------------------------------
+const apifyPageFunctionTextFallback = `
     const raw = await page.evaluate(() => {
-        // Prefer the specific <span> element.
         const span = Array.from(document.querySelectorAll('span'))
             .find(el => /monthly listeners/i.test(el.textContent));
         if (span) return span.textContent.trim();
 
-        // Fall back to a regex scan of the entire rendered page text.
         const bodyText = (document.body && document.body.innerText) || '';
         const m = bodyText.match(/([\d,\.]+\s*[mMkK]?\s*monthly listeners)/i);
         return m ? m[1] : '';
@@ -604,8 +490,6 @@ async function pageFunction(context) {
         };
     }
 
-    // Parse the leading number, supporting decimals, commas, and M/K suffixes
-    // (e.g. "2.4M monthly listeners", "800K monthly listeners").
     const match = raw.match(/^([\.\d,]+)\s*([mMkK]?)/);
     if (!match) {
         return { url: request.url, monthlyListenersRaw: raw, monthlyListeners: 0 };
@@ -615,7 +499,7 @@ async function pageFunction(context) {
     const suffix = match[2].toUpperCase();
     if (suffix === 'M') { count *= 1000000; }
     else if (suffix === 'K') { count *= 1000; }
-	const monthlyListeners = isNaN(count) ? 0 : Math.round(count);
+    const monthlyListeners = isNaN(count) ? 0 : Math.round(count);
     return {
         url: request.url,
         monthlyListeners,
@@ -623,4 +507,3 @@ async function pageFunction(context) {
     };
 }
 `
-}

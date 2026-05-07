@@ -1,0 +1,155 @@
+package templates
+
+import "fmt"
+
+// AlbumSectionLazy renders a collapsible album section with lazy loading.
+templ AlbumSectionLazy(status, badge, title, badgeColor string, count int) {
+	<div class={ "collapse collapse-arrow border", sectionBorderClass(badgeColor) }>
+		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		@AlbumSectionTitle(badge, title, badgeColor, count)
+		<div class="collapse-content">
+			@AlbumSectionTable(status)
+			@AlbumSectionLoadButton(status)
+		</div>
+	</div>
+}
+
+templ AlbumSectionTitle(badge, title, badgeColor string, count int) {
+	<div class="collapse-title text-xl font-medium flex items-center gap-2">
+		<span class={ "badge", badgeClass(badgeColor) }>{ badge }</span>
+		<span>{ title } ({ fmt.Sprintf("%d", count) })</span>
+	</div>
+}
+
+templ AlbumSectionTable(status string) {
+	<div class="overflow-x-auto">
+		<table class="table table-zebra">
+			<thead>
+				<tr>
+					<th>Title</th>
+					<th>Artist</th>
+					<th class="text-center">Status</th>
+					<th class="text-right">Songs</th>
+				</tr>
+			</thead>
+			<tbody id={ "albums-" + status }>
+				<!-- Lazy loaded -->
+			</tbody>
+		</table>
+	</div>
+}
+
+templ AlbumSectionLoadButton(status string) {
+	<div id={ "load-more-" + status } class="mt-4 text-center">
+		<button
+			class="btn btn-outline btn-sm"
+			data-on:click={ albumsStatusURL(status, 0) }
+		>
+			Load Albums
+		</button>
+	</div>
+}
+
+// AlbumSectionWaiting renders the waiting section with one-at-a-time loading.
+templ AlbumSectionWaiting(status, badge, title string, count int) {
+	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
+		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-ghost">{ badge }</span>
+			<span>{ title } ({ fmt.Sprintf("%d", count) })</span>
+		</div>
+		<div class="collapse-content">
+			@AlbumSectionWaitingDescription()
+			<div id="albums-waiting" class="space-y-2">
+				<!-- Lazy loaded -->
+			</div>
+			@AlbumSectionWaitingLoadButton()
+		</div>
+	</div>
+}
+
+templ AlbumSectionWaitingDescription() {
+	<p class="text-sm text-base-content/70 mb-4">
+		Albums waiting to be processed. Click "Show Next" to reveal one at a time.
+	</p>
+}
+
+templ AlbumSectionWaitingLoadButton() {
+	<div id="load-more-waiting" class="mt-4">
+		<button
+			class="btn btn-primary btn-sm gap-2"
+			data-on:click={ albumsWaitingURL(0) }
+		>
+			@IconEye("h-4 w-4")
+			Show First Album
+		</button>
+	</div>
+}
+
+// AlbumRowsList renders the album list portion for lazy loading.
+templ AlbumRowsList(albums []Album, status string) {
+	if status == StatusWaiting {
+		<div id={ "albums-" + status } data-merge-mode="append">
+			for _, album := range albums {
+				@AlbumCard(album)
+			}
+		</div>
+	} else {
+		<tbody id={ "albums-" + status } data-merge-mode="append">
+			for _, album := range albums {
+				@AlbumRow(album)
+			}
+		</tbody>
+	}
+}
+
+// AlbumLoadMore renders the load-more or all-done controls for a section.
+templ AlbumLoadMore(status string, nextOffset int, hasMore bool) {
+	if status == StatusWaiting {
+		@AlbumLoadMoreWaiting(nextOffset, hasMore)
+	} else {
+		@AlbumLoadMoreNonWaiting(status, nextOffset, hasMore)
+	}
+}
+
+templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
+	if hasMore {
+		<div id="load-more-waiting" data-merge-mode="morph">
+			<button
+				class="btn btn-primary btn-sm gap-2"
+				data-on:click={ albumsWaitingURL(nextOffset) }
+			>
+				@IconDoubleArrow("h-4 w-4")
+				Show Next Album ({ fmt.Sprintf("%d", nextOffset) } shown)
+			</button>
+		</div>
+	} else {
+		<div id="load-more-waiting" data-merge-mode="morph">
+			<p class="text-sm text-success">✓ All albums shown</p>
+		</div>
+	}
+}
+
+templ AlbumLoadMoreNonWaiting(status string, nextOffset int, hasMore bool) {
+	if hasMore {
+		<div id={ "load-more-" + status } data-merge-mode="morph">
+			<button
+				class="btn btn-outline btn-sm"
+				data-on:click={ albumsStatusURL(status, nextOffset) }
+			>
+				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+			</button>
+		</div>
+	} else {
+		<div id={ "load-more-" + status } data-merge-mode="morph">
+			<p class="text-sm text-success text-center">✓ All albums loaded</p>
+		</div>
+	}
+}
+
+// AlbumRows renders album table rows for lazy loading responses.
+// This returns HTML fragments that Datastar will merge into the DOM.
+templ AlbumRows(albums []Album, status string, nextOffset int, hasMore bool) {
+	@AlbumRowsList(albums, status)
+	@AlbumLoadMore(status, nextOffset, hasMore)
+}

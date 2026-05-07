@@ -184,10 +184,7 @@ func (c *Checker) CheckScrapingAnt(ctx context.Context) Info {
 		}
 	}
 	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			panic(err)
-		}
+		_ = Body.Close()
 	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
@@ -266,8 +263,7 @@ func (c *Checker) CheckScraperAPI(ctx context.Context) Info {
 		_ = Body.Close()
 	}(resp.Body)
 
-	// Authentication errors mean the token is bad — provider not available.
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if isAuthError(resp.StatusCode) {
 		return Info{
 			Provider:  "scraperapi",
 			Available: false,
@@ -275,8 +271,6 @@ func (c *Checker) CheckScraperAPI(ctx context.Context) Info {
 		}
 	}
 
-	// The /account endpoint is not available on some plans (returns 400 with a
-	// text message). Fall back to assuming available when configured.
 	if resp.StatusCode != http.StatusOK {
 		return Info{
 			Provider:  "scraperapi",
@@ -285,6 +279,14 @@ func (c *Checker) CheckScraperAPI(ctx context.Context) Info {
 		}
 	}
 
+	return c.parseScraperAPIResponse(resp)
+}
+
+func isAuthError(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+}
+
+func (c *Checker) parseScraperAPIResponse(resp *http.Response) Info {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Info{
@@ -308,7 +310,7 @@ func (c *Checker) CheckScraperAPI(ctx context.Context) Info {
 		remaining = 0
 	}
 
-	available := remaining > 0 || acct.RequestLimit == 0 // limit==0 could mean unlimited
+	available := remaining > 0 || acct.RequestLimit == 0
 
 	return Info{
 		Provider:        "scraperapi",
@@ -363,7 +365,7 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		_ = Body.Close()
 	}(resp.Body)
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	if isAuthError(resp.StatusCode) {
 		return Info{
 			Provider:  "apify",
 			Available: false,
@@ -379,6 +381,10 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		}
 	}
 
+	return c.parseApifyLimitsResponse(resp)
+}
+
+func (c *Checker) parseApifyLimitsResponse(resp *http.Response) Info {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Info{
@@ -397,10 +403,13 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		}
 	}
 
+	return classifyApifyAvailability(limitsResp, c.cfg.ApifyMemoryMB)
+}
+
+func classifyApifyAvailability(limitsResp ApifyLimitsResponse, apifyMemoryMB int) Info {
 	usedUSD := limitsResp.Data.Current.MonthlyUsageUSD
 	maxUSD := limitsResp.Data.Limits.MaxMonthlyUsageUSD
 
-	// Convert USD values to integer cents for the shared Info representation.
 	usedCents := int(math.Round(usedUSD * 100))
 	maxCents := int(math.Round(maxUSD * 100))
 	remainingCents := maxCents - usedCents
@@ -408,14 +417,9 @@ func (c *Checker) CheckApify(ctx context.Context) Info {
 		remainingCents = 0
 	}
 
-	// Check whether there is enough USD budget.
-	budgetAvailable := remainingCents > 0 || maxCents == 0 // maxCents==0 means unlimited/pay-as-you-go
+	budgetAvailable := remainingCents > 0 || maxCents == 0
 
-	// Check whether an Actor run of the configured size can be launched.
-	// Apify enforces a global memory cap across all concurrent runs; if
-	// current allocation + requested >= max, the run will be rejected with
-	// HTTP 402 "actor-memory-limit-exceeded".
-	requestedMemGB := float64(c.cfg.ApifyMemoryMB) / 1024.0
+	requestedMemGB := float64(apifyMemoryMB) / 1024.0
 	memMax := limitsResp.Data.Limits.MaxActorMemoryGbytes
 	memUsed := limitsResp.Data.Current.ActorMemoryGbytes
 	memAvailable := (memUsed + requestedMemGB) <= memMax
@@ -491,29 +495,25 @@ func (c *Checker) GetBestProvider(ctx context.Context) string {
 // ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func GetBestFrom(quotas map[string]Info) string {
-	// Local headless is free — prefer it when enabled.
-	if local, ok := quotas["local"]; ok && local.Available {
-		return "local"
+	for _, name := range providerPriority {
+		if q, ok := quotas[name]; ok && isProviderReady(name, q) {
+			return name
+		}
 	}
-
-	// Prefer ScrapingAnt if it has credits.
-	if sa, ok := quotas["scrapingant"]; ok && sa.Available && sa.RemainingCredit > 0 {
-		return "scrapingant"
-	}
-
-	if scraperAPI, ok := quotas["scraperapi"]; ok && scraperAPI.Available {
-		return "scraperapi"
-	}
-
-	// Try Apify next if it has remaining budget.
-	if ap, ok := quotas["apify"]; ok && ap.Available && ap.RemainingCredit > 0 {
-		return "apify"
-	}
-
-	// Fall back to Browserless (quota assumed available when configured).
-	if bl, ok := quotas["browserless"]; ok && bl.Available {
-		return "browserless"
-	}
-
 	return ""
+}
+
+var providerPriority = []string{"local", "scrapingant", "scraperapi", "apify", "browserless"}
+
+func isProviderReady(name string, q Info) bool {
+	if !q.Available {
+		return false
+	}
+	if name == "scrapingant" {
+		return q.RemainingCredit > 0
+	}
+	if name == "apify" {
+		return q.TotalCredits == 0 || q.RemainingCredit > 0
+	}
+	return true
 }

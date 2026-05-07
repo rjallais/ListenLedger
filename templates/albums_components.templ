@@ -1,0 +1,338 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+)
+
+templ IconPlus(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+	</svg>
+}
+
+templ IconMinus(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+	</svg>
+}
+
+templ IconEye(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+	</svg>
+}
+
+templ IconChevronDown(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+	</svg>
+}
+
+templ IconDoubleArrow(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
+	</svg>
+}
+
+templ IconCheck(className string) {
+	<svg xmlns="http://www.w3.org/2000/svg" class={ className } fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+	</svg>
+}
+
+// AlbumRow renders a single album table row.
+templ AlbumRow(album Album) {
+	<tr id={ "album-" + album.ID }>
+		<td class="font-medium">{ album.Title }</td>
+		<td>{ album.ArtistName }</td>
+		<td class="text-center">
+			<div class="flex justify-center">
+				@AlbumStatusDropdown(album.ID, album.Status)
+			</div>
+		</td>
+		<td class="text-right">
+			@AlbumSongControls(album)
+		</td>
+	</tr>
+}
+
+// AlbumCard renders an album as a card (for waiting section).
+templ AlbumCard(album Album) {
+	<div id={ "album-card-" + album.ID } class="card bg-base-200 shadow-sm">
+		<div class="card-body py-3 px-4">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h3 class="font-medium">{ album.Title }</h3>
+					<p class="text-sm text-base-content/70">{ album.ArtistName }</p>
+				</div>
+				<div class="flex items-center gap-3">
+					@AlbumSongControls(album)
+					@AlbumStatusDropdown(album.ID, album.Status)
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+// AlbumSongCounter renders a single increment/decrement counter row.
+templ AlbumSongCounter(label, albumID, field string, count int) {
+	<div class="flex items-center gap-1">
+		<span class="text-xs opacity-60">{ label }</span>
+		@AlbumSongAdjustButton(albumID, field, "dec", "Decrease "+label+" songs")
+		<span class="font-mono min-w-[2.5rem] text-center">{ fmt.Sprintf("%d", count) }</span>
+		@AlbumSongAdjustButton(albumID, field, "inc", "Increase "+label+" songs")
+	</div>
+}
+
+templ AlbumSongAdjustButton(albumID, field, op, title string) {
+	<button
+		class="btn btn-xs btn-ghost btn-square"
+		data-on:click={ albumSongAdjustURL(albumID, field, op) }
+		title={ title }
+		aria-label={ title }
+	>
+		if op == "inc" {
+			@IconPlus("h-3 w-3")
+		} else {
+			@IconMinus("h-3 w-3")
+		}
+	</button>
+}
+
+templ AlbumStatusOption(albumID, currentStatus, status, badgeTone, label string) {
+	<li>
+		<button
+			class={ "text-left", templ.KV("active", currentStatus == status) }
+			data-on:click={ albumStatusUpdateURL(albumID, status) }
+		>
+			<span class={ "badge", "badge-xs", badgeTone }></span>
+			{ label }
+		</button>
+	</li>
+}
+
+// AlbumSongControls renders collection and total song controls.
+templ AlbumSongControls(album Album) {
+	<div class="flex flex-col items-end gap-1">
+		@AlbumSongCounter("Owned", album.ID, "collection", album.CollectionSongs)
+		@AlbumSongCounter("Total", album.ID, "total", album.TotalSongs)
+	</div>
+}
+
+// AlbumStatusDropdown renders a dropdown to change album status.
+templ AlbumStatusDropdown(albumID, currentStatus string) {
+	<div class="dropdown dropdown-end">
+		<div tabindex="0" role="button" class="btn btn-xs btn-ghost gap-1">
+			@AlbumStatusBadge(currentStatus)
+			@IconChevronDown("h-3 w-3")
+		</div>
+		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-40">
+			@AlbumStatusOption(albumID, currentStatus, "full", "badge-success", "Full")
+			@AlbumStatusOption(albumID, currentStatus, "processed", "badge-warning", "Processed")
+			@AlbumStatusOption(albumID, currentStatus, StatusWaiting, "badge-ghost", "Waiting")
+		</ul>
+	</div>
+}
+
+// AlbumStatusBadge renders the current album status as a badge.
+templ AlbumStatusBadge(status string) {
+	switch status {
+		case "full":
+			<span class="badge badge-success badge-sm">full</span>
+		case "processed":
+			<span class="badge badge-warning badge-sm">processed</span>
+		case StatusWaiting:
+			<span class="badge badge-ghost badge-sm">waiting</span>
+		default:
+			<span class="badge badge-ghost badge-sm">unknown</span>
+	}
+}
+
+// AlbumRemoveElement removes an album element from the DOM after a status change.
+templ AlbumRemoveElement(albumID, currentStatus string) {
+	if currentStatus == StatusWaiting {
+		<div id={ "album-card-" + albumID } data-merge-mode="remove"></div>
+	} else {
+		<tr id={ "album-" + albumID } data-merge-mode="remove"></tr>
+	}
+}
+
+// AlbumInsertElement inserts an album into the correct section container.
+templ AlbumInsertElement(album Album) {
+	if album.Status == StatusWaiting {
+		<div id="albums-waiting" data-merge-mode="prepend">
+			@AlbumCard(album)
+		</div>
+	} else {
+		<tbody id={ "albums-" + album.Status } data-merge-mode="prepend">
+			@AlbumRow(album)
+		</tbody>
+	}
+}
+
+// NewAlbumEntry inserts a newly created album into the correct section.
+templ NewAlbumEntry(album Album) {
+	@AlbumInsertElement(album)
+}
+
+templ AddAlbumSuccessNotice(albumTitle string) {
+	<div id="add-album-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			@IconCheck("h-5 w-5")
+			<div class="flex-1">
+				<p class="font-semibold">Album added</p>
+				<p class="text-xs">{ albumTitle }</p>
+			</div>
+			<label for="add-album-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewAlbumCreateResponse(album Album) {
+	@NewAlbumEntry(album)
+	@AddAlbumSuccessNotice(album.Title)
+}
+
+// AlbumStatusTransition moves an album between sections after a status change.
+templ AlbumStatusTransition(oldStatus string, album Album) {
+	@AlbumRemoveElement(album.ID, oldStatus)
+	@AlbumInsertElement(album)
+}
+
+// AddAlbumModal renders the modal for adding a new album.
+templ AddAlbumModal() {
+	<input type="checkbox" id="add-album-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Album</h3>
+				<label for="add-album-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+	<form
+		id="add-album-form"
+		data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
+		data-on-success="document.getElementById('add-album-form').reset()"
+	>
+				<div class="form-control w-full mb-4">
+				<label class="label" for="album-title">
+					<span class="label-text">Album Title *</span>
+				</label>
+				<input
+					id="album-title"
+					type="text"
+					name="title"
+					placeholder="Enter album title"
+					class="input input-bordered w-full"
+					required
+				/>
+			</div>
+			<div class="form-control w-full mb-4">
+				<label class="label" for="album-artist-name">
+					<span class="label-text">Artist Name *</span>
+				</label>
+				<input
+					id="album-artist-name"
+					type="text"
+					name="artist_name"
+					placeholder="Enter artist name"
+					class="input input-bordered w-full"
+					required
+				/>
+			</div>
+			<div class="form-control w-full mb-4">
+				<label class="label" for="album-status">
+					<span class="label-text">Status</span>
+				</label>
+				<select id="album-status" name="status" class="select select-bordered w-full">
+					<option value={ StatusWaiting } selected>Waiting</option>
+					<option value="processed">Processed</option>
+					<option value="full">Full</option>
+				</select>
+			</div>
+			<div class="grid grid-cols-2 gap-4 mb-6">
+				<div class="form-control w-full">
+					<label class="label" for="album-collection-songs">
+						<span class="label-text">Owned Songs</span>
+						<span class="label-text-alt text-base-content/50">Optional</span>
+					</label>
+					<input
+						id="album-collection-songs"
+						type="number"
+						name="collection_songs"
+						placeholder="0"
+						min="0"
+						class="input input-bordered w-full"
+					/>
+				</div>
+				<div class="form-control w-full">
+					<label class="label" for="album-total-songs">
+						<span class="label-text">Total Songs</span>
+						<span class="label-text-alt text-base-content/50">Optional</span>
+					</label>
+					<input
+						id="album-total-songs"
+						type="number"
+						name="total_songs"
+						placeholder="0"
+						min="0"
+						class="input input-bordered w-full"
+					/>
+				</div>
+			</div>
+				<div class="modal-action">
+					<label for="add-album-modal" class="btn btn-ghost">Cancel</label>
+					<button type="submit" class="btn btn-primary gap-2">
+						@IconPlus("h-5 w-5")
+						Add Album
+					</button>
+				</div>
+			</form>
+			<div id="add-album-feedback" class="mt-2"></div>
+		</div>
+		<label class="modal-backdrop" for="add-album-modal">Close</label>
+	</div>
+}
+
+func albumsStatusURL(status string, offset int) string {
+	return fmt.Sprintf("@get('/api/albums/%s?offset=%d')", status, offset)
+}
+
+func albumsWaitingURL(offset int) string {
+	return fmt.Sprintf("@get('/api/albums/waiting?offset=%d&limit=1')", offset)
+}
+
+func albumSongAdjustURL(albumID, field, op string) string {
+	return fmt.Sprintf("@post('/api/albums/%s/%s/%s')",
+		url.PathEscape(albumID),
+		url.PathEscape(field),
+		url.PathEscape(op),
+	)
+}
+
+func albumStatusUpdateURL(albumID, status string) string {
+	return fmt.Sprintf("@post('/api/albums/%s/status/%s')", url.PathEscape(albumID), url.PathEscape(status))
+}
+
+func sectionBorderClass(color string) string {
+	switch color {
+	case "success":
+		return "bg-success/10 border-success"
+	case "warning":
+		return "bg-warning/10 border-warning"
+	default:
+		return "bg-base-100 border-base-300"
+	}
+}
+
+func badgeClass(color string) string {
+	switch color {
+	case "success":
+		return "badge-success"
+	case "warning":
+		return "badge-warning"
+	default:
+		return "badge-ghost"
+	}
+}

@@ -57,3 +57,4 @@ tools/count.txt
 # Developer utilities
 cmd/lookup_artists/
 
+.mise.local.toml

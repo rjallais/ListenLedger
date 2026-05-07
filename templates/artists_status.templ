@@ -1,0 +1,38 @@
+package templates
+
+// ListStatusDropdown renders an interactive dropdown to change list status.
+templ ListStatusDropdown(artistID, currentStatus string) {
+	<div class="dropdown dropdown-end">
+		<div tabindex="0" role="button" class="btn btn-xs btn-ghost gap-1">
+			@ArtistBadge(listStatusBadgeProps(currentStatus))
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+			</svg>
+		</div>
+		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-48">
+			for _, option := range listStatusOptions(artistID, currentStatus) {
+				@ListStatusOption(option)
+			}
+		</ul>
+	</div>
+}
+
+templ ListStatusOption(option artistStatusOption) {
+	<li class={ option.ItemClass }>
+		<button class={ option.ButtonClass } data-on:click={ option.Action }>
+			<span class={ option.DotClass }></span>
+			{ option.Label }
+		</button>
+	</li>
+}
+
+templ ArtistBadge(props artistBadgeProps) {
+	<span class={ props.Classes }>
+		if props.ShowIcon {
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={ props.IconPath }></path>
+			</svg>
+		}
+		{ props.Label }
+	</span>
+}

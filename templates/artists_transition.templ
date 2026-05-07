@@ -1,0 +1,27 @@
+package templates
+
+// ArtistStatusTransition moves artists between the queue and the main table.
+templ ArtistStatusTransition(oldStatus string, artist Artist, currentGenre string) {
+	@ArtistStatusRemoval(oldStatus, artist.ID)
+	@ArtistStatusInsertion(artist, currentGenre)
+}
+
+templ ArtistStatusRemoval(oldStatus, artistID string) {
+	if oldStatus == "waiting" {
+		<div id={ artistCardID(artistID) } data-merge-mode="remove"></div>
+	} else {
+		<tr id={ artistRowID(artistID) } data-merge-mode="remove"></tr>
+	}
+}
+
+templ ArtistStatusInsertion(artist Artist, currentGenre string) {
+	if artist.ListStatus == "waiting" {
+		<div id="artists-waiting" data-merge-mode="prepend">
+			@WaitingArtistCard(artist)
+		</div>
+	} else if artist.GenreGroup == currentGenre {
+		<tbody id={ artistsTBodyID(currentGenre) } data-merge-mode="prepend">
+			@ArtistRow(artist)
+		</tbody>
+	}
+}

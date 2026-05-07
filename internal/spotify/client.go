@@ -747,10 +747,14 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 }
 
 func stripQuotedWrapping(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+	if isQuoted(s) {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+func isQuoted(s string) bool {
+	return len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"'
 }
 
 // isScrapingAntQuotaStatus reports whether the HTTP status indicates a
@@ -830,6 +834,10 @@ func (c *Client) fetchViaScraperAPI(ctx context.Context, artistID string) (int, 
 		}
 	}
 
+	return c.tryScraperAPIProfiles(ctx, artistID)
+}
+
+func (c *Client) tryScraperAPIProfiles(ctx context.Context, artistID string) (int, error) {
 	profiles := c.scraperAPIProfiles()
 	var lastErr error
 

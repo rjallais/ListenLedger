@@ -4,6 +4,8 @@ package worker
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -28,6 +30,26 @@ func (w *Worker) scrapeJobByRequestID(requestID string) (*core.Record, error) {
 	)
 	if err != nil || len(records) == 0 {
 		return nil, err
+	}
+	return records[0], nil
+}
+
+func (w *Worker) scrapeJobByRequestIDWithContext(ctx context.Context, requestID string) (*core.Record, error) {
+	if requestID == "" {
+		return nil, nil
+	}
+
+	var records []*core.Record
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("request_id = {:request_id}", dbx.Params{"request_id": requestID})).
+		Limit(1).
+		All(&records)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
 	}
 	return records[0], nil
 }
@@ -59,6 +81,24 @@ func (w *Worker) setScrapeJobFinished(requestID, status, errMsg string) {
 	if err := w.app.Save(job); err != nil {
 		log.Printf("[worker] Warning: failed to update scrape job to %s: %v", status, err)
 	}
+}
+
+func (w *Worker) setScrapeJobFinishedWithContext(ctx context.Context, requestID, status, errMsg string) error {
+	job, err := w.scrapeJobByRequestIDWithContext(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("find scrape job %s: %w", requestID, err)
+	}
+	if job == nil {
+		return nil
+	}
+
+	job.Set("status", status)
+	job.Set("finished_at", time.Now())
+	job.Set("error", errMsg)
+	if err := w.app.SaveWithContext(ctx, job); err != nil {
+		return fmt.Errorf("save scrape job %s: %w", requestID, err)
+	}
+	return nil
 }
 
 func (w *Worker) isRequestAlreadySucceeded(requestID string) bool {
@@ -113,23 +153,27 @@ func (w *Worker) pruneSucceededLocked(now time.Time) {
 	}
 }
 
-func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
+func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeededRequestID string) {
 	if artistID == "" {
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 
-	records, err := w.app.FindRecordsByFilter(
-		"scrape_jobs",
-		"artist = {:artist} && status = {:status} && request_id != {:request_id}",
-		"",
-		500,
-		0,
-		dbx.Params{
-			"artist":     artistID,
-			"status":     "failed",
-			"request_id": succeededRequestID,
-		},
-	)
+	records := make([]*core.Record, 0, 500)
+	err := w.app.RecordQuery("scrape_jobs").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			"artist = {:artist} AND status = {:status} AND request_id != {:request_id}",
+			dbx.Params{
+				"artist":     artistID,
+				"status":     "failed",
+				"request_id": succeededRequestID,
+			},
+		)).
+		Limit(500).
+		All(&records)
 	if err != nil {
 		log.Printf("[worker] Warning: failed to load failed jobs for artist %s: %v", artistID, err)
 		return
@@ -139,20 +183,31 @@ func (w *Worker) clearFailedJobsForArtist(artistID, succeededRequestID string) {
 		return
 	}
 
-	note := "recovered_by_retry"
-	if strings.TrimSpace(succeededRequestID) != "" {
-		note = "recovered_by_retry:" + succeededRequestID
-	}
+	note := reconciliationNote(succeededRequestID)
+	w.reconcileFailedJobs(ctx, records, note)
+}
 
+func reconciliationNote(succeededRequestID string) string {
+	if strings.TrimSpace(succeededRequestID) != "" {
+		return "recovered_by_retry:" + succeededRequestID
+	}
+	return "recovered_by_retry"
+}
+
+func (w *Worker) reconcileFailedJobs(ctx context.Context, records []*core.Record, note string) {
 	for _, rec := range records {
+		if ctx.Err() != nil {
+			return
+		}
 		rec.Set("status", "succeeded")
 		rec.Set("finished_at", time.Now())
-		if rec.GetString("error") == "" {
+		existingErr := rec.GetString("error")
+		if existingErr == "" {
 			rec.Set("error", note)
 		} else {
-			rec.Set("error", note+" | "+rec.GetString("error"))
+			rec.Set("error", note+" | "+existingErr)
 		}
-		if saveErr := w.app.Save(rec); saveErr != nil {
+		if saveErr := w.app.SaveWithContext(ctx, rec); saveErr != nil {
 			log.Printf("[worker] Warning: failed to reconcile failed job %s: %v", rec.Id, saveErr)
 		}
 	}
@@ -286,6 +341,10 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[markStaleJobArtistFailed] artist %s not found for job %s; no-op — job already failed", artistID, jobID)
+			return nil
+		}
 		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)
 	}
 	if artist.GetString("fetch_status") != "pending" {

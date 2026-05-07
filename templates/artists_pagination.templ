@@ -1,0 +1,39 @@
+package templates
+
+// PaginationControls renders pagination links.
+templ PaginationControls(p Pagination) {
+	<div class="flex items-center justify-between mt-6">
+		@PaginationSummary(p)
+		<div class="join">
+			@PaginationEdgeButton(paginationPreviousButton(p))
+			@PaginationPageButtons(paginationPageLinks(p))
+			@PaginationEdgeButton(paginationNextButton(p))
+		</div>
+	</div>
+}
+
+templ PaginationSummary(p Pagination) {
+	<div class="text-sm text-base-content/70">{ paginationSummaryText(p) }</div>
+}
+
+templ PaginationEdgeButton(button paginationNavButton) {
+	if button.Disabled {
+		<button type="button" class="join-item btn btn-sm btn-disabled" disabled aria-disabled="true">{ button.Label }</button>
+	} else {
+		<a href={ templ.SafeURL(button.Href) } class="join-item btn btn-sm">{ button.Label }</a>
+	}
+}
+
+templ PaginationPageButtons(links []paginationPageLink) {
+	for _, link := range links {
+		@PaginationPageButton(link)
+	}
+}
+
+templ PaginationPageButton(link paginationPageLink) {
+	if link.Active {
+		<button type="button" class="join-item btn btn-sm btn-active" disabled aria-current="page" aria-disabled="true">{ intString(link.Number) }</button>
+	} else {
+		<a href={ templ.SafeURL(link.Href) } class="join-item btn btn-sm">{ intString(link.Number) }</a>
+	}
+}

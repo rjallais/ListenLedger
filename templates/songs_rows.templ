@@ -1,0 +1,58 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+)
+
+// SongRow renders a single song row.
+templ SongRow(song Song, playlistSort string) {
+	<tr id={ "song-" + song.ID }>
+		<td class="font-medium">{ song.Title }</td>
+		<td>{ song.ArtistName }</td>
+		<td>{ song.Album }</td>
+		@SongReleaseTypeCell(song.ReleaseType)
+		<td>{ song.ReleaseDate }</td>
+		@SongBatchCell(song.BatchSeq, song.BatchPos)
+		@SongRecentToggleCell(song.ID, song.Title, song.IsRecent, playlistSort)
+	</tr>
+}
+
+templ SongReleaseTypeCell(releaseType string) {
+	<td>
+		if releaseType != "" {
+			<span class="badge badge-outline badge-sm">{ releaseType }</span>
+		}
+	</td>
+}
+
+templ SongBatchCell(batchSeq, batchPos int) {
+	<td class="text-center">
+		if batchSeq > 0 {
+			<span class="badge badge-primary badge-sm">{ fmt.Sprintf("B%d.%d", batchSeq, batchPos) }</span>
+		} else {
+			<span class="text-base-content/40">—</span>
+		}
+	</td>
+}
+
+templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort string) {
+	<td class="text-center">
+		<input
+			type="checkbox"
+			class="checkbox checkbox-sm checkbox-primary"
+			aria-label={ fmt.Sprintf("Mark %s as recently added", songTitle) }
+			checked?={ isRecent }
+			data-on:change={ songRecentToggleAction(songID, playlistSort) }
+		/>
+	</td>
+}
+
+func songRecentToggleAction(songID, playlistSort string) string {
+	escapedSongID := url.PathEscape(songID)
+	query := url.Values{"playlist_sort": []string{playlistSort}}.Encode()
+	return fmt.Sprintf(
+		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?%s') } else { @post('/api/songs/%s/recent/false?%s') }",
+		escapedSongID, query, escapedSongID, query,
+	)
+}

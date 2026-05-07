@@ -1,0 +1,29 @@
+package templates
+
+import (
+	"fmt"
+	"net/url"
+)
+
+templ SongSortControls(playlistSort string) {
+	<div class="flex flex-wrap items-center gap-2 mb-4">
+		<span class="text-sm opacity-70">Sort by:</span>
+		@SongSortButton("added_desc", "Most Recently Added", playlistSort)
+		@SongSortButton("release_asc", "Release Date (Oldest First)", playlistSort)
+	</div>
+}
+
+templ SongSortButton(sortValue, label, playlistSort string) {
+	<button
+		class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == sortValue), templ.KV("btn-outline", playlistSort != sortValue) }
+		aria-pressed={ fmt.Sprintf("%v", playlistSort == sortValue) }
+		data-on:click={ songsSectionsSortURL(sortValue) }
+	>
+		{ label }
+	</button>
+}
+
+func songsSectionsSortURL(sortValue string) string {
+	query := url.Values{"playlist_sort": []string{sortValue}}.Encode()
+	return fmt.Sprintf("@get('/api/songs/sections?%s')", query)
+}

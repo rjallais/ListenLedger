@@ -1,0 +1,71 @@
+package templates
+
+import "fmt"
+
+// SongsSections renders all three tier sections and can be morphed via Datastar.
+templ SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount int, playlistSort string) {
+	<div id="songs-sections" data-merge-mode="morph" class="space-y-4">
+		@CurrentPlaylistSection(currentPlaylistSongs, playlistSort)
+		@SongWaitingRemovalSection(waitingRemovalSongs, playlistSort)
+		@SongNotRecentSection(notRecentCount, playlistSort)
+	</div>
+}
+
+// CurrentPlaylistSection renders the top playlist section and sort controls.
+templ CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) {
+	<div id="songs-current-playlist-section" data-merge-mode="morph" class="collapse collapse-arrow border bg-success/10 border-success">
+		<input type="checkbox" checked aria-label="Toggle current playlist section"/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-success">Current Playlist</span>
+			<span>{ fmt.Sprintf("Newest 500 (%d)", len(currentPlaylistSongs)) }</span>
+		</div>
+		<div class="collapse-content">
+			@SongSortControls(playlistSort)
+			@SongSectionTable("songs-current", currentPlaylistSongs, playlistSort)
+		</div>
+	</div>
+}
+
+templ SongWaitingRemovalSection(waitingRemovalSongs []Song, playlistSort string) {
+	<div class="collapse collapse-arrow border bg-warning/10 border-warning">
+		<input type="checkbox" aria-label="Toggle waiting for removal section"/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-warning">Waiting For Removal</span>
+			<span>{ fmt.Sprintf("Older recent songs (%d)", len(waitingRemovalSongs)) }</span>
+		</div>
+		<div class="collapse-content">
+			@SongSortControls(playlistSort)
+			@SongSectionTable("songs-waiting-removal", waitingRemovalSongs, playlistSort)
+		</div>
+	</div>
+}
+
+templ SongNotRecentSection(notRecentCount int, playlistSort string) {
+	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
+		<input type="checkbox" class="songs-not-recent-toggle" aria-label="Toggle not recent songs section"/>
+		<div class="collapse-title text-xl font-medium flex items-center gap-2">
+			<span class="badge badge-ghost">Not Recent</span>
+			<span>{ fmt.Sprintf("Archived songs (%d)", notRecentCount) }</span>
+		</div>
+		<div class="collapse-content">
+			<p class="text-sm text-base-content/70 mb-4">This section is expandable and paginated.</p>
+			<div class="overflow-x-auto">
+				<table class="table table-zebra">
+					@SongTableHeader()
+					<tbody id="songs-not-recent"></tbody>
+				</table>
+			</div>
+			@SongNotRecentLoadControl(notRecentCount, playlistSort)
+		</div>
+	</div>
+}
+
+templ SongNotRecentLoadControl(notRecentCount int, playlistSort string) {
+	<div id="load-more-songs-not-recent" class="mt-4 text-center">
+		if notRecentCount > 0 {
+			<button class="btn btn-outline btn-sm" data-on:click={ songsNotRecentURL(0, playlistSort) }>Load Songs</button>
+		} else {
+			<p class="text-sm text-success">✓ No archived songs</p>
+		}
+	</div>
+}
