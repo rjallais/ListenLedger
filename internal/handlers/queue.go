@@ -1,5 +1,7 @@
 //go:build goexperiment.jsonv2
 
+// Package handlers provides HTTP request handlers and helpers for dashboard
+// routes, queue management, and scrape refresh workflows.
 package handlers
 
 import (

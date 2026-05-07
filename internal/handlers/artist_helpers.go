@@ -85,7 +85,7 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC").
+		OrderBy("monthly_listeners DESC, id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
@@ -563,7 +563,7 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 	}
 
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: "pending"}})
+	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: status}})
 	if err != nil {
 		return fmt.Errorf("marshal artistFetchStatus payload: %w", err)
 	}
@@ -602,7 +602,7 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC").
+		OrderBy("monthly_listeners DESC, id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {

@@ -328,16 +328,19 @@ func (h *Handler) atomicUpdateAlbumStatus(ctx context.Context, albumID string, s
 			return nil
 		})
 		if txErr != nil {
-			return txErr
+			return fmt.Errorf("find albums record %s: %w", albumID, txErr)
 		}
 
 		oldStatus = albumStatusForUI(record.GetString("status"))
 		record.Set("status", statusDB)
 
-		return txApp.Save(record)
+		if txErr := txApp.Save(record); txErr != nil {
+			return fmt.Errorf("save albums record %s: %w", albumID, txErr)
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("atomic update album status %s: %w", albumID, err)
 	}
 	return record, oldStatus, nil
 }
@@ -407,15 +410,18 @@ func (h *Handler) atomicUpdateAlbumSongField(ctx context.Context, albumID string
 			return nil
 		})
 		if txErr != nil {
-			return txErr
+			return fmt.Errorf("find albums record %s for song field delta %d: %w", albumID, delta, txErr)
 		}
 
 		adjust(record, delta)
 
-		return txApp.Save(record)
+		if txErr := txApp.Save(record); txErr != nil {
+			return fmt.Errorf("save albums record %s for song field delta %d: %w", albumID, delta, txErr)
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("atomic update album song field %s: %w", albumID, err)
 	}
 	return record, nil
 }
