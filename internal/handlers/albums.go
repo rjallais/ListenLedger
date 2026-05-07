@@ -203,17 +203,6 @@ func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
 	return renderDatastar(e, templates.AlbumRow(album))
 }
 
-func (h *Handler) findAlbumRecord(ctx context.Context, albumID string) (*core.Record, error) {
-	record, err := h.app.FindRecordById("albums", albumID, func(q *dbx.SelectQuery) error {
-		q.WithContext(ctx)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return record, nil
-}
-
 func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 	status := e.Request.PathValue("status")
 
@@ -226,6 +215,7 @@ func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 
 	records, totalCount, err := h.fetchAlbumRecords(e.Request.Context(), cfg, params.offset, params.limit)
 	if err != nil {
+		log.Printf("[albums] handleAlbumsAPI fetch error (status=%q): %v", status, err)
 		return e.String(http.StatusInternalServerError, "Failed to load albums")
 	}
 
@@ -280,6 +270,7 @@ func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
 
 	collection, err := h.app.FindCollectionByNameOrId("albums")
 	if err != nil {
+		log.Printf("[albums] handleCreateAlbum FindCollectionByNameOrId error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "albums collection not found"})
 	}
 
@@ -291,6 +282,7 @@ func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
 	record.Set("total_songs", input.totalSongs)
 
 	if err := h.app.Save(record); err != nil {
+		log.Printf("[albums] handleCreateAlbum Save error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create album"})
 	}
 

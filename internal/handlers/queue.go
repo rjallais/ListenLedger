@@ -194,28 +194,7 @@ func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) error 
 	return nil
 }
 
-func (h *Handler) saveRetryQueued(ctx context.Context, job *core.Record) error {
-	job.Set("status", "queued")
-	job.Set("queued_at", time.Now())
-	job.Set("error", "")
-	job.Set("started_at", nil)
-	job.Set("finished_at", nil)
-	if saveErr := h.app.SaveWithContext(ctx, job); saveErr != nil {
-		return fmt.Errorf("save queued status for job %s: %w", job.Id, saveErr)
-	}
-	return nil
-}
-
-func (h *Handler) markArtistRetryPending(ctx context.Context, artist *core.Record, artistID, requestID string) error {
-	artist.Set("fetch_status", "pending")
-	if saveErr := h.app.SaveWithContext(ctx, artist); saveErr != nil {
-		return fmt.Errorf("mark artist %s pending: %w", artistID, saveErr)
-	}
-	correlation.Associate(artistID, requestID)
-	return nil
-}
-
-func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, job *core.Record, artist *core.Record, artistID, requestID, previousFetchStatus string) error {
+func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, job *core.Record, artist *core.Record, artistID, requestID string) error {
 	err := h.app.RunInTransaction(func(txApp core.App) error {
 		job.Set("status", "queued")
 		job.Set("queued_at", time.Now())
@@ -259,39 +238,39 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		}
 
 		previousFetchStatus := artist.GetString("fetch_status")
-		if err := h.saveRetryQueuedAndMarkPending(ctx, job, artist, artistID, requestID, previousFetchStatus); err != nil {
+		if err := h.saveRetryQueuedAndMarkPending(ctx, job, artist, artistID, requestID); err != nil {
 			return stats, err
 		}
 
-	ack, pubErr := h.publishRetryRequest(ctx, req)
-	if pubErr != nil {
-		stats.PublishFailed++
-		if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
-			return stats, err
-		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if saveErr := h.saveRetryPublishFailure(cleanupCtx, job, pubErr); saveErr != nil {
+		ack, pubErr := h.publishRetryRequest(ctx, req)
+		if pubErr != nil {
+			stats.PublishFailed++
+			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+				return stats, err
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if saveErr := h.saveRetryPublishFailure(cleanupCtx, job, pubErr); saveErr != nil {
+				cleanupCancel()
+				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
+			}
 			cleanupCancel()
-			return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
+			continue
 		}
-		cleanupCancel()
-		continue
-	}
 
-	if ack != nil && ack.Duplicate {
-		stats.Duplicate++
-		if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
-			return stats, err
-		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if saveErr := h.saveRetryDeduped(cleanupCtx, job); saveErr != nil {
+		if ack != nil && ack.Duplicate {
+			stats.Duplicate++
+			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+				return stats, err
+			}
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if saveErr := h.saveRetryDeduped(cleanupCtx, job); saveErr != nil {
+				cleanupCancel()
+				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
+			}
 			cleanupCancel()
-			return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
+			h.deleteRetryScrapeJob(requestID, artistID)
+			continue
 		}
-		cleanupCancel()
-		h.deleteRetryScrapeJob(requestID, artistID)
-		continue
-	}
 
 		stats.Retried++
 	}

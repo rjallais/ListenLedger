@@ -1,5 +1,7 @@
 //go:build goexperiment.jsonv2
 
+// Package handlers provides HTTP request handlers and helper functions for
+// managing artist data and related dashboard workflows.
 package handlers
 
 import (
