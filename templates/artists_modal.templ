@@ -1,0 +1,154 @@
+package templates
+
+// AddArtistModal renders the modal for adding a new artist.
+templ AddArtistModal(currentGenre string) {
+	<input type="checkbox" id="add-artist-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Add New Artist</h3>
+				<label for="add-artist-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+			<form
+				id="add-artist-form"
+				data-on:submit="evt.preventDefault(); @post('/api/artists', {contentType: 'form'})"
+			>
+				@AddArtistNameField()
+				@AddArtistSpotifyIDField()
+				@AddArtistGenreField(currentGenre)
+				@AddArtistStatusField()
+				@AddArtistOptionalFields()
+				@AddArtistModalActions()
+			</form>
+			<div id="add-artist-feedback" class="mt-2"></div>
+		</div>
+		<label class="modal-backdrop" for="add-artist-modal">Close</label>
+	</div>
+}
+
+templ AddArtistNameField() {
+	<div class="form-control w-full mb-4">
+		<label class="label" for="artist-name">
+			<span class="label-text">Artist Name *</span>
+		</label>
+		<input
+			id="artist-name"
+			type="text"
+			name="name"
+			placeholder="Enter artist name"
+			class="input input-bordered w-full"
+			required
+		/>
+	</div>
+}
+
+templ AddArtistSpotifyIDField() {
+	<div class="form-control w-full mb-4">
+		<label class="label" for="spotify-id">
+			<span class="label-text">Artist ID (Spotify ID) *</span>
+		</label>
+		<input
+			id="spotify-id"
+			type="text"
+			name="spotify_id"
+			placeholder="e.g., 0L8ExT028jH3ddEcZwqJJ5"
+			class="input input-bordered w-full font-mono"
+			required
+		/>
+	</div>
+}
+
+templ AddArtistGenreField(currentGenre string) {
+	<div class="form-control w-full mb-4">
+		<label class="label" for="genre-group">
+			<span class="label-text">Genre Group</span>
+		</label>
+		<select id="genre-group" name="genre_group" class="select select-bordered w-full">
+			for _, option := range artistGenreOptions(currentGenre) {
+				@SelectOption(option)
+			}
+		</select>
+	</div>
+}
+
+templ AddArtistStatusField() {
+	<div class="form-control w-full mb-4">
+		<label class="label" for="list-status">
+			<span class="label-text">Initial Status</span>
+		</label>
+		<select id="list-status" name="list_status" class="select select-bordered w-full">
+			for _, option := range artistListStatusOptions() {
+				@SelectOption(option)
+			}
+		</select>
+	</div>
+}
+
+templ AddArtistOptionalFields() {
+	<div class="grid grid-cols-2 gap-4 mb-6">
+		<div class="form-control w-full">
+			<label class="label" for="monthly-listeners">
+				<span class="label-text">Monthly Listeners</span>
+				<span class="label-text-alt text-base-content/50">Optional</span>
+			</label>
+			<input
+				id="monthly-listeners"
+				type="number"
+				name="monthly_listeners"
+				placeholder="0"
+				min="0"
+				class="input input-bordered w-full"
+			/>
+		</div>
+		<div class="form-control w-full">
+			<label class="label" for="collection-songs">
+				<span class="label-text">Collection Songs</span>
+				<span class="label-text-alt text-base-content/50">Optional</span>
+			</label>
+			<input
+				id="collection-songs"
+				type="number"
+				name="collection_songs"
+				placeholder="0"
+				min="0"
+				class="input input-bordered w-full"
+			/>
+		</div>
+	</div>
+}
+
+templ AddArtistModalActions() {
+	<div class="modal-action">
+		<label for="add-artist-modal" class="btn btn-ghost">Cancel</label>
+		<button type="submit" class="btn btn-primary gap-2">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+			</svg>
+			Add Artist
+		</button>
+	</div>
+}
+
+templ SelectOption(option selectOption) {
+	<option value={ option.Value } selected?={ option.Selected }>{ option.Label }</option>
+}
+
+templ AddArtistSuccessNotice(artistName string) {
+	<div id="add-artist-feedback" class="mt-2" data-merge-mode="morph">
+		<div class="alert alert-success">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+			</svg>
+			<div class="flex-1">
+				<p class="font-semibold">Artist added</p>
+				<p class="text-xs">{ artistName }</p>
+			</div>
+			<label for="add-artist-modal" class="btn btn-success btn-sm">Close</label>
+		</div>
+	</div>
+}
+
+templ NewArtistCreateResponse(artist Artist) {
+	@NewArtistRow(artist)
+	@AddArtistSuccessNotice(artist.Name)
+}

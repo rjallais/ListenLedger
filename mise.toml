@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.26.0"
+go = "1.26.2"
 
 [settings]
 # Use Nushell as the default shell for all inline tasks (cross-platform)
@@ -19,6 +19,7 @@ AIR_BUILD_CMD = "go build -o ./tmp/main ."
 AIR_BIN_PATH = "./tmp/main"
 
 # Spotify scraping tokens are sensitive; provide them via .mise.local.toml
+# CODESCENE_PAT = "<set in .mise.local.toml>"
 #APIFY_TOKEN = "<set in .mise.local.toml>"
 #BROWSERLESS_TOKEN = "<set in .mise.local.toml>"
 #SCRAPERAPI_TOKEN = "<set in .mise.local.toml>"

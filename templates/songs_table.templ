@@ -1,0 +1,30 @@
+package templates
+
+// SongSectionTable renders a song table for a fixed section.
+templ SongSectionTable(tbodyID string, songs []Song, playlistSort string) {
+	<div class="overflow-x-auto">
+		<table class="table table-zebra">
+			@SongTableHeader()
+			<tbody id={ tbodyID }>
+				for _, song := range songs {
+					@SongRow(song, playlistSort)
+				}
+			</tbody>
+		</table>
+	</div>
+}
+
+// SongTableHeader renders shared song table columns.
+templ SongTableHeader() {
+	<thead>
+		<tr>
+			<th>Title</th>
+			<th>Artist</th>
+			<th>Release</th>
+			<th>Type</th>
+			<th>Release Date</th>
+			<th class="text-center">Batch</th>
+			<th class="text-center">Recently Added</th>
+		</tr>
+	</thead>
+}

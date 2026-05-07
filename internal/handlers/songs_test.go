@@ -71,10 +71,8 @@ func TestSongBatchSortingFollowsCountdownPositions(t *testing.T) {
 		},
 	}
 
-	h := &Handler{}
-
 	recentOrdered := append([]songListEntry(nil), entries...)
-	h.sortRecentSongEntries(recentOrdered)
+	sortRecentSongEntries(recentOrdered)
 	if recentOrdered[0].song.ID != "oldest" || recentOrdered[1].song.ID != "middle" || recentOrdered[2].song.ID != "newest" {
 		t.Fatalf("sortRecentSongEntries order = [%s %s %s], want [oldest middle newest]",
 			recentOrdered[0].song.ID,
@@ -84,9 +82,9 @@ func TestSongBatchSortingFollowsCountdownPositions(t *testing.T) {
 	}
 
 	playlistOrdered := append([]songListEntry(nil), entries...)
-	h.sortPlaylistEntries(playlistOrdered, playlistSortAddedDesc)
+	sortEntriesByMode(playlistOrdered, playlistSortAddedDesc, playlistSortMode)
 	if playlistOrdered[0].song.ID != "newest" || playlistOrdered[1].song.ID != "middle" || playlistOrdered[2].song.ID != "oldest" {
-		t.Fatalf("sortPlaylistEntries(added_desc) order = [%s %s %s], want [newest middle oldest]",
+		t.Fatalf("sortEntriesByMode(playlist, added_desc) order = [%s %s %s], want [newest middle oldest]",
 			playlistOrdered[0].song.ID,
 			playlistOrdered[1].song.ID,
 			playlistOrdered[2].song.ID,
@@ -94,9 +92,9 @@ func TestSongBatchSortingFollowsCountdownPositions(t *testing.T) {
 	}
 
 	waitingRemovalOrdered := append([]songListEntry(nil), entries...)
-	h.sortWaitingRemovalEntries(waitingRemovalOrdered, playlistSortAddedDesc)
+	sortEntriesByMode(waitingRemovalOrdered, playlistSortAddedDesc, waitingRemovalSortMode)
 	if waitingRemovalOrdered[0].song.ID != "newest" || waitingRemovalOrdered[1].song.ID != "middle" || waitingRemovalOrdered[2].song.ID != "oldest" {
-		t.Fatalf("sortWaitingRemovalEntries(single batch) order = [%s %s %s], want [newest middle oldest]",
+		t.Fatalf("sortEntriesByMode(waiting, single batch) order = [%s %s %s], want [newest middle oldest]",
 			waitingRemovalOrdered[0].song.ID,
 			waitingRemovalOrdered[1].song.ID,
 			waitingRemovalOrdered[2].song.ID,
@@ -125,15 +123,13 @@ func TestWaitingRemovalSortingUsesLowestBatchAndPositionFirst(t *testing.T) {
 		},
 	}
 
-	h := &Handler{}
-
 	waitingRemovalOrdered := append([]songListEntry(nil), entries...)
-	h.sortWaitingRemovalEntries(waitingRemovalOrdered, playlistSortAddedDesc)
+	sortEntriesByMode(waitingRemovalOrdered, playlistSortAddedDesc, waitingRemovalSortMode)
 	if waitingRemovalOrdered[0].song.ID != "batch1-pos1" ||
 		waitingRemovalOrdered[1].song.ID != "batch1-pos3" ||
 		waitingRemovalOrdered[2].song.ID != "batch2-pos1" ||
 		waitingRemovalOrdered[3].song.ID != "batch2-pos2" {
-		t.Fatalf("sortWaitingRemovalEntries(removal order) = [%s %s %s %s], want [batch1-pos1 batch1-pos3 batch2-pos1 batch2-pos2]",
+		t.Fatalf("sortEntriesByMode(waiting, removal order) = [%s %s %s %s], want [batch1-pos1 batch1-pos3 batch2-pos1 batch2-pos2]",
 			waitingRemovalOrdered[0].song.ID,
 			waitingRemovalOrdered[1].song.ID,
 			waitingRemovalOrdered[2].song.ID,

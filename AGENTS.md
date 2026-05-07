@@ -51,7 +51,7 @@ Most hand-authored runtime/test `.go` files start with the jsonv2 build constrai
 ```go
 //go:build goexperiment.jsonv2
 ```
-Exceptions exist for generated Templ output (`templates/*_templ.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
+Exceptions exist for the `templates/` package (generated `*_templ.go` files, `types.go`, and `artists_helpers.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
 
 ### Import Ordering
 Group imports in this order with blank lines between groups (matches `goimports` convention):
@@ -166,13 +166,20 @@ A skill is a set of local instructions in a `SKILL.md` file.
 ### Available project skills
 - `pocketbase`: Comprehensive PocketBase development and deployment reference for schema design, API usage, security rules, migrations, realtime, and Go extension hooks.
   - file: `.agents/skills/whamp-pocketbase/SKILL.md`
+- `karpathy-guidelines`: Behavioral guidelines derived from Andrej Karpathy's observations on LLM coding pitfalls. Four principles: Think Before Coding, Simplicity First, Surgical Changes, and Goal-Driven Execution.
+  - file: `.agents/skills/karpathy-guidelines/SKILL.md`
 
 ### Trigger rules
+
 - If the user asks about PocketBase setup, collections/schema, API rules, auth, files, relations, migrations, deployment, realtime, or PocketBase Go extension hooks, use the `pocketbase` skill.
 - If the user explicitly names `$pocketbase` (or "pocketbase skill"), use this skill for that turn.
+- If the user asks about coding best practices, avoiding LLM pitfalls, simplifying code, making surgical changes, or goal-driven development, use the `karpathy-guidelines` skill.
+- If the user explicitly names `$karpathy-guidelines` (or "karpathy skill"), use this skill for that turn.
 
 ### How to use this skill
+
 1. Open `SKILL.md` first and only load the minimal referenced files needed for the request.
 2. Resolve relative paths from the skill root directory first:
    - `.agents/skills/whamp-pocketbase/`
+   - `.agents/skills/karpathy-guidelines/`
 3. Prefer existing `scripts/` and `assets/` in the skill before hand-writing large replacements.

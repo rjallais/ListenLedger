@@ -1,0 +1,31 @@
+package templates
+
+templ ArtistSignalTextValue(elementID, signal, text string) {
+	<span id={ elementID } data-text={ signal }>{ text }</span>
+}
+
+templ ArtistCollectionControls(artist Artist) {
+	<div class="flex items-center justify-center gap-1">
+		<button
+			class="btn btn-xs btn-ghost btn-square"
+			data-on:click={ artistCollectionDecAction(artist.ID) }
+			aria-label={ "Decrease collection count for " + artist.Name }
+			title="Decrease collection count"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path>
+			</svg>
+		</button>
+		<span class="font-mono min-w-[4rem] text-center">{ artistCollectionText(artist) }</span>
+		<button
+			class="btn btn-xs btn-ghost btn-square"
+			data-on:click={ artistCollectionIncAction(artist.ID) }
+			aria-label={ "Increase collection count for " + artist.Name }
+			title="Increase collection count"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+			</svg>
+		</button>
+	</div>
+}

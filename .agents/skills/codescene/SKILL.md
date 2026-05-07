@@ -14,27 +14,25 @@ This skill provides instructions for configuring and using the CodeScene MCP ser
    [https://github.com/codescene-oss/codescene-mcp-server](https://github.com/codescene-oss/codescene-mcp-server)
 
 2. **Configuration**:
-   You need to set up a Personal Access Token (PAT) for CodeScene.
-   When the user requests CodeScene analysis, verify or set the PAT using the `set_config` tool:
+   The MCP server should be configured via environment variables injected from
+   CI/secret manager. **Never store PAT/ACE tokens in local config files or
+   check them into version control.**
 
-   ```json
-   {
-     "key": "access_token",
-     "value": "pat_..."
-   }
-   ```
+   Set the canonical environment variables before running:
 
-   *Note: For the current project, use the token provided by the user in the initial request or prompt them for it.*
+   | Config Key      | Environment Variable   | Description                          |
+   |-----------------|------------------------|--------------------------------------|
+   | `access_token`  | `CS_ACCESS_TOKEN`      | CodeScene PAT or standalone license |
+   | `ace_access_token` | `CS_ACE_ACCESS_TOKEN` | ACE token for auto-refactoring      |
+   | `default_project_id` | `CS_DEFAULT_PROJECT_ID` | Default CodeScene project ID     |
+
+   *Never ask users to paste live PATs or ACE tokens into chat. Store them in
+   the secret manager / CI settings and pass them at runtime. Rotate tokens
+   periodically and use short-lived credentials when possible.*
 
 3. **ACE Access (Auto-Refactoring)**:
-   To use the `code_health_auto_refactor` tool, you must configure the ACE access token:
-
-   ```json
-   {
-     "key": "ace_access_token",
-     "value": "<ACE_TOKEN>"
-   }
-   ```
+   To use the `code_health_auto_refactor` tool, set the `CS_ACE_ACCESS_TOKEN`
+   environment variable from your secret manager.
 
 ## Workflow for Improving Code Health
 
@@ -55,7 +53,7 @@ When asked to improve the CodeScene health score for a file, follow this structu
    - Ensure you run `GOEXPERIMENT=jsonv2 go build ./...` and `GOEXPERIMENT=jsonv2 go test ./...` after each refactor to verify build and test integrity.
 
 4. **Verify Improvement**:
-   Re-run `mcp_codescene_code_health_score` after refactoring. The score should increase (target is >7.0 for Green Code, 10.0 for Optimal Code).
+   Re-run `mcp_codescene_code_health_score` after refactoring. The score should increase (project target is >8.0; 10.0 is Optimal Code).
 
 ## Common CodeScene Terminology
 

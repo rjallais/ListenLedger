@@ -106,6 +106,8 @@ type Worker struct {
 	consume jetstream.ConsumeContext
 	ctx     context.Context
 
+	// dispatchMu serializes accepting checks/updates with dispatching Add/Wait.
+	dispatchMu  sync.Mutex
 	dispatching sync.WaitGroup
 	wg          sync.WaitGroup
 
@@ -171,17 +173,40 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 }
 
 func (w *Worker) Start() error {
+	w.dispatchMu.Lock()
+	if w.started {
+		w.dispatchMu.Unlock()
+		return fmt.Errorf("worker already started")
+	}
+	if err := w.ctx.Err(); err != nil {
+		w.dispatchMu.Unlock()
+		return fmt.Errorf("worker cannot be restarted after stop: %w", err)
+	}
+	w.started = true
+	w.accepting.Store(true)
+	w.dispatchMu.Unlock()
+
+	startedOK := false
+	defer func() {
+		if startedOK {
+			return
+		}
+		w.dispatchMu.Lock()
+		w.started = false
+		w.accepting.Store(false)
+		w.dispatchMu.Unlock()
+	}()
+
 	w.initMetrics()
 	w.initFetcherClient()
 	w.resolveJetStreamTuning()
 
 	totalConc := w.totalConcurrency()
 	w.work = make(chan inflightMsg, totalConc)
-	w.accepting.Store(true)
 
-	consume, ok := w.createAndAlignConsumer(totalConc)
-	if !ok {
-		return fmt.Errorf("failed to create or align JetStream consumer")
+	consume, err := w.createAndAlignConsumer(w.ctx, totalConc)
+	if err != nil {
+		return fmt.Errorf("failed to create or align JetStream consumer: %w", err)
 	}
 	w.consume = consume
 
@@ -189,9 +214,9 @@ func (w *Worker) Start() error {
 	w.providerCount = max(1, len(slots))
 	w.spawnProviderPools(slots)
 	w.launchBackgroundWorkers()
-	w.started = true
+	startedOK = true
 
-	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, len(slots))
+	log.Printf("[worker] Started listening for scrape requests (pull-based, %d total slots across %d provider(s))", totalConc, w.providerCount)
 	return nil
 }
 
@@ -252,12 +277,12 @@ func (w *Worker) resolveJetStreamTuning() {
 
 // createAndAlignConsumer ensures the durable JetStream consumer exists, reads back
 // the server-side config, and returns the active ConsumeContext.
-// Returns (consume, true) on success or (nil, false) on failure.
-func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext, bool) {
-	ctx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+// Returns (consume, nil) on success or (nil, error) on failure.
+func (w *Worker) createAndAlignConsumer(ctx context.Context, totalConc int) (jetstream.ConsumeContext, error) {
+	ensureCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	consumer, err := messaging.EnsureScrapeWorkerConsumer(ctx, w.js, jetstream.ConsumerConfig{
+	consumer, err := messaging.EnsureScrapeWorkerConsumer(ensureCtx, w.js, jetstream.ConsumerConfig{
 		Durable:       messaging.ScrapeWorkerConsumerName,
 		FilterSubject: messaging.SubjectScrapeRequest,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -267,20 +292,18 @@ func (w *Worker) createAndAlignConsumer(totalConc int) (jetstream.ConsumeContext
 		MaxAckPending: totalConc,
 	})
 	if err != nil {
-		log.Printf("[worker] Failed to ensure scrape consumer: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("ensure scrape consumer: %w", err)
 	}
 
-	alignCtx, alignCancel := context.WithTimeout(w.ctx, 2*time.Second)
+	alignCtx, alignCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer alignCancel()
 	w.alignFromConsumerInfo(alignCtx, consumer)
 
 	consume, err := consumer.Consume(w.dispatchToChannel)
 	if err != nil {
-		log.Printf("[worker] Failed to start consumer: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("start consumer: %w", err)
 	}
-	return consume, true
+	return consume, nil
 }
 
 func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.Consumer) {
@@ -363,19 +386,25 @@ func (w *Worker) Stop() {
 	w.recalcMu.Unlock()
 
 	// Drain NATS consumer (idempotent with watchAllGroups via drainOnce).
-	w.accepting.Store(false)
 	w.drainOnce.Do(func() {
-		if w.consume != nil {
-			w.consume.Drain()
-		}
-		if w.allGroupsDead != nil {
-			close(w.allGroupsDead)
-		}
-	})
+		w.dispatchMu.Lock()
+		w.started = false
+		w.accepting.Store(false)
+		consume := w.consume
+		allGroupsDead := w.allGroupsDead
+		w.dispatchMu.Unlock()
 
-	w.dispatching.Wait()
-	w.rejectQueuedWork()
-	w.closeWork()
+		if consume != nil {
+			consume.Drain()
+		}
+		if allGroupsDead != nil {
+			close(allGroupsDead)
+		}
+
+		w.dispatching.Wait()
+		w.rejectQueuedWork()
+		w.closeWork()
+	})
 
 	done := make(chan struct{})
 	go func() {

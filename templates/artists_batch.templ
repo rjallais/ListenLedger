@@ -1,0 +1,52 @@
+package templates
+
+templ BatchRefreshModal() {
+	<input type="checkbox" id="batch-refresh-modal" class="modal-toggle"/>
+	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false,batchInFlight:false}">
+		<div class="modal-box">
+			<div class="flex items-center justify-between mb-4">
+				<h3 class="font-bold text-lg">Batch Refresh Artists</h3>
+				<label for="batch-refresh-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
+			</div>
+			<p class="text-sm text-base-content/70 mb-4">
+				Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped.
+				Jobs are prioritized: queued → recently added (rock first) → not added → included.
+			</p>
+	<form
+		id="batch-refresh-form"
+		data-on:submit__prevent="if ($batchInFlight) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
+		data-on:datastar-fetch:finished="$batchInFlight = false"
+		data-on:datastar-fetch:error="$batchInFlight = false"
+	>
+				<input type="hidden" name="batch_id" data-bind="$batchID"/>
+				@BatchRefreshCountField()
+				@BatchRefreshModalActions()
+			</form>
+			<div id="batch-refresh-result"></div>
+		</div>
+		<label class="modal-backdrop" for="batch-refresh-modal"></label>
+	</div>
+}
+
+templ BatchRefreshCountField() {
+	<div class="form-control w-full mb-4">
+		<label class="label" for="batch-refresh-count">
+			<span class="label-text">Number of Artists to Refresh</span>
+		</label>
+		<select id="batch-refresh-count" name="count" class="select select-bordered w-full">
+			for _, option := range batchRefreshCountOptions() {
+				@SelectOption(option)
+			}
+		</select>
+		<label class="label">
+			<span class="label-text-alt text-base-content/60">Higher counts use more scraping quota</span>
+		</label>
+	</div>
+}
+
+templ BatchRefreshModalActions() {
+	<div class="modal-action">
+		<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
+		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight}">Start Refresh</button>
+	</div>
+}

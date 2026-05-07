@@ -1,5 +1,7 @@
 //go:build goexperiment.jsonv2
 
+// Package handlers provides HTTP request handlers and helper functions for
+// managing artist data and related dashboard workflows.
 package handlers
 
 import (
@@ -71,8 +73,7 @@ type artistRankCache struct {
 func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artistRankCache, error) {
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
 	if err != nil {
-		log.Printf("[artist_helpers] buildArtistRankMap: countArtistsByGenreExcludingWaiting failed for genre %s: %v", genre, err)
-		return &artistRankCache{genre: genre, totalCount: 0, ranks: make(map[string]int)}, nil
+		return nil, fmt.Errorf("buildArtistRankMap: count artists for genre %s: %w", genre, err)
 	}
 	if totalCount == 0 {
 		return &artistRankCache{genre: genre, totalCount: totalCount, ranks: make(map[string]int)}, nil
@@ -84,7 +85,7 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC").
+		OrderBy("monthly_listeners DESC, id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
@@ -155,13 +156,22 @@ func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
 		return artistCreateInput{}, fmt.Errorf("list_status must be included, recently_added, not_added, or waiting")
 	}
 
+	monthlyListeners, err := parseOptionalNonNegativeFormInt(r.FormValue("monthly_listeners"))
+	if err != nil {
+		return artistCreateInput{}, fmt.Errorf("invalid monthly_listeners: %w", err)
+	}
+	collectionSongs, err := parseOptionalNonNegativeFormInt(r.FormValue("collection_songs"))
+	if err != nil {
+		return artistCreateInput{}, fmt.Errorf("invalid collection_songs: %w", err)
+	}
+
 	return artistCreateInput{
 		name:             name,
 		spotifyID:        spotifyID,
 		genreGroup:       genreGroup,
 		listStatus:       listStatus,
-		monthlyListeners: parseNonNegativeInt(r.FormValue("monthly_listeners")),
-		collectionSongs:  parseNonNegativeInt(r.FormValue("collection_songs")),
+		monthlyListeners: monthlyListeners,
+		collectionSongs:  collectionSongs,
 	}, nil
 }
 
@@ -187,7 +197,7 @@ func parseBatchRefreshCount(r *http.Request) (int, error) {
 	return min(count, maxBatchRefreshCount), nil
 }
 
-func parseCollectionSongsAction(action string) (int, error) {
+func parseSongCountAction(action string) (int, error) {
 	switch action {
 	case "inc":
 		return 1, nil
@@ -442,7 +452,7 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priori
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
-		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
+		AndWhere(dbx.NewExp("spotify_id != '' AND spotify_id IS NOT NULL AND (fetch_status IS NULL OR fetch_status != 'pending') AND (last_updated IS NULL OR last_updated = '' OR last_updated < {:cutoff})", dbx.Params{"cutoff": cutoff})).
 		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("batchRefreshJobs: failed to fetch artists: %w", err)
@@ -459,6 +469,20 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
 	}
 
+	correlation.Associate(record.Id, requestID)
+	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
+		} else {
+			correlation.Clear(record.Id)
+			_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
+			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
+		}
+		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
+	}
+
 	req := messaging.NewScrapeRequested(
 		record.Id,
 		record.GetString("spotify_id"),
@@ -471,18 +495,25 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		if rollbackErr := h.unmarkArtistRefreshQueued(ctx, record, previousFetchStatus); rollbackErr != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
 			return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w (rollback queued state failed: %v)", err, rollbackErr)
 		}
+		correlation.Clear(record.Id)
+		_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
 		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 
 	if ack != nil && ack.Duplicate {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelCleanup()
+		correlation.Clear(record.Id)
+		if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
+			log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+		}
 		return requestID, true, nil
 	}
-
-	correlation.Associate(record.Id, requestID)
-	h.createScrapeJobRecord(ctx, requestID, record.Id)
 
 	return requestID, false, nil
 }
@@ -497,7 +528,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 		}
 
 		record := job.Record
-		requestID, duplicate, err := h.queueArtistRefresh(ctx, record)
+		_, duplicate, err := h.queueArtistRefresh(ctx, record)
 		if err != nil {
 			log.Printf("[batch] Failed to queue %s: %v", record.GetString("name"), err)
 			continue
@@ -507,7 +538,6 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 			continue
 		}
 
-		_ = requestID
 		queuedArtistIDs = append(queuedArtistIDs, record.Id)
 		stats[job.Priority.String()]++
 	}
@@ -542,7 +572,7 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 	}
 
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: "pending"}})
+	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: status}})
 	if err != nil {
 		return fmt.Errorf("marshal artistFetchStatus payload: %w", err)
 	}
@@ -569,7 +599,11 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	filterParams := nonWaitingArtistParams(genre)
 
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
-	if err != nil || totalCount == 0 {
+	if err != nil {
+		log.Printf("[handlers] dynamicArtistTotalSongs: count failed for genre %s, artist %s: %v, falling back to collection_songs", genre, record.Id, err)
+		return collectionSongs
+	}
+	if totalCount == 0 {
 		return collectionSongs
 	}
 
@@ -577,10 +611,11 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC").
+		OrderBy("monthly_listeners DESC, id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
+		log.Printf("[handlers] dynamicArtistTotalSongs: query failed for genre %s, artist %s: %v, falling back to collection_songs", genre, record.Id, err)
 		return collectionSongs
 	}
 

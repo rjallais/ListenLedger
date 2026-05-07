@@ -3,6 +3,8 @@
 package handlers
 
 import (
+	"database/sql"
+	"errors"
 	"log"
 	"net/http"
 
@@ -26,8 +28,11 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 
 	record, err := h.findArtistRecord(ctx, artistID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		}
 		log.Printf("[artist_update] findArtistRecord error: %v", err)
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup artist"})
 	}
 
 	oldStatus := record.GetString("list_status")
@@ -58,15 +63,18 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": "artist ID required"})
 	}
 
-	delta, err := parseCollectionSongsAction(e.Request.PathValue("action"))
+	delta, err := parseSongCountAction(e.Request.PathValue("action"))
 	if err != nil {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
 	record, err := h.findArtistRecord(ctx, artistID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		}
 		log.Printf("[artist_update] findArtistRecord error: %v", err)
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup artist"})
 	}
 
 	updateArtistCollectionSongs(record, delta)
