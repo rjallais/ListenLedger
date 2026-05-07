@@ -12,12 +12,12 @@ templ BatchRefreshModal() {
 				Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped.
 				Jobs are prioritized: queued → recently added (rock first) → not added → included.
 			</p>
-	<form
-		id="batch-refresh-form"
-		data-on:submit__prevent="if ($batchInFlight) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
-		data-on:datastar-fetch:finished="$batchInFlight = false"
-		data-on:datastar-fetch:error="$batchInFlight = false"
-	>
+			<form
+				id="batch-refresh-form"
+				data-on:submit__prevent="if ($batchInFlight) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
+				data-on:datastar-fetch:finished="$batchInFlight = false"
+				data-on:datastar-fetch:error="$batchInFlight = false"
+			>
 				<input type="hidden" name="batch_id" data-bind="$batchID"/>
 				@BatchRefreshCountField()
 				@BatchRefreshModalActions()

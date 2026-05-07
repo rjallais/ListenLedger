@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
@@ -65,6 +66,12 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	// Run the queueing workflow on a bounded server-side context so a client-side
+	// XHR abort (for example, browser navigation/retry) doesn't cancel the batch
+	// creation midway.
+	opCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	// hasAvailableQuota is a best-effort gate: it checks whether any quota
 	// remains across all configured providers. It does NOT reserve capacity
 	// for the requested count because per-job reservation is infeasible —
@@ -82,7 +89,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	//     remaining messages stay queued for redelivery after restart.
 	//
 	// See also: enqueueBatchRefreshJobs, batchRefreshJobs.
-	if !h.hasAvailableQuota(e.Request.Context()) {
+	if !h.hasAvailableQuota(opCtx) {
 		return e.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "No scraping quota available.",
 		})
@@ -90,15 +97,24 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 
 	// Match the PocketBase DateTime format (space-separated, not RFC3339 T-separated)
 	// so SQLite string comparison works correctly.
-	jobs, err := h.batchRefreshJobs(e.Request.Context(), batchRefreshCutoff(time.Now()))
+	jobs, err := h.batchRefreshJobs(opCtx, batchRefreshCutoff(time.Now()))
 	if err != nil {
 		log.Printf("[batch] batchRefreshJobs failed: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
 	}
 
-	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(e.Request.Context(), jobs, count)
+	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(opCtx, jobs, count)
 	if len(queuedArtistIDs) == 0 {
-		return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
+		if wantsJSONResponse(e.Request) {
+			return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
+		}
+		return h.patchBatchRefreshState(e, batchProgressSnapshot{
+			ID:        "",
+			Stats:     stats,
+			Total:     0,
+			Completed: 0,
+			Done:      true,
+		})
 	}
 
 	snapshot := h.createBatchProgress(queuedArtistIDs, stats)

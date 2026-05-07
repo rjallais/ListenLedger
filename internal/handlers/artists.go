@@ -141,7 +141,7 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp("list_status = {:waiting}", dbx.Params{"waiting": waitingArtistStatus})).
-		OrderBy("monthly_listeners DESC, name").
+		OrderBy("monthly_listeners DESC", "name").
 		Limit(int64(params.limit)).
 		Offset(int64(params.offset)).
 		All(&records)

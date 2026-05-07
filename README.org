@@ -9,7 +9,7 @@ ListenLedger is a Go web dashboard for managing a Spotify music collection and r
 - Albums, artists, and songs dashboards
 - Add Song flow from =/songs= (modal posts to =/api/songs= and prepends the new row)
 - On-demand refresh per artist with SSE updates
-- Provider-aware scraping: local headless (chromedp), Browserless, ScrapingAnt, ScraperAPI, Apify
+- Provider-aware scraping: local headless (go-rod), Browserless, ScrapingAnt, ScraperAPI, Apify
 - Quota check endpoint at =/api/quota=
 - CSV seed support from =Music - Sheet1.csv= and =Music - Sheet2.csv=
 
@@ -82,7 +82,7 @@ mise run run
 - Data lives in =pb_data/=. Backups can be made via =cmd/safebackup=.
 
 * CLI Utilities
-- =cmd/update_listeners=: bulk refresh using chromedp with priority ordering.
+- =cmd/update_listeners=: bulk refresh using go-rod with priority ordering.
   Example:
 #+begin_src sh
 GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners --concurrency 5 --headless=true --limit 0

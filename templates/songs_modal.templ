@@ -9,13 +9,13 @@ templ AddSongModal() {
 				<h3 class="font-bold text-lg">Add New Song</h3>
 				<label for="add-song-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
-	<form
-		id="add-song-form"
-		data-signals="{songInFlight:false}"
-		data-on:submit__prevent="if ($songInFlight) { return; } $songInFlight = true; @post('/api/songs', {contentType: 'form'})"
-		data-on:datastar-fetch:finished="$songInFlight = false"
-		data-on:datastar-fetch:error="$songInFlight = false"
-	>
+			<form
+				id="add-song-form"
+				data-signals="{songInFlight:false}"
+				data-on:submit__prevent="if ($songInFlight) { return; } $songInFlight = true; @post('/api/songs', {contentType: 'form'})"
+				data-on:datastar-fetch:finished="$songInFlight = false"
+				data-on:datastar-fetch:error="$songInFlight = false"
+			>
 				<div class="form-control w-full mb-4">
 					<label class="label" for="song-name">
 						<span class="label-text">Song Name *</span>

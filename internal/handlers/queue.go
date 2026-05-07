@@ -361,6 +361,9 @@ func (h *Handler) countQueueState(ctx context.Context) (int64, int64, int64, int
 			AndWhere(item.exp).
 			Limit(1).
 			Row(item.result); qErr != nil {
+			if isExpectedContextCancellation(ctx, qErr) {
+				break
+			}
 			log.Printf("[queue] Warning: failed to count %s: %v", item.collection, qErr)
 		}
 	}
@@ -485,4 +488,10 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	}
 
 	return h.handleQueue(e)
+}
+
+func isExpectedContextCancellation(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		(ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()))
 }

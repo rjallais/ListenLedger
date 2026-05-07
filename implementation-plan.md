@@ -1,6 +1,8 @@
 # PocketBase Migration Guide (Go + Turso + WorkOS + NATS)
 
-This document serves as the implementation blueprint for migrating the existing `PocketBase` repository to a decoupled, cloud-native architecture. 
+> **⚠️ HISTORICAL / STALE** — This plan was never executed. The project continues to use PocketBase, embedded NATS, and go-rod (not chromedp or Turso). See `docs/architecture/codebase-restructure-plan.md` for the active code-organization reference.
+
+This document serves as the implementation blueprint for migrating the existing `PocketBase` repository to a decoupled, cloud-native architecture.
 
 **This plan is designed to be executed by a coding agent on the actual project repository.**
 
