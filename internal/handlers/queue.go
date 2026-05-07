@@ -247,7 +247,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 		ack, pubErr := h.publishRetryRequest(ctx, req)
 		if pubErr != nil {
 			stats.PublishFailed++
-			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+			if err := h.rollbackRetryQueuedState(artist, artistID, previousFetchStatus); err != nil {
 				return stats, err
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -261,7 +261,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 
 		if ack != nil && ack.Duplicate {
 			stats.Duplicate++
-			if err := h.rollbackRetryQueuedState(ctx, artist, artistID, requestID, previousFetchStatus); err != nil {
+			if err := h.rollbackRetryQueuedState(artist, artistID, previousFetchStatus); err != nil {
 				return stats, err
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -280,7 +280,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queu
 	return stats, nil
 }
 
-func (h *Handler) rollbackRetryQueuedState(ctx context.Context, artist *core.Record, artistID, requestID, previousFetchStatus string) error {
+func (h *Handler) rollbackRetryQueuedState(artist *core.Record, artistID, previousFetchStatus string) error {
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	status := strings.TrimSpace(previousFetchStatus)

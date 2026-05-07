@@ -356,10 +356,7 @@ func nonWaitingArtistParams(genre string) dbx.Params {
 }
 
 func nonWaitingArtistCountExpr(genre string) dbx.Expression {
-	return dbx.NewExp(
-		"genre_group = {:genre} AND list_status != {:waiting}",
-		nonWaitingArtistParams(genre),
-	)
+	return dbx.NewExp(nonWaitingArtistFilter, nonWaitingArtistParams(genre))
 }
 
 func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre string) (int, error) {
