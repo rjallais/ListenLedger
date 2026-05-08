@@ -105,6 +105,13 @@ func TestRankedArtistTotalSongsUsesReverseGlobalIndex(t *testing.T) {
 			index:      0,
 			want:       1,
 		},
+		{
+			name:       "mid-page index advances correctly",
+			totalCount: 100,
+			offset:     50,
+			index:      3,
+			want:       47,
+		},
 	}
 
 	for _, tt := range tests {
