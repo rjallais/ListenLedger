@@ -213,7 +213,7 @@ templ AddAlbumModal() {
 			<form
 				id="add-album-form"
 				data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
-				data-on:datastar-fetch:finished="document.getElementById('add-album-form').reset()"
+				data-on:datastar-fetch="evt.detail.type === 'finished' && document.getElementById('add-album-form').reset()"
 			>
 				<div class="form-control w-full mb-4">
 					<label class="label" for="album-title">
