@@ -67,7 +67,7 @@ func AddSongSuccessNotice(songTitle string) templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"add-song-feedback\" class=\"mt-2\" data-merge-mode=\"morph\" data-signals:showSongFeedback=\"true\" data-show=\"$showSongFeedback\"><div class=\"alert alert-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"add-song-feedback\" class=\"mt-2\" data-merge-mode=\"morph\"><div class=\"alert alert-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -88,7 +88,7 @@ func AddSongSuccessNotice(songTitle string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</p></div><button type=\"button\" class=\"btn btn-success btn-sm\" data-on:click=\"document.getElementById('add-song-form').reset(); $showSongFeedback = false\">Add Another</button> <label for=\"add-song-modal\" class=\"btn btn-ghost btn-sm\">Close</label></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</p></div><button type=\"button\" class=\"btn btn-success btn-sm\" data-on:click=\"document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').outerHTML = '<div id=\\'add-song-feedback\\' class=\\'mt-2\\'></div>'\">Add Another</button> <label for=\"add-song-modal\" class=\"btn btn-ghost btn-sm\">Close</label></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

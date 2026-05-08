@@ -124,14 +124,14 @@ templ AddSongModal() {
 }
 
 templ AddSongSuccessNotice(songTitle string) {
-	<div id="add-song-feedback" class="mt-2" data-merge-mode="morph" data-signals:showSongFeedback="true" data-show="$showSongFeedback">
+	<div id="add-song-feedback" class="mt-2" data-merge-mode="morph">
 		<div class="alert alert-success">
 			@IconCheck("h-5 w-5")
 			<div class="flex-1">
 				<p class="font-semibold">Song added</p>
 				<p class="text-xs">{ songTitle }</p>
 			</div>
-			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); $showSongFeedback = false">Add Another</button>
+			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').outerHTML = '<div id=\'add-song-feedback\' class=\'mt-2\'></div>'">Add Another</button>
 			<label for="add-song-modal" class="btn btn-ghost btn-sm">Close</label>
 		</div>
 	</div>
