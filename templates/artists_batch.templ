@@ -14,7 +14,7 @@ templ BatchRefreshModal() {
 			</p>
 			<form
 				id="batch-refresh-form"
-				data-on:submit__prevent="if ($batchInFlight) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
+				data-on:submit__prevent="if ($batchInFlight && !$batchDone) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
 				data-on:datastar-fetch:finished="$batchInFlight = false"
 				data-on:datastar-fetch:error="$batchInFlight = false"
 			>
@@ -47,6 +47,6 @@ templ BatchRefreshCountField() {
 templ BatchRefreshModalActions() {
 	<div class="modal-action">
 		<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
-		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight}">Start Refresh</button>
+		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight && !$batchDone}">Start Refresh</button>
 	</div>
 }

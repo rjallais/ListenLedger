@@ -85,7 +85,7 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC, id ASC").
+		OrderBy("monthly_listeners DESC", "id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
@@ -321,6 +321,15 @@ func artistsFromRecords(records []*core.Record, cache *artistRankCache) []templa
 	return artists
 }
 
+func artistsFromRankedRecords(records []*core.Record, totalCount, offset int) []templates.Artist {
+	artists := make([]templates.Artist, 0, len(records))
+	for i, record := range records {
+		artists = append(artists, artistFromRecord(record, rankedArtistTotalSongs(totalCount, offset, i)))
+	}
+
+	return artists
+}
+
 func renderUpdatedArtistStatus(
 	e *core.RequestEvent,
 	oldStatus, newStatus, currentGenre string,
@@ -506,6 +515,9 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelCleanup()
 		correlation.Clear(record.Id)
+		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
+			log.Printf("[queueArtistRefresh] duplicate ack rollback failed for artist %s request %s: %v", record.Id, requestID, rollbackErr)
+		}
 		if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
 			log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
 		}
@@ -608,7 +620,7 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC, id ASC").
+		OrderBy("monthly_listeners DESC", "id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {

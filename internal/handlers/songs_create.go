@@ -260,7 +260,7 @@ type songSaveError struct {
 
 func (e *songSaveError) Error() string { return e.msg }
 
-func (h *Handler) createSongRecord(ctx context.Context, txApp core.App, input songFormInput, artists []string) (*core.Record, *songSaveError) {
+func (h *Handler) createSongRecord(ctx context.Context, txApp core.App, input songFormInput, artists []string) (*core.Record, error) {
 	collection, err := txApp.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return nil, &songSaveError{http.StatusInternalServerError, "songs collection not found"}

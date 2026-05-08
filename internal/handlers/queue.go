@@ -63,12 +63,15 @@ func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID
 }
 
 type queueRetryStats struct {
-	Candidates     int `json:"candidates"`
-	Retried        int `json:"retried"`
-	Duplicate      int `json:"duplicate"`
-	PendingSkipped int `json:"pending_skipped"`
-	PublishFailed  int `json:"publish_failed"`
-	InvalidArtist  int `json:"invalid_artist"`
+	Candidates           int `json:"candidates"`
+	Retried              int `json:"retried"`
+	Duplicate            int `json:"duplicate"`
+	PendingSkipped       int `json:"pending_skipped"`
+	PublishFailed        int `json:"publish_failed"`
+	InvalidArtist        int `json:"invalid_artist"`
+	OrphanPendingReset   int `json:"orphan_pending_reset"`
+	FailedArtistsMarked  int `json:"failed_artists_marked"`
+	OrphanStreamMessages int `json:"orphan_stream_messages"`
 }
 
 func normalizeQueueRetryLimit(limit int) int {
@@ -76,6 +79,105 @@ func normalizeQueueRetryLimit(limit int) int {
 		return 250
 	}
 	return limit
+}
+
+func (h *Handler) reconcileOrphanQueueState(ctx context.Context) (queueRetryStats, error) {
+	var stats queueRetryStats
+	if err := h.resetOrphanPendingArtists(ctx, &stats); err != nil {
+		return stats, err
+	}
+	if err := h.markFailedJobArtists(ctx, &stats); err != nil {
+		return stats, err
+	}
+	if err := h.purgeOrphanScrapeRequests(ctx, &stats); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+func (h *Handler) resetOrphanPendingArtists(ctx context.Context, stats *queueRetryStats) error {
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			"fetch_status = {:pending} AND id NOT IN (SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing}, {:failed}))",
+			dbx.Params{
+				"pending":    "pending",
+				"queued":     "queued",
+				"processing": "processing",
+				"failed":     "failed",
+			},
+		)).
+		Limit(500).
+		All(&records)
+	if err != nil {
+		return fmt.Errorf("query orphan pending artists: %w", err)
+	}
+
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		record.Set("fetch_status", "idle")
+		if err := h.app.SaveWithContext(ctx, record); err != nil {
+			return fmt.Errorf("reset orphan pending artist %s: %w", record.Id, err)
+		}
+		correlation.Clear(record.Id)
+		stats.OrphanPendingReset++
+	}
+
+	return nil
+}
+
+func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetryStats) error {
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			"fetch_status = {:pending} AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})",
+			dbx.Params{"pending": "pending", "failed": "failed"},
+		)).
+		Limit(500).
+		All(&records)
+	if err != nil {
+		return fmt.Errorf("query failed-job pending artists: %w", err)
+	}
+
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		record.Set("fetch_status", "failed")
+		if err := h.app.SaveWithContext(ctx, record); err != nil {
+			return fmt.Errorf("mark failed-job artist %s failed: %w", record.Id, err)
+		}
+		correlation.Clear(record.Id)
+		stats.FailedArtistsMarked++
+	}
+
+	return nil
+}
+
+func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRetryStats) error {
+	streamInfo, consumerAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
+	if streamInfo == nil || !consumerAvailable || streamInfo.State.Msgs == 0 || queueAckPending > 0 || queueRedelivered > 0 {
+		return nil
+	}
+
+	jobsQueued, jobsProcessing, _, artistsPending := h.countQueueState(ctx)
+	if jobsQueued > 0 || jobsProcessing > 0 || artistsPending > 0 {
+		return nil
+	}
+
+	stream, err := h.js.Stream(ctx, messaging.ScrapeRequestsStreamName)
+	if err != nil {
+		return fmt.Errorf("load scrape request stream for purge: %w", err)
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeSubject(messaging.SubjectScrapeRequest)); err != nil {
+		return fmt.Errorf("purge orphan scrape requests: %w", err)
+	}
+	stats.OrphanStreamMessages = int(streamInfo.State.Msgs)
+	return nil
 }
 
 func (h *Handler) scrapeJobsByStatus(ctx context.Context, status string, limit int) ([]*core.Record, error) {
@@ -220,14 +322,14 @@ func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, job *core.R
 	return nil
 }
 
-func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queueRetryStats, error) {
+func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats queueRetryStats) (queueRetryStats, error) {
 	limit = normalizeQueueRetryLimit(limit)
 	records, err := h.collectRetryCandidates(ctx, limit)
 	if err != nil {
-		return queueRetryStats{}, err
+		return stats, err
 	}
 
-	stats := queueRetryStats{Candidates: len(records)}
+	stats.Candidates = len(records)
 	seenArtist := make(map[string]struct{}, len(records))
 
 	for _, job := range records {
@@ -405,9 +507,6 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	if queuePending < uint64(jobsQueued) {
 		queuePending = uint64(jobsQueued)
 	}
-	if queueAckPending < uint64(artistsPending) {
-		queueAckPending = uint64(artistsPending)
-	}
 
 	wantsJSON := wantsJSONResponse(e.Request)
 
@@ -448,17 +547,31 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 }
 
 func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
-	checker := quota.NewChecker(h.cfg)
-	if !checker.HasAvailableQuota(e.Request.Context()) {
-		return e.JSON(http.StatusTooManyRequests, map[string]string{
-			"error": "No scraping quota available.",
-		})
-	}
-
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	stats, err := h.retryFailedAndQueuedJobs(ctx, 250)
+	stats, err := h.reconcileOrphanQueueState(ctx)
+	if err != nil {
+		log.Printf("[queue-retry] reconciliation failed: %v", err)
+		if wantsJSONResponse(e.Request) {
+			return e.JSON(http.StatusInternalServerError, map[string]any{
+				"status": "error",
+				"error":  err.Error(),
+				"stats":  stats,
+			})
+		}
+		return h.handleQueue(e)
+	}
+
+	checker := quota.NewChecker(h.cfg)
+	if !checker.HasAvailableQuota(e.Request.Context()) {
+		return e.JSON(http.StatusTooManyRequests, map[string]any{
+			"error": "No scraping quota available.",
+			"stats": stats,
+		})
+	}
+
+	stats, err = h.retryFailedAndQueuedJobs(ctx, 250, stats)
 	if err != nil {
 		log.Printf("[queue-retry] retry loop failed: %v", err)
 		if wantsJSONResponse(e.Request) {
@@ -471,13 +584,16 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	}
 
 	log.Printf(
-		"[queue-retry] candidates=%d retried=%d duplicate=%d pending_skipped=%d publish_failed=%d invalid_artist=%d",
+		"[queue-retry] candidates=%d retried=%d duplicate=%d pending_skipped=%d publish_failed=%d invalid_artist=%d orphan_pending_reset=%d failed_artists_marked=%d orphan_stream_messages=%d",
 		stats.Candidates,
 		stats.Retried,
 		stats.Duplicate,
 		stats.PendingSkipped,
 		stats.PublishFailed,
 		stats.InvalidArtist,
+		stats.OrphanPendingReset,
+		stats.FailedArtistsMarked,
+		stats.OrphanStreamMessages,
 	)
 
 	if wantsJSONResponse(e.Request) {

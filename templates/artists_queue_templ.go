@@ -319,7 +319,7 @@ func WaitingArtistMeta(artist Artist) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(artist.GenreGroup)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_queue.templ`, Line: 101, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_queue.templ`, Line: 102, Col: 62}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -362,7 +362,7 @@ func RemovedArtistCard(artistID string) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(artistCardID(artistID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_queue.templ`, Line: 107, Col: 33}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_queue.templ`, Line: 108, Col: 33}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {

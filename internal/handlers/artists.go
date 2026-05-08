@@ -4,7 +4,6 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/pocketbase/dbx"
@@ -87,7 +86,7 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC").
+		OrderBy("monthly_listeners DESC", "id ASC").
 		Limit(int64(params.limit)).
 		Offset(int64(offset)).
 		All(&records)
@@ -111,14 +110,9 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 		return e.String(http.StatusInternalServerError, "Failed to load artists")
 	}
 
-	// Build rank cache for O(1) lookup (avoids O(N) per artist)
-	rankCache, err := h.buildArtistRankMap(ctx, params.genre)
-	if err != nil {
-		log.Printf("[handlers] warning: failed to build rank cache: %v", err)
-	}
-
-	// Convert to type-safe structs using rank cache
-	artists := artistsFromRecords(records, rankCache)
+	// Convert to type-safe structs, assigning collection max from the reverse
+	// index in the full filtered artist list.
+	artists := artistsFromRankedRecords(records, totalCount, offset)
 
 	pagination := templates.Pagination{
 		CurrentPage: params.page,

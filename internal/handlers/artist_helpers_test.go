@@ -76,6 +76,47 @@ func TestParseArtistListParamsAppliesDefaultsAndBounds(t *testing.T) {
 	}
 }
 
+func TestRankedArtistTotalSongsUsesReverseGlobalIndex(t *testing.T) {
+	tests := []struct {
+		name       string
+		totalCount int
+		offset     int
+		index      int
+		want       int
+	}{
+		{
+			name:       "first artist has highest max",
+			totalCount: 100,
+			offset:     0,
+			index:      0,
+			want:       100,
+		},
+		{
+			name:       "next page continues reverse index",
+			totalCount: 100,
+			offset:     50,
+			index:      0,
+			want:       50,
+		},
+		{
+			name:       "last artist has max one",
+			totalCount: 100,
+			offset:     99,
+			index:      0,
+			want:       1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rankedArtistTotalSongs(tt.totalCount, tt.offset, tt.index)
+			if got != tt.want {
+				t.Fatalf("rankedArtistTotalSongs(%d, %d, %d) = %d, want %d", tt.totalCount, tt.offset, tt.index, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseWaitingArtistListParamsAppliesDefaultsAndBounds(t *testing.T) {
 	req := httptest.NewRequest("GET", "/artists/waiting?offset=-3&limit=25", nil)
 
