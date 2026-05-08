@@ -155,8 +155,8 @@ func DefaultConfig() *Config {
 		MaxRetries:           2,
 		RequestTimeout:       15 * time.Second,
 		HTTPTimeout:          30 * time.Second,
-		MaxIdleConns:         2,  // Reduced since we're using little concurrency
-		MaxIdleConnsPerHost:  32, // Sensible default for connection pooling
+		MaxIdleConns:         200, // Global pool sized for ~6 upstream hosts × 32 idle each
+		MaxIdleConnsPerHost:  32,  // Sensible default for connection pooling
 		IdleConnTimeout:      90 * time.Second,
 		LogSuccessfulFetches: false,
 
