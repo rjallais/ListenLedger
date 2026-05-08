@@ -212,8 +212,10 @@ templ AddAlbumModal() {
 			</div>
 			<form
 				id="add-album-form"
-				data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
-				data-on:datastar-fetch="evt.detail.type === 'finished' && document.getElementById('add-album-form').reset()"
+				data-signals="{albumInFlight:false}"
+				data-indicator:album-in-flight
+				data-on:submit__prevent="if ($albumInFlight) { return; } @post('/api/albums', {contentType: 'form'})"
+				data-on:datastar-fetch="evt.detail.type === 'finished' && $albumInFlight && document.getElementById('add-album-form').reset()"
 			>
 				<div class="form-control w-full mb-4">
 					<label class="label" for="album-title">
@@ -283,7 +285,7 @@ templ AddAlbumModal() {
 				</div>
 				<div class="modal-action">
 					<label for="add-album-modal" class="btn btn-ghost">Cancel</label>
-					<button type="submit" class="btn btn-primary gap-2">
+					<button type="submit" class="btn btn-primary gap-2" data-attr="{'disabled': $albumInFlight}">
 						@IconPlus("h-5 w-5")
 						Add Album
 					</button>
