@@ -295,26 +295,10 @@ func artistFromRecord(record *core.Record, totalSongs int) templates.Artist {
 }
 
 // artistsFromRecords converts Records to Artist structs.
-// If cache is provided, uses O(1) rank lookup from the cache.
-// For backward compatibility when cache is nil, expects totalSongs closure.
-func artistsFromRecords(records []*core.Record, cache *artistRankCache) []templates.Artist {
+func artistsFromRecords(records []*core.Record) []templates.Artist {
 	artists := make([]templates.Artist, 0, len(records))
 	for _, record := range records {
-		var total int
-		if cache != nil {
-			genre := record.GetString("genre_group")
-			if genre != cache.genre {
-				log.Printf("[handlers] warning: record %s genre %q != cache genre %q, falling back to collection_songs", record.Id, genre, cache.genre)
-				total = record.GetInt("collection_songs")
-			} else if r := cache.rank(record.Id); r > 0 {
-				total = rankedArtistTotalSongs(cache.totalCount, 0, r-1)
-			} else {
-				total = record.GetInt("collection_songs")
-			}
-		} else {
-			// Backward compatibility: should not reach here in normal usage
-			total = record.GetInt("collection_songs")
-		}
+		total := record.GetInt("collection_songs")
 		artists = append(artists, artistFromRecord(record, total))
 	}
 

@@ -151,7 +151,7 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	hasMore := params.offset+len(records) < totalCount
 
 	// Convert to type-safe structs (waiting artists don't need ranking)
-	artists := artistsFromRecords(records, nil)
+	artists := artistsFromRecords(records)
 
 	// NOTE: WaitingArtistRows uses data-merge-mode="append" so previously shown artists remain visible.
 	return renderDatastar(e, templates.WaitingArtistRows(artists, params.offset+len(records), hasMore))
