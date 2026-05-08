@@ -131,7 +131,7 @@ templ AddSongSuccessNotice(songTitle string) {
 				<p class="font-semibold">Song added</p>
 				<p class="text-xs">{ songTitle }</p>
 			</div>
-			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').outerHTML = '<div id=\'add-song-feedback\' class=\'mt-2\'></div>'">Add Another</button>
+			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').innerHTML = ''">Add Another</button>
 			<label for="add-song-modal" class="btn btn-ghost btn-sm">Close</label>
 		</div>
 	</div>
