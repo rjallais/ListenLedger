@@ -308,6 +308,12 @@ func (c *Config) loadSharedConfig() {
 			c.MaxRetries = retries
 		}
 	}
+	if n, ok := parsePositiveInt("MAX_IDLE_CONNS"); ok {
+		c.MaxIdleConns = n
+	}
+	if n, ok := parsePositiveInt("MAX_IDLE_CONNS_PER_HOST"); ok {
+		c.MaxIdleConnsPerHost = n
+	}
 	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
 		if logVal, err := strconv.ParseBool(logStr); err == nil {
 			c.LogSuccessfulFetches = logVal
