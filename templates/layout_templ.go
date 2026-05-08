@@ -30,7 +30,7 @@ func Layout(title string, activeNav string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" data-theme=\"dark\" data-signals:theme=\"localStorage.getItem('theme') || 'dark'\" data-attr:data-theme=\"$theme\" data-effect=\"localStorage.setItem('theme', $theme)\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" data-theme=\"night\" data-signals:theme=\"localStorage.getItem('theme') || 'night'\" data-attr:data-theme=\"$theme\" data-effect=\"localStorage.setItem('theme', $theme)\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
