@@ -69,12 +69,13 @@ type Config struct {
 	LocalBrowserlessConcurrency int
 
 	// Shared behavior configuration
-	MaxConcurrency  int
-	MaxRetries      int
-	RequestTimeout  time.Duration
-	HTTPTimeout     time.Duration
-	MaxIdleConns    int
-	IdleConnTimeout time.Duration
+	MaxConcurrency       int
+	MaxRetries           int
+	RequestTimeout       time.Duration
+	HTTPTimeout          time.Duration
+	MaxIdleConns         int
+	MaxIdleConnsPerHost  int
+	IdleConnTimeout      time.Duration
 	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
 	LogSuccessfulFetches bool
 
@@ -154,7 +155,8 @@ func DefaultConfig() *Config {
 		MaxRetries:           2,
 		RequestTimeout:       15 * time.Second,
 		HTTPTimeout:          30 * time.Second,
-		MaxIdleConns:         2, // Reduced since we're using little concurrency
+		MaxIdleConns:         2,  // Reduced since we're using little concurrency
+		MaxIdleConnsPerHost:  32, // Sensible default for connection pooling
 		IdleConnTimeout:      90 * time.Second,
 		LogSuccessfulFetches: false,
 

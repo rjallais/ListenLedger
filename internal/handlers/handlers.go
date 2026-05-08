@@ -61,7 +61,11 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 		transport.MaxIdleConns = 100
 	}
 
-	transport.MaxIdleConnsPerHost = 2
+	if cfg != nil && cfg.MaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	} else {
+		transport.MaxIdleConnsPerHost = 32
+	}
 
 	if cfg != nil && cfg.IdleConnTimeout > 0 {
 		transport.IdleConnTimeout = cfg.IdleConnTimeout
