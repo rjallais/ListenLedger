@@ -67,7 +67,12 @@ func runSeed(ctx context.Context, app *pocketbase.PocketBase, opts seedOptions) 
 		return fmt.Errorf("failed to seed artists from Sheet1: %w", err)
 	}
 
-	if err := seedFromSheet2(ctx, app, *opts.dryRun, *opts.sheet2, *opts.sheet2GenreGroup); err != nil {
+	if err := seedFromSheet2(ctx, seedSheet2Params{
+		App:        app,
+		DryRun:     *opts.dryRun,
+		Sheet2Path: *opts.sheet2,
+		GenreGroup: *opts.sheet2GenreGroup,
+	}); err != nil {
 		return fmt.Errorf("failed to seed from Sheet2: %w", err)
 	}
 
@@ -261,36 +266,43 @@ type sheet2Config struct {
 	genreGroup        string
 }
 
-func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet2Path, genreGroup string) error {
-	if genreGroup == "" {
+type seedSheet2Params struct {
+	App        *pocketbase.PocketBase
+	DryRun     bool
+	Sheet2Path string
+	GenreGroup string
+}
+
+func seedFromSheet2(ctx context.Context, params seedSheet2Params) error {
+	if params.GenreGroup == "" {
 		return fmt.Errorf("sheet2-genre-group must not be empty")
 	}
-	records, err := readCSVRecords(sheet2Path, "Sheet2")
+	records, err := readCSVRecords(params.Sheet2Path, "Sheet2")
 	if err != nil {
 		return err
 	}
 
-	songsCollection, err := app.FindCollectionByNameOrId("songs")
+	songsCollection, err := params.App.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return fmt.Errorf("songs collection not found: %w", err)
 	}
 
-	artistsCollection, err := app.FindCollectionByNameOrId("artists")
+	artistsCollection, err := params.App.FindCollectionByNameOrId("artists")
 	if err != nil {
 		return fmt.Errorf("artists collection not found: %w", err)
 	}
 
 	cfg := sheet2Config{
-		app:               app,
-		dryRun:            dryRun,
+		app:               params.App,
+		dryRun:            params.DryRun,
 		songsCollection:   songsCollection,
 		artistsCollection: artistsCollection,
-		genreGroup:        genreGroup,
+		genreGroup:        params.GenreGroup,
 	}
 
 	songCount, artistUpsertCount := cfg.processSheet2Rows(ctx, records)
 
-	if dryRun {
+	if params.DryRun {
 		log.Printf("[seed] Would create %d song records, would upsert %d artists from Sheet2", songCount, artistUpsertCount)
 	} else {
 		log.Printf("[seed] Created %d song records, upserted %d artists from Sheet2", songCount, artistUpsertCount)

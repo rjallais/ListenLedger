@@ -622,18 +622,9 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	}
 
 	requestID := newScrapeRequestID()
-	req := messaging.NewScrapeRequested(
-		target.ID,
-		target.SpotifyID,
-		target.Name,
-		requestID,
-	)
-	record, err := h.app.FindRecordById("artists", target.ID, func(q *dbx.SelectQuery) error {
-		q.WithContext(ctx)
-		return nil
-	})
+	record, err := h.findArtistRecordForRefresh(ctx, target.ID)
 	if err != nil {
-		return fmt.Errorf("queueArtistRefreshFromSong: find artist %s: %w", target.ID, err)
+		return err
 	}
 
 	rb := rollbackState{
@@ -651,6 +642,28 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
 		return h.rollbackOnQueueFailure(rb, "create scrape job record", err)
 	}
+
+	return h.publishArtistRefreshRequest(ctx, target, requestID, rb)
+}
+
+func (h *Handler) findArtistRecordForRefresh(ctx context.Context, artistID string) (*core.Record, error) {
+	record, err := h.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+		q.WithContext(ctx)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("queueArtistRefreshFromSong: find artist %s: %w", artistID, err)
+	}
+	return record, nil
+}
+
+func (h *Handler) publishArtistRefreshRequest(ctx context.Context, target songNewArtistTarget, requestID string, rb rollbackState) error {
+	req := messaging.NewScrapeRequested(
+		target.ID,
+		target.SpotifyID,
+		target.Name,
+		requestID,
+	)
 
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

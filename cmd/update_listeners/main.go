@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -85,7 +88,8 @@ func main() {
 	wg.Add(*concurrency)
 
 	log.Printf("Starting %d workers...", *concurrency)
-	workerCtx := context.Background()
+	workerCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	for i := 0; i < *concurrency; i++ {
 		go func(workerID int) {
@@ -165,9 +169,17 @@ func launchBrowser(chromePath string, headless bool) (*rod.Browser, error) {
 
 func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePath string, headless bool, jobs <-chan Job) {
 	for {
-		job, ok := <-jobs
-		if !ok {
-			return // Channel closed, done
+		var (
+			job Job
+			ok  bool
+		)
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok = <-jobs:
+			if !ok {
+				return // Channel closed, done
+			}
 		}
 
 		// Start a new Browser Session for this Batch
@@ -175,6 +187,9 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 
 		browser, err := launchBrowser(chromePath, headless)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("[Worker %d] Failed to launch browser: %v", id, err)
 			continue
 		}
@@ -182,6 +197,11 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 		// Process up to Threshold jobs with this browser
 		count := 0
 		for {
+			if ctx.Err() != nil {
+				_ = browser.Close()
+				return
+			}
+
 			log.Printf("[Worker %d] Processing %s (P%d) [%d/%d in rotation]", id, job.Record.GetString("name"), job.Priority, count+1, BrowserRotationThreshold)
 
 			processJob(ctx, browser, app, job)
@@ -194,13 +214,24 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 
 			// Get next job
 			var open bool
-			job, open = <-jobs
-			if !open {
-				break // No more jobs
+			select {
+			case <-ctx.Done():
+				_ = browser.Close()
+				return
+			case job, open = <-jobs:
+				if !open {
+					_ = browser.Close()
+					return // No more jobs
+				}
 			}
 
 			// Small delay between jobs in same browser
-			time.Sleep(1800 * time.Millisecond)
+			select {
+			case <-time.After(1800 * time.Millisecond):
+			case <-ctx.Done():
+				_ = browser.Close()
+				return
+			}
 		}
 
 		// Cleanup Browser
@@ -222,7 +253,7 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 	if err != nil {
 		log.Printf("  [Err] %s: %v", rec.GetString("name"), err)
 		rec.Set("fetch_status", "failed")
-		if err := app.Save(rec); err != nil {
+		if err := app.SaveWithContext(ctx, rec); err != nil {
 			log.Printf("  [DB Err] Failed to save error status for %s: %v", rec.GetString("name"), err)
 		}
 		return
@@ -233,7 +264,7 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 	rec.Set("last_updated", time.Now())
 	rec.Set("fetch_status", "idle")
 
-	if err := app.Save(rec); err != nil {
+	if err := app.SaveWithContext(ctx, rec); err != nil {
 		log.Printf("  [DB Err] Failed to save %s: %v", rec.GetString("name"), err)
 	}
 }
@@ -269,10 +300,13 @@ func isExpectedNoBodyResponseErr(err error) bool {
 		strings.Contains(msg, "no resource with given identifier found")
 }
 
-func handlePathfinderResponseBody(page *rod.Page, artistID string, reqID proto.NetworkRequestID, once *sync.Once, resultChan chan<- int) {
+func handlePathfinderResponseBody(page *rod.Page, artistID string, reqID proto.NetworkRequestID, once *sync.Once, done *atomic.Bool, resultChan chan<- int) {
+	if done.Load() {
+		return
+	}
 	res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
 	if err != nil {
-		if isExpectedNoBodyResponseErr(err) {
+		if done.Load() || isExpectedNoBodyResponseErr(err) {
 			return
 		}
 		log.Printf("[update_listeners] info: failed to read pathfinder body artist=%s req_id=%s: %v", artistID, reqID, err)
@@ -285,6 +319,7 @@ func handlePathfinderResponseBody(page *rod.Page, artistID string, reqID proto.N
 	}
 
 	once.Do(func() {
+		done.Store(true)
 		select {
 		case resultChan <- listeners:
 		default:
@@ -294,6 +329,7 @@ func handlePathfinderResponseBody(page *rod.Page, artistID string, reqID proto.N
 
 func startPathfinderListener(page *rod.Page, artistID string, resultChan chan<- int) {
 	var once sync.Once
+	var done atomic.Bool
 	var targetReqs sync.Map
 
 	go page.EachEvent(
@@ -307,7 +343,10 @@ func startPathfinderListener(page *rod.Page, artistID string, resultChan chan<- 
 				return
 			}
 			targetReqs.Delete(e.RequestID)
-			go handlePathfinderResponseBody(page, artistID, e.RequestID, &once, resultChan)
+			if done.Load() {
+				return
+			}
+			go handlePathfinderResponseBody(page, artistID, e.RequestID, &once, &done, resultChan)
 		},
 	)()
 }
