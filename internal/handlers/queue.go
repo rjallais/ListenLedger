@@ -75,12 +75,12 @@ type queueRetryStats struct {
 }
 
 type retryJobParams struct {
-	Job                *core.Record
-	Artist             *core.Record
-	ArtistID           string
-	RequestID          string
+	Job                 *core.Record
+	Artist              *core.Record
+	ArtistID            string
+	RequestID           string
 	PreviousFetchStatus string
-	PublishErr         error
+	PublishErr          error
 }
 
 func normalizeQueueRetryLimit(limit int) int {
@@ -348,6 +348,41 @@ func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retr
 	return nil
 }
 
+func (h *Handler) processRetryCandidate(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) error {
+	req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, stats)
+	if err != nil {
+		return fmt.Errorf("failed to prepare retry request: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+
+	previousFetchStatus := artist.GetString("fetch_status")
+	params := retryJobParams{
+		Job:                 job,
+		Artist:              artist,
+		ArtistID:            artistID,
+		RequestID:           requestID,
+		PreviousFetchStatus: previousFetchStatus,
+	}
+	if err := h.saveRetryQueuedAndMarkPending(ctx, params); err != nil {
+		return err
+	}
+
+	ack, pubErr := h.publishRetryRequest(ctx, req)
+	if pubErr != nil {
+		params.PublishErr = pubErr
+		return h.handleRetryPublishFailure(ctx, params, stats)
+	}
+
+	if ack != nil && ack.Duplicate {
+		return h.handleRetryDuplicate(ctx, params, stats)
+	}
+
+	stats.Retried++
+	return nil
+}
+
 func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats queueRetryStats) (queueRetryStats, error) {
 	limit = normalizeQueueRetryLimit(limit)
 	records, err := h.collectRetryCandidates(ctx, limit)
@@ -359,43 +394,9 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats
 	seenArtist := make(map[string]struct{}, len(records))
 
 	for _, job := range records {
-		req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, &stats)
-		if err != nil {
-			return stats, fmt.Errorf("failed to prepare retry request: %w", err)
-		}
-		if !ok {
-			continue
-		}
-
-		previousFetchStatus := artist.GetString("fetch_status")
-		params := retryJobParams{
-			Job:                 job,
-			Artist:              artist,
-			ArtistID:            artistID,
-			RequestID:           requestID,
-			PreviousFetchStatus: previousFetchStatus,
-		}
-		if err := h.saveRetryQueuedAndMarkPending(ctx, params); err != nil {
+		if err := h.processRetryCandidate(ctx, job, seenArtist, &stats); err != nil {
 			return stats, err
 		}
-
-		ack, pubErr := h.publishRetryRequest(ctx, req)
-		if pubErr != nil {
-			params.PublishErr = pubErr
-			if err := h.handleRetryPublishFailure(ctx, params, &stats); err != nil {
-				return stats, err
-			}
-			continue
-		}
-
-		if ack != nil && ack.Duplicate {
-			if err := h.handleRetryDuplicate(ctx, params, &stats); err != nil {
-				return stats, err
-			}
-			continue
-		}
-
-		stats.Retried++
 	}
 
 	return stats, nil
@@ -509,7 +510,7 @@ func (h *Handler) countQueueState(ctx context.Context) (int64, int64, int64, int
 			AndWhere(item.exp).
 			Limit(1).
 			Row(item.result); qErr != nil {
-			if isExpectedContextCancellation(ctx, qErr) {
+			if isExpectedContextCancellation(qErr) {
 				break
 			}
 			log.Printf("[queue] Warning: failed to count %s: %v", item.collection, qErr)
@@ -535,6 +536,17 @@ func (h *Handler) applyActiveBatchProgress(artistsPending, jobsProcessing *int64
 	}
 }
 
+func queuePendingFromState(streamInfo *jetstream.StreamInfo, jobsQueued int64) uint64 {
+	queuePending := uint64(0)
+	if streamInfo != nil {
+		queuePending = streamInfo.State.Msgs
+	}
+	if queuePending < uint64(jobsQueued) {
+		queuePending = uint64(jobsQueued)
+	}
+	return queuePending
+}
+
 func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	h.ensureBatchProgressSubscriber()
 
@@ -545,14 +557,7 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	jobsQueued, jobsProcessing, jobsFailed, artistsPending := h.countQueueState(ctx)
 	h.applyActiveBatchProgress(&artistsPending, &jobsProcessing)
 
-	queuePending := uint64(0)
-	if streamInfo != nil {
-		queuePending = streamInfo.State.Msgs
-	}
-
-	if queuePending < uint64(jobsQueued) {
-		queuePending = uint64(jobsQueued)
-	}
+	queuePending := queuePendingFromState(streamInfo, jobsQueued)
 
 	wantsJSON := wantsJSONResponse(e.Request)
 
@@ -592,6 +597,20 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	})
 }
 
+func (h *Handler) queueRetryErrorResponse(e *core.RequestEvent, err error, stats queueRetryStats, includeStats bool) error {
+	if wantsJSONResponse(e.Request) {
+		body := map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		}
+		if includeStats {
+			body["stats"] = stats
+		}
+		return e.JSON(http.StatusInternalServerError, body)
+	}
+	return h.handleQueue(e)
+}
+
 func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
 	defer cancel()
@@ -599,18 +618,11 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	stats, err := h.reconcileOrphanQueueState(ctx)
 	if err != nil {
 		log.Printf("[queue-retry] reconciliation failed: %v", err)
-		if wantsJSONResponse(e.Request) {
-			return e.JSON(http.StatusInternalServerError, map[string]any{
-				"status": "error",
-				"error":  err.Error(),
-				"stats":  stats,
-			})
-		}
-		return h.handleQueue(e)
+		return h.queueRetryErrorResponse(e, err, stats, true)
 	}
 
 	checker := quota.NewChecker(h.cfg)
-	if !checker.HasAvailableQuota(e.Request.Context()) {
+	if !checker.HasAvailableQuota(ctx) {
 		return e.JSON(http.StatusTooManyRequests, map[string]any{
 			"error": "No scraping quota available.",
 			"stats": stats,
@@ -620,13 +632,7 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	stats, err = h.retryFailedAndQueuedJobs(ctx, 250, stats)
 	if err != nil {
 		log.Printf("[queue-retry] retry loop failed: %v", err)
-		if wantsJSONResponse(e.Request) {
-			return e.JSON(http.StatusInternalServerError, map[string]any{
-				"status": "error",
-				"error":  err.Error(),
-			})
-		}
-		return h.handleQueue(e)
+		return h.queueRetryErrorResponse(e, err, stats, false)
 	}
 
 	log.Printf(
@@ -652,8 +658,7 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	return h.handleQueue(e)
 }
 
-func isExpectedContextCancellation(ctx context.Context, err error) bool {
+func isExpectedContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		(ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()))
+		errors.Is(err, context.DeadlineExceeded)
 }

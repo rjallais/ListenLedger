@@ -236,6 +236,66 @@ func processJob(browser *rod.Browser, app *pocketbase.PocketBase, job Job) {
 	}
 }
 
+func configureListenerPage(page *rod.Page) error {
+	if err := (proto.NetworkEnable{}).Call(page); err != nil {
+		return fmt.Errorf("network enable failed: %w", err)
+	}
+	_ = (proto.NetworkSetBlockedURLs{Urls: blockedPatterns()}).Call(page)
+	return nil
+}
+
+func isPathfinderRequest(url string) bool {
+	return strings.Contains(url, "pathfinder/v2/query")
+}
+
+func extractListenersFromResponseBody(body string) (int, bool) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(body), &data); err != nil {
+		return 0, false
+	}
+	return extractMonthlyListenersJSON(data)
+}
+
+func handlePathfinderResponseBody(page *rod.Page, reqID proto.NetworkRequestID, once *sync.Once, resultChan chan<- int) {
+	res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
+	if err != nil {
+		// Likely a CORS preflight OPTIONS request with no body.
+		return
+	}
+
+	listeners, ok := extractListenersFromResponseBody(res.Body)
+	if !ok {
+		return
+	}
+
+	once.Do(func() {
+		select {
+		case resultChan <- listeners:
+		default:
+		}
+	})
+}
+
+func startPathfinderListener(page *rod.Page, resultChan chan<- int) {
+	var once sync.Once
+	var targetReqs sync.Map
+
+	go page.EachEvent(
+		func(e *proto.NetworkResponseReceived) {
+			if isPathfinderRequest(e.Response.URL) {
+				targetReqs.Store(e.RequestID, struct{}{})
+			}
+		},
+		func(e *proto.NetworkLoadingFinished) {
+			if _, ok := targetReqs.Load(e.RequestID); !ok {
+				return
+			}
+			targetReqs.Delete(e.RequestID)
+			go handlePathfinderResponseBody(page, e.RequestID, &once, resultChan)
+		},
+	)()
+}
+
 func extractListeners(browser *rod.Browser, artistID string) (int, error) {
 	url := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 	resultChan := make(chan int, 1)
@@ -253,54 +313,10 @@ func extractListeners(browser *rod.Browser, artistID string) (int, error) {
 	}
 	defer func() { _ = page.Close() }()
 
-	// Enable network domain and block heavy resources.
-	if err := (proto.NetworkEnable{}).Call(page); err != nil {
-		return 0, fmt.Errorf("network enable failed: %w", err)
+	if err := configureListenerPage(page); err != nil {
+		return 0, err
 	}
-	_ = (proto.NetworkSetBlockedURLs{Urls: blockedPatterns()}).Call(page)
-
-	// Listen for pathfinder API responses.
-	var once sync.Once
-	var targetReqs sync.Map
-
-	go page.EachEvent(
-		func(e *proto.NetworkResponseReceived) {
-			if strings.Contains(e.Response.URL, "pathfinder/v2/query") {
-				targetReqs.Store(e.RequestID, struct{}{})
-			}
-		},
-		func(e *proto.NetworkLoadingFinished) {
-			if _, ok := targetReqs.Load(e.RequestID); !ok {
-				return
-			}
-			targetReqs.Delete(e.RequestID)
-
-			go func(reqID proto.NetworkRequestID) {
-				res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
-				if err != nil {
-					// Likely a CORS preflight OPTIONS request with no body.
-					return
-				}
-
-				var data map[string]any
-				if err := json.Unmarshal([]byte(res.Body), &data); err != nil {
-					return
-				}
-
-				listeners, ok := extractMonthlyListenersJSON(data)
-				if !ok {
-					return
-				}
-
-				once.Do(func() {
-					select {
-					case resultChan <- listeners:
-					default:
-					}
-				})
-			}(e.RequestID)
-		},
-	)()
+	startPathfinderListener(page, resultChan)
 
 	if err := page.Navigate(url); err != nil {
 		return 0, fmt.Errorf("nav failed: %w", err)
