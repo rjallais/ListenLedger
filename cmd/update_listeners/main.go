@@ -1,8 +1,11 @@
+//go:build goexperiment.jsonv2
+
+// Command update_listeners refreshes artists' Spotify monthly listener counts in PocketBase.
 package main
 
 import (
+	"context"
 	"encoding/json"
-
 	"flag"
 	"fmt"
 	"log"
@@ -12,16 +15,15 @@ import (
 	"sync"
 	"time"
 
-	chromeutil "ListenLedger/internal/chrome"
-	"ListenLedger/internal/priority"
-
-	"ListenLedger/internal/appdir"
-
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+
+	"ListenLedger/internal/appdir"
+	chromeutil "ListenLedger/internal/chrome"
+	"ListenLedger/internal/priority"
 )
 
 // Config
@@ -83,11 +85,12 @@ func main() {
 	wg.Add(*concurrency)
 
 	log.Printf("Starting %d workers...", *concurrency)
+	workerCtx := context.Background()
 
 	for i := 0; i < *concurrency; i++ {
 		go func(workerID int) {
 			defer wg.Done()
-			runWorker(app, workerID, chromePath, *headless, jobChan)
+			runWorker(workerCtx, app, workerID, chromePath, *headless, jobChan)
 		}(i)
 	}
 
@@ -160,7 +163,7 @@ func launchBrowser(chromePath string, headless bool) (*rod.Browser, error) {
 	return browser, nil
 }
 
-func runWorker(app *pocketbase.PocketBase, id int, chromePath string, headless bool, jobs <-chan Job) {
+func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePath string, headless bool, jobs <-chan Job) {
 	for {
 		job, ok := <-jobs
 		if !ok {
@@ -181,7 +184,7 @@ func runWorker(app *pocketbase.PocketBase, id int, chromePath string, headless b
 		for {
 			log.Printf("[Worker %d] Processing %s (P%d) [%d/%d in rotation]", id, job.Record.GetString("name"), job.Priority, count+1, BrowserRotationThreshold)
 
-			processJob(browser, app, job)
+			processJob(ctx, browser, app, job)
 
 			count++
 			if count >= BrowserRotationThreshold {
@@ -207,15 +210,14 @@ func runWorker(app *pocketbase.PocketBase, id int, chromePath string, headless b
 
 }
 
-func processJob(browser *rod.Browser, app *pocketbase.PocketBase, job Job) {
+func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.PocketBase, job Job) {
 	rec := job.Record
 	spotifyID := rec.GetString("spotify_id")
 
 	var listeners int
 	var err error
 
-	// Process indefinitely until network returns or browser crashes.
-	listeners, err = extractListeners(browser, spotifyID)
+	listeners, err = extractListeners(ctx, browser, spotifyID)
 
 	if err != nil {
 		log.Printf("  [Err] %s: %v", rec.GetString("name"), err)
@@ -240,7 +242,9 @@ func configureListenerPage(page *rod.Page) error {
 	if err := (proto.NetworkEnable{}).Call(page); err != nil {
 		return fmt.Errorf("network enable failed: %w", err)
 	}
-	_ = (proto.NetworkSetBlockedURLs{Urls: blockedPatterns()}).Call(page)
+	if err := (proto.NetworkSetBlockedURLs{Urls: blockedPatterns()}).Call(page); err != nil {
+		return fmt.Errorf("set blocked URLs failed: %w", err)
+	}
 	return nil
 }
 
@@ -296,7 +300,10 @@ func startPathfinderListener(page *rod.Page, resultChan chan<- int) {
 	)()
 }
 
-func extractListeners(browser *rod.Browser, artistID string) (int, error) {
+func extractListeners(ctx context.Context, browser *rod.Browser, artistID string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, NetworkTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 	resultChan := make(chan int, 1)
 
@@ -322,9 +329,12 @@ func extractListeners(browser *rod.Browser, artistID string) (int, error) {
 		return 0, fmt.Errorf("nav failed: %w", err)
 	}
 
-	// Wait indefinitely for the result channel.
-	l := <-resultChan
-	return l, nil
+	select {
+	case l := <-resultChan:
+		return l, nil
+	case <-ctx.Done():
+		return 0, fmt.Errorf("timed out waiting for monthly listeners for artist %s: %w", artistID, ctx.Err())
+	}
 }
 
 func extractMonthlyListenersJSON(data map[string]any) (int, bool) {

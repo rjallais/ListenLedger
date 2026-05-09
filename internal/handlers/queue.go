@@ -623,10 +623,13 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 
 	checker := quota.NewChecker(h.cfg)
 	if !checker.HasAvailableQuota(ctx) {
-		return e.JSON(http.StatusTooManyRequests, map[string]any{
-			"error": "No scraping quota available.",
-			"stats": stats,
-		})
+		if wantsJSONResponse(e.Request) {
+			return e.JSON(http.StatusTooManyRequests, map[string]any{
+				"error": "No scraping quota available.",
+				"stats": stats,
+			})
+		}
+		return h.handleQueue(e)
 	}
 
 	stats, err = h.retryFailedAndQueuedJobs(ctx, 250, stats)

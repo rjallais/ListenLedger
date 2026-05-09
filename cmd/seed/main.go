@@ -28,9 +28,9 @@ func main() {
 	})
 
 	opts := seedOptions{
-		dryRun:          flag.Bool("dry-run", false, "Show what would be seeded without making changes"),
-		sheet1:          flag.String("sheet1", "Music - Sheet1.csv", "Path to Sheet1 CSV file"),
-		sheet2:          flag.String("sheet2", "Music - Sheet2.csv", "Path to Sheet2 CSV file"),
+		dryRun:           flag.Bool("dry-run", false, "Show what would be seeded without making changes"),
+		sheet1:           flag.String("sheet1", "Music - Sheet1.csv", "Path to Sheet1 CSV file"),
+		sheet2:           flag.String("sheet2", "Music - Sheet2.csv", "Path to Sheet2 CSV file"),
 		sheet2GenreGroup: flag.String("sheet2-genre-group", "rock_metal", "Genre group for artists seeded from Sheet2"),
 	}
 	flag.Parse()
@@ -52,9 +52,9 @@ func main() {
 }
 
 type seedOptions struct {
-	dryRun          *bool
-	sheet1          *string
-	sheet2          *string
+	dryRun           *bool
+	sheet1           *string
+	sheet2           *string
 	sheet2GenreGroup *string
 }
 
@@ -74,17 +74,25 @@ func runSeed(ctx context.Context, app *pocketbase.PocketBase, opts seedOptions) 
 	return nil
 }
 
-func seedAlbums(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	file, err := os.Open(sheet1Path)
+func readCSVRecords(path, sheetName string) ([][]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet1: %w", err)
+		return nil, fmt.Errorf("failed to open %s: %w", sheetName, err)
 	}
 	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
-		return fmt.Errorf("failed to read Sheet1: %w", err)
+		return nil, fmt.Errorf("failed to read %s: %w", sheetName, err)
+	}
+	return records, nil
+}
+
+func seedAlbums(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
+	records, err := readCSVRecords(sheet1Path, "Sheet1")
+	if err != nil {
+		return err
 	}
 
 	collection, err := app.FindCollectionByNameOrId("albums")
@@ -142,24 +150,17 @@ func (cfg albumSeedConfig) seedAlbumRow(ctx context.Context, row []string) int {
 }
 
 type artistColumnMapping struct {
-	Name int
-	SpotifyID int
-	Listeners int
+	Name            int
+	SpotifyID       int
+	Listeners       int
 	CollectionSongs int
-	TotalSongs int
+	TotalSongs      int
 }
 
 func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	file, err := os.Open(sheet1Path)
+	records, err := readCSVRecords(sheet1Path, "Sheet1")
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet1: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return fmt.Errorf("failed to read Sheet1: %w", err)
+		return err
 	}
 
 	collection, err := app.FindCollectionByNameOrId("artists")
@@ -189,11 +190,11 @@ func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryR
 }
 
 type seedContext struct {
-	app              *pocketbase.PocketBase
-	collection       *core.Collection
-	dryRun           bool
-	seen             map[string]bool
-	rockMetalCount   int
+	app                 *pocketbase.PocketBase
+	collection          *core.Collection
+	dryRun              bool
+	seen                map[string]bool
+	rockMetalCount      int
 	everythingElseCount int
 }
 
@@ -264,16 +265,9 @@ func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool
 	if genreGroup == "" {
 		return fmt.Errorf("sheet2-genre-group must not be empty")
 	}
-	file, err := os.Open(sheet2Path)
+	records, err := readCSVRecords(sheet2Path, "Sheet2")
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet2: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return fmt.Errorf("failed to read Sheet2: %w", err)
+		return err
 	}
 
 	songsCollection, err := app.FindCollectionByNameOrId("songs")
@@ -476,15 +470,6 @@ func parseNumber(s string) int {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.TrimSuffix(s, "%")
-
-	n, _ := strconv.Atoi(s)
-	return n
-}
-
-func parseListeners(s string) int {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.ReplaceAll(s, "\"", "")
 
 	n, _ := strconv.Atoi(s)
 	return n
