@@ -143,8 +143,17 @@ func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetrySta
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(
-			"fetch_status = {:pending} AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})",
-			dbx.Params{"pending": "pending", "failed": "failed"},
+			`fetch_status = {:pending}
+			 AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})
+			 AND id NOT IN (
+			   SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing})
+			 )`,
+			dbx.Params{
+				"pending":    "pending",
+				"failed":     "failed",
+				"queued":     "queued",
+				"processing": "processing",
+			},
 		)).
 		Limit(500).
 		All(&records)
