@@ -382,11 +382,17 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats
 		ack, pubErr := h.publishRetryRequest(ctx, req)
 		if pubErr != nil {
 			params.PublishErr = pubErr
-			return stats, h.handleRetryPublishFailure(ctx, params, &stats)
+			if err := h.handleRetryPublishFailure(ctx, params, &stats); err != nil {
+				return stats, err
+			}
+			continue
 		}
 
 		if ack != nil && ack.Duplicate {
-			return stats, h.handleRetryDuplicate(ctx, params, &stats)
+			if err := h.handleRetryDuplicate(ctx, params, &stats); err != nil {
+				return stats, err
+			}
+			continue
 		}
 
 		stats.Retried++
