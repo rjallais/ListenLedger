@@ -500,7 +500,9 @@ func (h *Handler) rollbackQueueArtistRefresh(record *core.Record, requestID, pre
 		log.Printf("[queueArtistRefresh] rollback failed for artist %s: %v", record.Id, rollbackErr)
 	}
 	correlation.Clear(record.Id)
-	_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
+	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
+		log.Printf("[queueArtistRefresh] rollback cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+	}
 }
 
 func (h *Handler) handleDuplicateAck(record *core.Record, requestID, previousFetchStatus string) {

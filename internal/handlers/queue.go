@@ -122,6 +122,9 @@ func (h *Handler) resetOrphanPendingArtists(ctx context.Context, stats *queueRet
 	if err != nil {
 		return fmt.Errorf("query orphan pending artists: %w", err)
 	}
+	if len(records) == 500 {
+		log.Printf("[queue-retry] orphan pending reconciliation hit 500-record cap; remaining artists will be processed on next retry")
+	}
 
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
@@ -160,6 +163,9 @@ func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetrySta
 	if err != nil {
 		return fmt.Errorf("query failed-job pending artists: %w", err)
 	}
+	if len(records) == 500 {
+		log.Printf("[queue-retry] failed-job reconciliation hit 500-record cap; remaining artists will be processed on next retry")
+	}
 
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
@@ -178,7 +184,7 @@ func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetrySta
 
 func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRetryStats) error {
 	streamInfo, consumerAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
-	if h.hasActiveQueueWork(streamInfo, consumerAvailable, queueAckPending, queueRedelivered) {
+	if h.shouldSkipStreamPurge(streamInfo, consumerAvailable, queueAckPending, queueRedelivered) {
 		return nil
 	}
 
@@ -198,7 +204,7 @@ func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRet
 	return nil
 }
 
-func (h *Handler) hasActiveQueueWork(streamInfo *jetstream.StreamInfo, consumerAvailable bool, queueAckPending, queueRedelivered uint64) bool {
+func (h *Handler) shouldSkipStreamPurge(streamInfo *jetstream.StreamInfo, consumerAvailable bool, queueAckPending, queueRedelivered uint64) bool {
 	return streamInfo == nil || !consumerAvailable || streamInfo.State.Msgs == 0 || queueAckPending > 0 || queueRedelivered > 0
 }
 
@@ -372,11 +378,11 @@ func (h *Handler) processRetryCandidate(ctx context.Context, job *core.Record, s
 	ack, pubErr := h.publishRetryRequest(ctx, req)
 	if pubErr != nil {
 		params.PublishErr = pubErr
-		return h.handleRetryPublishFailure(ctx, params, stats)
+		return h.handleRetryPublishFailure(params, stats)
 	}
 
 	if ack != nil && ack.Duplicate {
-		return h.handleRetryDuplicate(ctx, params, stats)
+		return h.handleRetryDuplicate(params, stats)
 	}
 
 	stats.Retried++
@@ -402,7 +408,7 @@ func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats
 	return stats, nil
 }
 
-func (h *Handler) handleRetryPublishFailure(ctx context.Context, params retryJobParams, stats *queueRetryStats) error {
+func (h *Handler) handleRetryPublishFailure(params retryJobParams, stats *queueRetryStats) error {
 	stats.PublishFailed++
 	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
 		return err
@@ -415,7 +421,7 @@ func (h *Handler) handleRetryPublishFailure(ctx context.Context, params retryJob
 	return nil
 }
 
-func (h *Handler) handleRetryDuplicate(ctx context.Context, params retryJobParams, stats *queueRetryStats) error {
+func (h *Handler) handleRetryDuplicate(params retryJobParams, stats *queueRetryStats) error {
 	stats.Duplicate++
 	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
 		return err

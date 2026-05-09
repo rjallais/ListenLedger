@@ -260,10 +260,22 @@ func extractListenersFromResponseBody(body string) (int, bool) {
 	return extractMonthlyListenersJSON(data)
 }
 
-func handlePathfinderResponseBody(page *rod.Page, reqID proto.NetworkRequestID, once *sync.Once, resultChan chan<- int) {
+func isExpectedNoBodyResponseErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no data found for resource with given identifier") ||
+		strings.Contains(msg, "no resource with given identifier found")
+}
+
+func handlePathfinderResponseBody(page *rod.Page, artistID string, reqID proto.NetworkRequestID, once *sync.Once, resultChan chan<- int) {
 	res, err := proto.NetworkGetResponseBody{RequestID: reqID}.Call(page)
 	if err != nil {
-		// Likely a CORS preflight OPTIONS request with no body.
+		if isExpectedNoBodyResponseErr(err) {
+			return
+		}
+		log.Printf("[update_listeners] info: failed to read pathfinder body artist=%s req_id=%s: %v", artistID, reqID, err)
 		return
 	}
 
@@ -280,7 +292,7 @@ func handlePathfinderResponseBody(page *rod.Page, reqID proto.NetworkRequestID, 
 	})
 }
 
-func startPathfinderListener(page *rod.Page, resultChan chan<- int) {
+func startPathfinderListener(page *rod.Page, artistID string, resultChan chan<- int) {
 	var once sync.Once
 	var targetReqs sync.Map
 
@@ -295,7 +307,7 @@ func startPathfinderListener(page *rod.Page, resultChan chan<- int) {
 				return
 			}
 			targetReqs.Delete(e.RequestID)
-			go handlePathfinderResponseBody(page, e.RequestID, &once, resultChan)
+			go handlePathfinderResponseBody(page, artistID, e.RequestID, &once, resultChan)
 		},
 	)()
 }
@@ -303,12 +315,13 @@ func startPathfinderListener(page *rod.Page, resultChan chan<- int) {
 func extractListeners(ctx context.Context, browser *rod.Browser, artistID string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, NetworkTimeout)
 	defer cancel()
+	browserWithCtx := browser.Context(ctx)
 
 	url := fmt.Sprintf("https://open.spotify.com/artist/%s", artistID)
 	resultChan := make(chan int, 1)
 
 	// Create a new incognito page for this artist to ensure clean state.
-	incognito, err := browser.Incognito()
+	incognito, err := browserWithCtx.Incognito()
 	if err != nil {
 		return 0, fmt.Errorf("incognito context failed: %w", err)
 	}
@@ -318,12 +331,13 @@ func extractListeners(ctx context.Context, browser *rod.Browser, artistID string
 	if err != nil {
 		return 0, fmt.Errorf("page creation failed: %w", err)
 	}
+	page = page.Context(ctx)
 	defer func() { _ = page.Close() }()
 
 	if err := configureListenerPage(page); err != nil {
 		return 0, err
 	}
-	startPathfinderListener(page, resultChan)
+	startPathfinderListener(page, artistID, resultChan)
 
 	if err := page.Navigate(url); err != nil {
 		return 0, fmt.Errorf("nav failed: %w", err)
