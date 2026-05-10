@@ -79,23 +79,41 @@ func runSeed(ctx context.Context, app *pocketbase.PocketBase, opts seedOptions) 
 	return nil
 }
 
-func readCSVRecords(path, sheetName string) ([][]string, error) {
+func readCSVRecords(ctx context.Context, path, sheetName string) ([][]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", sheetName, err)
 	}
 	defer func() { _ = file.Close() }()
 
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read %s: %w", sheetName, err)
 	}
-	return records, nil
+
+	reader := csv.NewReader(file)
+	type csvReadResult struct {
+		records [][]string
+		err     error
+	}
+	readResultCh := make(chan csvReadResult, 1)
+	go func() {
+		records, readErr := reader.ReadAll()
+		readResultCh <- csvReadResult{records: records, err: readErr}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("failed to read %s: %w", sheetName, ctx.Err())
+	case result := <-readResultCh:
+		if result.err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", sheetName, result.err)
+		}
+		return result.records, nil
+	}
 }
 
 func seedAlbums(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	records, err := readCSVRecords(sheet1Path, "Sheet1")
+	records, err := readCSVRecords(ctx, sheet1Path, "Sheet1")
 	if err != nil {
 		return err
 	}
@@ -163,7 +181,7 @@ type artistColumnMapping struct {
 }
 
 func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	records, err := readCSVRecords(sheet1Path, "Sheet1")
+	records, err := readCSVRecords(ctx, sheet1Path, "Sheet1")
 	if err != nil {
 		return err
 	}
@@ -277,7 +295,7 @@ func seedFromSheet2(ctx context.Context, params seedSheet2Params) error {
 	if params.GenreGroup == "" {
 		return fmt.Errorf("sheet2-genre-group must not be empty")
 	}
-	records, err := readCSVRecords(params.Sheet2Path, "Sheet2")
+	records, err := readCSVRecords(ctx, params.Sheet2Path, "Sheet2")
 	if err != nil {
 		return err
 	}
@@ -495,6 +513,9 @@ func parseListenersStrict(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
 		return 0, fmt.Errorf("parseListenersStrict: invalid listeners %q: %w", s, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("parseListenersStrict: invalid listeners %q: must be non-negative", s)
 	}
 	return n, nil
 }

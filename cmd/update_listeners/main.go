@@ -190,7 +190,11 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("[Worker %d] Failed to launch browser: %v", id, err)
+			log.Printf("[Worker %d] Failed to launch browser for %s: %v", id, job.Record.GetString("name"), err)
+			job.Record.Set("fetch_status", "failed")
+			if saveErr := app.SaveWithContext(ctx, job.Record); saveErr != nil {
+				log.Printf("  [DB Err] Failed to save error status for %s: %v", job.Record.GetString("name"), saveErr)
+			}
 			continue
 		}
 

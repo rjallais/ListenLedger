@@ -152,7 +152,7 @@ func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req Scr
 func PublishScrapeRequestedToSubject(ctx context.Context, params scrapePublishParams) (*jetstream.PubAck, error) {
 	data, err := MarshalScrapeRequested(params.Request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal scrape request failed: %w", err)
 	}
 
 	subject := params.Subject
@@ -167,7 +167,7 @@ func PublishScrapeRequestedToSubject(ctx context.Context, params scrapePublishPa
 
 	ack, err := params.JetStream.Publish(ctx, subject, data, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("publish to subject %s failed: %w", subject, err)
 	}
 	return ack, nil
 }

@@ -697,10 +697,9 @@ func (h *Handler) rollbackOnQueueFailure(rb rollbackState, step string, origErr 
 }
 
 func (h *Handler) rollbackOnDuplicate(rb rollbackState) error {
-	correlation.Clear(rb.ArtistID)
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := h.deleteScrapeJobRecordByRequestID(rollbackCtx, rb.RequestID, rb.ArtistID); err != nil {
+	if err := h.rollbackSongArtistRefreshQueue(rollbackCtx, rb); err != nil {
 		return fmt.Errorf("queueArtistRefreshFromSong: duplicate scrape request cleanup failed: %w", err)
 	}
 	return nil
