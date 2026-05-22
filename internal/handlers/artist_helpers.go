@@ -348,8 +348,6 @@ func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
 				return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
 			}
 		}
-			}
-		}
 
 		return nil
 	}

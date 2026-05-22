@@ -30,7 +30,7 @@ func AddArtistModal(currentGenre string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"add-artist-title\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 id=\"add-artist-title\" class=\"font-bold text-lg\">Add New Artist</h3><label for=\"add-artist-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"add-artist-title\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h2 id=\"add-artist-title\" class=\"font-bold text-lg\">Add New Artist</h2><label for=\"add-artist-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
