@@ -215,7 +215,7 @@ func patchAlbums(sse *datastar.ServerSentEventGenerator, targetID string, albums
 			component = templates.AlbumRow(album)
 		}
 		if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModeAppend()); err != nil {
-			return err
+			return fmt.Errorf("patch album %s into %s: %w", album.ID, targetID, err)
 		}
 	}
 	return nil
@@ -348,7 +348,7 @@ func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
 	}
 
 	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
-		return err
+		return fmt.Errorf("prepend album %s into %s: %w", album.ID, targetID, err)
 	}
 
 	// 2. Morph/replace the feedback notice in the modal
@@ -390,7 +390,7 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		removeID = "album-" + album.ID
 	}
 	if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
-		return err
+		return fmt.Errorf("remove album element %s: %w", removeID, err)
 	}
 
 	// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
@@ -405,7 +405,7 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 	}
 
 	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(prependTargetID), datastar.WithModePrepend()); err != nil {
-		return err
+		return fmt.Errorf("prepend album %s into %s: %w", album.ID, prependTargetID, err)
 	}
 
 	return nil
