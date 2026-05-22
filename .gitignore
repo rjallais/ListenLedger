@@ -48,7 +48,7 @@ __pycache__/
 # AI tooling (user-specific)
 /AGENTS.md
 .gemini/
-# .agents/
+.agents/
 
 # Local scratch notes
 missing_artists.txt
