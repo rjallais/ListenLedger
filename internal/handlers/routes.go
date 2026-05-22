@@ -19,6 +19,7 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 
 	// Static files (CSS, JS, images)
 	r.GET("/static/{path...}", h.handleStatic)
+	r.GET("/robots.txt", h.handleRobots)
 
 	// Main views
 	r.GET("/", h.handleIndex)

@@ -55,6 +55,11 @@ func (h *Handler) handleIndex(e *core.RequestEvent) error {
 	return e.Redirect(http.StatusFound, "/albums")
 }
 
+func (h *Handler) handleRobots(e *core.RequestEvent) error {
+	e.Response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	return e.String(http.StatusOK, "User-agent: *\nAllow: /\n")
+}
+
 func (h *Handler) handleAlbums(e *core.RequestEvent) error {
 	ctx := e.Request.Context()
 
