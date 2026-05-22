@@ -47,6 +47,7 @@ type albumCreateInput struct {
 
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
+	e.Response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	return e.FileFS(os.DirFS(h.staticDir), path)
 }
 

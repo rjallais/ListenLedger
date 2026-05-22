@@ -5,6 +5,7 @@ package handlers
 import (
 	"log"
 
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 )
@@ -12,6 +13,9 @@ import (
 // RegisterRoutes registers all HTTP routes with the router.
 func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 	h.ensureBatchProgressSubscriber()
+
+	// Compress responses globally
+	r.Bind(apis.Gzip())
 
 	// Static files (CSS, JS, images)
 	r.GET("/static/{path...}", h.handleStatic)
