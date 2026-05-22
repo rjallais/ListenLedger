@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.26.2"
+go = "1.26.3"
 
 [settings]
 # Use Nushell as the default shell for all inline tasks (cross-platform)
@@ -34,7 +34,7 @@ AIR_BIN_PATH = "./tmp/main"
 # LOCAL_CONCURRENCY = "4"
 # LOCAL_IGNORE_CERT_ERRORS = "<true|false>"
 # LOCAL_BROWSERLESS_ENABLED = "true"
-# LOCAL_BROWSERLESS_ENDPOINT = "http://127.0.0.1:3001/chromium/bql"
+# LOCAL_BROWSERLESS_ENDPOINT = "http://127.0.0.1:3001/content"
 # LOCAL_BROWSERLESS_TOKEN = "listenledger-local"
 # LOCAL_BROWSERLESS_CONCURRENCY = "8"
 

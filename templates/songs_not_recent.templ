@@ -8,25 +8,27 @@ import (
 
 // NotRecentSongRows appends not-recent songs and updates pagination controls.
 templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort string) {
-	<tbody id="songs-not-recent" data-merge-mode="append">
+	<tbody id="songs-not-recent">
 		for _, song := range songs {
 			@SongRow(song, playlistSort)
 		}
 	</tbody>
-	if hasMore {
-		<div id="load-more-songs-not-recent" data-merge-mode="morph" class="mt-4 text-center">
+	@NotRecentSongsLoadMore(nextOffset, hasMore, playlistSort)
+}
+
+templ NotRecentSongsLoadMore(nextOffset int, hasMore bool, playlistSort string) {
+	<div id="load-more-songs-not-recent" class="mt-4 text-center">
+		if hasMore {
 			<button
 				class="btn btn-outline btn-sm"
 				data-on:click={ songsNotRecentURL(nextOffset, playlistSort) }
 			>
 				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
 			</button>
-		</div>
-	} else {
-		<div id="load-more-songs-not-recent" data-merge-mode="morph" class="mt-4 text-center">
+		} else {
 			<p class="text-sm text-success">✓ All archived songs loaded</p>
-		</div>
-	}
+		}
+	</div>
 }
 
 func songsNotRecentURL(offset int, playlistSort string) string {

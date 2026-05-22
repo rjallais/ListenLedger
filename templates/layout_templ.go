@@ -30,7 +30,7 @@ func Layout(title string, activeNav string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" data-theme=\"night\" data-signals:theme=\"localStorage.getItem('theme') || 'night'\" data-attr:data-theme=\"$theme\" data-effect=\"localStorage.setItem('theme', $theme)\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<!doctype html><html lang=\"en\" data-theme=\"night\" data-signals=\"{theme: localStorage.getItem('theme') || 'night'}\" data-attr:data-theme=\"$theme\" data-effect=\"localStorage.setItem('theme', $theme)\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -365,14 +365,14 @@ func ThemeButton(theme Theme) templ.Component {
 			templ_7745c5c3_Var15 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<button class=\"btn btn-sm btn-ghost justify-start gap-2 theme-option\" data-theme=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "<button type=\"button\" class=\"btn btn-sm btn-ghost justify-start gap-2 theme-option\" data-theme=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(theme.Value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 114, Col: 26}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 115, Col: 26}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -385,7 +385,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs("$theme = '" + theme.Value + "'")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 115, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 116, Col: 50}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -398,7 +398,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs("$theme === '" + theme.Value + "'")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 116, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 117, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -411,7 +411,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var19 string
 		templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(theme.Icon)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 118, Col: 14}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 119, Col: 14}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 		if templ_7745c5c3_Err != nil {
@@ -424,7 +424,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(theme.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 118, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 119, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
@@ -490,7 +490,7 @@ func QueueJobsWidget() templ.Component {
 			templ_7745c5c3_Var22 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<div class=\"hidden lg:flex items-center gap-2\" data-signals=\"{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsFailed:0,forceRetry:false}\" data-init=\"@get('/api/queue')\" data-on-interval__5s=\"if ($forceRetry && ($jobsQueued > 0 || $jobsFailed > 0)) { @post('/api/queue/retry') } @get('/api/queue'); if ($forceRetry && $jobsQueued === 0 && $jobsFailed === 0) { $forceRetry = false }\"><span class=\"badge badge-outline badge-sm font-mono\" title=\"JetStream pending messages\">Q:<span data-text=\"$queuePending\">0</span></span> <span class=\"badge badge-outline badge-sm font-mono\" title=\"In-flight (unacked) messages\">A:<span data-text=\"$queueAckPending\">0</span></span> <span class=\"badge badge-error badge-sm font-mono\" title=\"Failed jobs\">F:<span data-text=\"$jobsFailed\">0</span></span> <button class=\"btn btn-xs btn-warning\" title=\"Force retries until queued and failed are zero\" data-on:click=\"if ($forceRetry) { $forceRetry = false } else { $forceRetry = true; @post('/api/queue/retry') } @get('/api/queue')\"><span data-show=\"!$forceRetry\">Force Retry</span> <span data-show=\"$forceRetry\">Retrying...</span></button> <span class=\"badge badge-success badge-sm font-mono\" data-show=\"$forceRetry\">Auto</span> <span class=\"badge badge-error badge-sm font-mono\" title=\"Redelivered (unacked) messages\" data-show=\"$queueRedelivered > 0\">R:<span data-text=\"$queueRedelivered\">0</span></span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<div class=\"hidden lg:flex items-center gap-2\" data-signals=\"{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsFailed:0,forceRetry:false}\" data-init=\"@get('/api/queue')\" data-on-interval__5s=\"if ($forceRetry && ($jobsQueued > 0 || $jobsFailed > 0)) { @post('/api/queue/retry') } @get('/api/queue'); if ($forceRetry && $jobsQueued === 0 && $jobsFailed === 0) { $forceRetry = false }\"><span class=\"badge badge-outline badge-sm font-mono\" title=\"JetStream pending messages\">Q:<span data-text=\"$queuePending\">0</span></span> <span class=\"badge badge-outline badge-sm font-mono\" title=\"In-flight (unacked) messages\">A:<span data-text=\"$queueAckPending\">0</span></span> <span class=\"badge badge-error badge-sm font-mono\" title=\"Failed jobs\">F:<span data-text=\"$jobsFailed\">0</span></span> <button type=\"button\" class=\"btn btn-xs btn-warning\" title=\"Force retries until queued and failed are zero\" data-on:click=\"if ($forceRetry) { $forceRetry = false } else { $forceRetry = true; @post('/api/queue/retry') } @get('/api/queue')\"><span data-show=\"!$forceRetry\">Force Retry</span> <span data-show=\"$forceRetry\">Retrying...</span></button> <span class=\"badge badge-success badge-sm font-mono\" data-show=\"$forceRetry\">Auto</span> <span class=\"badge badge-error badge-sm font-mono\" title=\"Redelivered (unacked) messages\" data-show=\"$queueRedelivered > 0\">R:<span data-text=\"$queueRedelivered\">0</span></span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/templates"
 )
@@ -64,8 +65,18 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 		totalCount = 0
 	}
 
-	// Return the new artist row as SSE fragment
-	return renderDatastar(e, templates.NewArtistCreateResponse(artistFromRecord(record, totalCount)))
+	// Return the new artist row prepended and show feedback
+	artist := artistFromRecord(record, totalCount)
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+
+	// 1. Prepend the new artist row inside the respective genre group table body
+	targetID := templates.ArtistsTBodyID(artist.GenreGroup)
+	if err := sse.PatchElementTempl(templates.ArtistRow(artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+		return err
+	}
+
+	// 2. Morph/replace the feedback notice in the modal
+	return sse.PatchElementTempl(templates.AddArtistSuccessNotice(artist.Name))
 }
 
 func (h *Handler) handleArtists(e *core.RequestEvent) error {
@@ -153,6 +164,19 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	// Convert to type-safe structs (waiting artists don't need ranking)
 	artists := artistsFromRecords(records)
 
-	// NOTE: WaitingArtistRows uses data-merge-mode="append" so previously shown artists remain visible.
-	return renderDatastar(e, templates.WaitingArtistRows(artists, params.offset+len(records), hasMore))
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+
+	// Append each waiting artist card inside "#artists-waiting"
+	for _, artist := range artists {
+		if err := sse.PatchElementTempl(templates.WaitingArtistCard(artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModeAppend()); err != nil {
+			return err
+		}
+	}
+
+	// Morph/replace the Load More button container "#load-more-artists"
+	if hasMore {
+		return sse.PatchElementTempl(templates.WaitingArtistsLoadMore(params.offset + len(records)))
+	} else {
+		return sse.PatchElementTempl(templates.WaitingArtistsCompleteNotice())
+	}
 }

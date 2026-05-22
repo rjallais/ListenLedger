@@ -341,3 +341,15 @@ func artistUpdatedSignal(artistID string) string {
 func artistFetchStatusSignal(artistID string) string {
 	return fmt.Sprintf("$artistFetchStatus[%q]", artistID)
 }
+
+func ArtistRowID(artistID string) string {
+	return artistRowID(artistID)
+}
+
+func ArtistCardID(artistID string) string {
+	return artistCardID(artistID)
+}
+
+func ArtistsTBodyID(genre string) string {
+	return artistsTBodyID(genre)
+}

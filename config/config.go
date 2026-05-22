@@ -146,7 +146,7 @@ func DefaultConfig() *Config {
 		// Match the token used by the bundled `mise browserless:up` task. Users
 		// running a custom local container can override with
 		// LOCAL_BROWSERLESS_TOKEN or clear it explicitly.
-		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/chromium/content",
+		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/content",
 		LocalBrowserlessToken:       "listenledger-local",
 		LocalBrowserlessConcurrency: 4,
 

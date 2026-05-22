@@ -34,7 +34,7 @@ templ ArtistQueueSection(count int) {
 
 // WaitingArtistRows renders waiting artist cards for lazy loading responses.
 templ WaitingArtistRows(artists []Artist, nextOffset int, hasMore bool) {
-	<div id="artists-waiting" data-merge-mode="append">
+	<div id="artists-waiting">
 		for _, artist := range artists {
 			@WaitingArtistCard(artist)
 		}
@@ -47,7 +47,7 @@ templ WaitingArtistRows(artists []Artist, nextOffset int, hasMore bool) {
 }
 
 templ WaitingArtistsLoadMore(nextOffset int) {
-	<div id="load-more-artists" data-merge-mode="morph">
+	<div id="load-more-artists">
 		<button
 			class="btn btn-warning btn-sm gap-2"
 			data-on:click={ artistQueueLoadMoreAction(nextOffset) }
@@ -61,7 +61,7 @@ templ WaitingArtistsLoadMore(nextOffset int) {
 }
 
 templ WaitingArtistsCompleteNotice() {
-	<div id="load-more-artists" data-merge-mode="morph">
+	<div id="load-more-artists">
 		<p class="text-sm text-success">✓ All waiting artists shown</p>
 	</div>
 }

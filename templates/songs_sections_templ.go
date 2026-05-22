@@ -32,7 +32,7 @@ func SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCo
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"songs-sections\" data-merge-mode=\"morph\" class=\"space-y-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"songs-sections\" class=\"space-y-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -78,7 +78,7 @@ func CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) te
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"songs-current-playlist-section\" data-merge-mode=\"morph\" class=\"collapse collapse-arrow border bg-success/10 border-success\"><input type=\"checkbox\" checked aria-label=\"Toggle current playlist section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-success\">Current Playlist</span> <span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"songs-current-playlist-section\" class=\"collapse collapse-arrow border bg-success/10 border-success\"><input type=\"checkbox\" checked aria-label=\"Toggle current playlist section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-success\">Current Playlist</span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

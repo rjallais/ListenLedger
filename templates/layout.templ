@@ -6,7 +6,7 @@ templ Layout(title string, activeNav string) {
 	<html
 		lang="en"
 		data-theme="night"
-		data-signals:theme="localStorage.getItem('theme') || 'night'"
+		data-signals="{theme: localStorage.getItem('theme') || 'night'}"
 		data-attr:data-theme="$theme"
 		data-effect="localStorage.setItem('theme', $theme)"
 	>
@@ -110,6 +110,7 @@ templ ThemeSwitcher() {
 // ThemeButton renders a single theme button
 templ ThemeButton(theme Theme) {
 	<button
+		type="button"
 		class="btn btn-sm btn-ghost justify-start gap-2 theme-option"
 		data-theme={ theme.Value }
 		data-on:click={ "$theme = '" + theme.Value + "'" }
@@ -145,6 +146,7 @@ templ QueueJobsWidget() {
 			F:<span data-text="$jobsFailed">0</span>
 		</span>
 		<button
+			type="button"
 			class="btn btn-xs btn-warning"
 			title="Force retries until queued and failed are zero"
 			data-on:click="if ($forceRetry) { $forceRetry = false } else { $forceRetry = true; @post('/api/queue/retry') } @get('/api/queue')"

@@ -4,7 +4,7 @@ import "fmt"
 
 // SongsSections renders all three tier sections and can be morphed via Datastar.
 templ SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount int, playlistSort string) {
-	<div id="songs-sections" data-merge-mode="morph" class="space-y-4">
+	<div id="songs-sections" class="space-y-4">
 		@CurrentPlaylistSection(currentPlaylistSongs, playlistSort)
 		@SongWaitingRemovalSection(waitingRemovalSongs, playlistSort)
 		@SongNotRecentSection(notRecentCount, playlistSort)
@@ -13,7 +13,7 @@ templ SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentC
 
 // CurrentPlaylistSection renders the top playlist section and sort controls.
 templ CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) {
-	<div id="songs-current-playlist-section" data-merge-mode="morph" class="collapse collapse-arrow border bg-success/10 border-success">
+	<div id="songs-current-playlist-section" class="collapse collapse-arrow border bg-success/10 border-success">
 		<input type="checkbox" checked aria-label="Toggle current playlist section"/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-success">Current Playlist</span>

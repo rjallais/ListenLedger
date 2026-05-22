@@ -324,7 +324,32 @@ type artistStatusUpdateParams struct {
 
 func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
 	if isWaitingListStatusTransition(params.OldStatus, params.NewStatus) {
-		return renderDatastar(params.Event, templates.ArtistStatusTransition(params.OldStatus, params.Artist, params.CurrentGenre))
+		sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
+
+		// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
+		var removeID string
+		if params.OldStatus == waitingArtistStatus {
+			removeID = templates.ArtistCardID(params.Artist.ID)
+		} else {
+			removeID = templates.ArtistRowID(params.Artist.ID)
+		}
+		if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
+			return err
+		}
+
+		// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
+		if params.NewStatus == waitingArtistStatus {
+			if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
+				return err
+			}
+		} else if params.Artist.GenreGroup == params.CurrentGenre {
+			targetID := templates.ArtistsTBodyID(params.CurrentGenre)
+			if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	if params.NewStatus == waitingArtistStatus {

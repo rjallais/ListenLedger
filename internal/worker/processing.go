@@ -67,7 +67,7 @@ func (w *Worker) runProviderPreflight(ctx context.Context, provider spotify.Prov
 	if result, ok := w.checkLocalProviderPreflight(provider, env); ok {
 		return result, true
 	}
-	if result, ok := w.checkApifyPreflight(ctx, env); ok {
+	if result, ok := w.checkApifyPreflight(ctx, provider, env); ok {
 		return result, true
 	}
 	return msgResult(0), false
@@ -118,7 +118,10 @@ func (w *Worker) checkLocalProviderHealth(msg jetstream.Msg, label string) (msgR
 // expensive Actor run. If budget or memory is insufficient the message is
 // NAK-ed immediately so another provider (or a future restart) can handle it,
 // saving credits and avoiding a guaranteed HTTP 402.
-func (w *Worker) checkApifyPreflight(ctx context.Context, env msgEnvelope) (msgResult, bool) {
+func (w *Worker) checkApifyPreflight(ctx context.Context, provider spotify.Provider, env msgEnvelope) (msgResult, bool) {
+	if provider != spotify.ProviderApify {
+		return msgOK, false
+	}
 	checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer checkCancel()
 	info := w.quota.CheckApify(checkCtx)

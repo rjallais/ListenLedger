@@ -30,7 +30,7 @@ func AddArtistModal(currentGenre string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 class=\"font-bold text-lg\">Add New Artist</h3><label for=\"add-artist-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"add-artist-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"add-artist-title\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h3 id=\"add-artist-title\" class=\"font-bold text-lg\">Add New Artist</h3><label for=\"add-artist-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-artist-form\" data-on:submit=\"evt.preventDefault(); @post('/api/artists', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -116,7 +116,7 @@ func AddArtistSpotifyIDField() templ.Component {
 			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"spotify-id\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <input id=\"spotify-id\" type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" required></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"spotify-id\"><span class=\"label-text\">Artist ID (Spotify ID) *</span></label> <input id=\"spotify-id\" type=\"text\" name=\"spotify_id\" placeholder=\"e.g., 0L8ExT028jH3ddEcZwqJJ5\" class=\"input input-bordered w-full font-mono\" pattern=\"^[A-Za-z0-9]{22}$\" minlength=\"22\" maxlength=\"22\" title=\"Spotify ID must be exactly 22 alphanumeric characters.\" required></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -288,7 +288,7 @@ func SelectOption(option selectOption) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(option.Value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 133, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 137, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -311,7 +311,7 @@ func SelectOption(option selectOption) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(option.Label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 133, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 137, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -346,53 +346,20 @@ func AddArtistSuccessNotice(artistName string) templ.Component {
 			templ_7745c5c3_Var11 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<div id=\"add-artist-feedback\" class=\"mt-2\" data-merge-mode=\"morph\"><div class=\"alert alert-success\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-5 w-5\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M5 13l4 4L19 7\"></path></svg><div class=\"flex-1\"><p class=\"font-semibold\">Artist added</p><p class=\"text-xs\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<div id=\"add-artist-feedback\" class=\"mt-2\"><div class=\"alert alert-success\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-5 w-5\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M5 13l4 4L19 7\"></path></svg><div class=\"flex-1\"><p class=\"font-semibold\">Artist added</p><p class=\"text-xs\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var12 string
 		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(artistName)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 144, Col: 35}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/artists_modal.templ`, Line: 148, Col: 35}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</p></div><label for=\"add-artist-modal\" class=\"btn btn-success btn-sm\">Close</label></div></div>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		return nil
-	})
-}
-
-func NewArtistCreateResponse(artist Artist) templ.Component {
-	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
-			return templ_7745c5c3_CtxErr
-		}
-		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-		if !templ_7745c5c3_IsBuffer {
-			defer func() {
-				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err == nil {
-					templ_7745c5c3_Err = templ_7745c5c3_BufErr
-				}
-			}()
-		}
-		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var13 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var13 == nil {
-			templ_7745c5c3_Var13 = templ.NopComponent
-		}
-		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = NewArtistRow(artist).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = AddArtistSuccessNotice(artist.Name).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
