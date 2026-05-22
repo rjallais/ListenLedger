@@ -334,18 +334,20 @@ func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
 			removeID = templates.ArtistRowID(params.Artist.ID)
 		}
 		if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
-			return err
+			return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
 		}
 
 		// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
 		if params.NewStatus == waitingArtistStatus {
 			if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
-				return err
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
 			}
 		} else if params.Artist.GenreGroup == params.CurrentGenre {
 			targetID := templates.ArtistsTBodyID(params.CurrentGenre)
 			if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
-				return err
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
+			}
+		}
 			}
 		}
 

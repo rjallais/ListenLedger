@@ -138,9 +138,9 @@ type scrapePublishParams struct {
 	Subject   string
 }
 
-// PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
+ // PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
 func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID string) (*jetstream.PubAck, error) {
-	return PublishScrapeRequestedToSubject(ctx, scrapePublishParams{
+	return publishScrapeRequestedToSubject(ctx, scrapePublishParams{
 		JetStream: js,
 		Request:   req,
 		MsgID:     msgID,
@@ -148,8 +148,8 @@ func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req Scr
 	})
 }
 
-// PublishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
-func PublishScrapeRequestedToSubject(ctx context.Context, params scrapePublishParams) (*jetstream.PubAck, error) {
+ // publishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
+func publishScrapeRequestedToSubject(ctx context.Context, params scrapePublishParams) (*jetstream.PubAck, error) {
 	data, err := MarshalScrapeRequested(params.Request)
 	if err != nil {
 		return nil, fmt.Errorf("marshal scrape request failed: %w", err)
