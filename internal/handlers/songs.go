@@ -46,13 +46,6 @@ func songReleaseNameFromRecord(record *core.Record) string {
 		return releaseName
 	}
 
-	// Legacy seed/import flows may omit album; fall back to title so the
-	// release column remains meaningful instead of empty.
-	releaseName = strings.TrimSpace(record.GetString("title"))
-	if releaseName != "" {
-		return releaseName
-	}
-
 	return "—"
 }
 

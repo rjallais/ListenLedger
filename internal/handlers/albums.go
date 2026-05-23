@@ -47,8 +47,11 @@ type albumCreateInput struct {
 
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
-	e.Response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	return e.FileFS(os.DirFS(h.staticDir), path)
+	e.Response.Header().Set("Cache-Control", "public, max-age=3600")
+	if err := e.FileFS(os.DirFS(h.staticDir), path); err != nil {
+		return fmt.Errorf("serve static file %q: %w", path, err)
+	}
+	return nil
 }
 
 func (h *Handler) handleIndex(e *core.RequestEvent) error {
@@ -57,7 +60,10 @@ func (h *Handler) handleIndex(e *core.RequestEvent) error {
 
 func (h *Handler) handleRobots(e *core.RequestEvent) error {
 	e.Response.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	return e.String(http.StatusOK, "User-agent: *\nAllow: /\n")
+	if err := e.String(http.StatusOK, "User-agent: *\nAllow: /\n"); err != nil {
+		return fmt.Errorf("write robots.txt response: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) handleAlbums(e *core.RequestEvent) error {

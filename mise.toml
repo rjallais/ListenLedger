@@ -8,6 +8,7 @@ go = "1.26.3"
 # Use Nushell as the default shell for all inline tasks (cross-platform)
 unix_default_inline_shell_args = "nu -c"
 windows_default_inline_shell_args = "nu -c"
+npm.package_manager = "aube"
 
 [env]
 # Go experiment flag for jsonv2 support
