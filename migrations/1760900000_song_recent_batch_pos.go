@@ -97,10 +97,7 @@ func backfillSongRecentBatchPos(app core.App) error {
 		})
 
 		for idx, entry := range entries {
-			targetPos := idx + 1
-			if targetPos > songsBatchSize {
-				targetPos = songsBatchSize
-			}
+			targetPos := min(idx+1, songsBatchSize)
 
 			if entry.record.GetInt("recent_batch_pos") == targetPos && entry.record.GetInt("recent_batch_seq") == seq {
 				continue

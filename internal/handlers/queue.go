@@ -235,10 +235,7 @@ func (h *Handler) collectRetryCandidates(ctx context.Context, limit int) ([]*cor
 		return nil, fmt.Errorf("query failed jobs: %w", err)
 	}
 
-	remaining := limit - len(failedRecords)
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(limit-len(failedRecords), 0)
 
 	queuedRecords, err := h.scrapeJobsByStatus(ctx, "queued", remaining)
 	if err != nil {

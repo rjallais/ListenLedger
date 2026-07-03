@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.26.3"
+go = "1.26.4"
 
 [settings]
 # Use Nushell as the default shell for all inline tasks (cross-platform)

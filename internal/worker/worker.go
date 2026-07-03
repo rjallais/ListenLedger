@@ -249,10 +249,7 @@ func (w *Worker) resolveJetStreamTuning() {
 
 	ackWait := w.cfg.ScrapeAckWait
 	if ackWait <= 0 {
-		ackWait = 2 * w.maxFetchTimeout()
-		if ackWait < 2*time.Minute {
-			ackWait = 2 * time.Minute
-		}
+		ackWait = max(2*w.maxFetchTimeout(), 2*time.Minute)
 		for _, d := range backoff {
 			if d > ackWait {
 				ackWait = d
@@ -265,10 +262,7 @@ func (w *Worker) resolveJetStreamTuning() {
 	if progress <= 0 {
 		progress = 20 * time.Second
 	}
-	maxProgress := ackWait / 2
-	if maxProgress < time.Second {
-		maxProgress = time.Second
-	}
+	maxProgress := max(ackWait/2, time.Second)
 	if progress > maxProgress {
 		progress = maxProgress
 	}
@@ -320,10 +314,7 @@ func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.C
 	}
 	if info.Config.AckWait > 0 {
 		w.ackWait = info.Config.AckWait
-		mp := w.ackWait / 2
-		if mp < time.Second {
-			mp = time.Second
-		}
+		mp := max(w.ackWait/2, time.Second)
 		if w.progress > mp {
 			w.progress = mp
 		}

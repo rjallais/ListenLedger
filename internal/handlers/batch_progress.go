@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"log"
+	"maps"
 	"strconv"
 	"time"
 
@@ -116,9 +117,7 @@ func (h *Handler) createBatchProgress(artistIDs []string, stats map[string]int) 
 	}
 
 	snapshotStats := make(map[string]int, len(stats))
-	for key, value := range stats {
-		snapshotStats[key] = value
-	}
+	maps.Copy(snapshotStats, stats)
 
 	batchID := strconv.FormatInt(now.UnixNano(), 36)
 	progress := &batchProgress{
@@ -247,9 +246,7 @@ func (h *Handler) batchSnapshotLocked(batch *batchProgress) batchProgressSnapsho
 	}
 
 	stats := make(map[string]int, len(batch.Stats))
-	for key, value := range batch.Stats {
-		stats[key] = value
-	}
+	maps.Copy(stats, batch.Stats)
 
 	done := batch.Done || (batch.Total > 0 && batch.Completed >= batch.Total)
 

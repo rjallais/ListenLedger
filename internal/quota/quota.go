@@ -115,6 +115,10 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 		results["local"] = c.CheckLocalHeadless()
 	}
 
+	if c.cfg.HasLocalBrowserless() {
+		results["local-browserless"] = c.CheckLocalBrowserless()
+	}
+
 	if c.cfg.HasScrapingAnt() {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
 	}
@@ -149,7 +153,23 @@ func (c *Checker) CheckLocalHeadless() Info {
 	return Info{
 		Provider:  "local",
 		Available: true,
-		Error:     fmt.Sprintf("Local headless enabled (concurrency %d); no external quota", c.cfg.LocalConcurrency),
+	}
+}
+
+// CheckLocalBrowserless checks whether self-hosted Browserless scraping is available.
+// Local Browserless has no external quota — it is always available when enabled.
+func (c *Checker) CheckLocalBrowserless() Info {
+	if !c.cfg.HasLocalBrowserless() {
+		return Info{
+			Provider:  "local-browserless",
+			Available: false,
+			Error:     "Local browserless not enabled",
+		}
+	}
+
+	return Info{
+		Provider:  "local-browserless",
+		Available: true,
 	}
 }
 
@@ -305,10 +325,7 @@ func (c *Checker) parseScraperAPIResponse(resp *http.Response) Info {
 		}
 	}
 
-	remaining := acct.RequestLimit - acct.RequestCount
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(acct.RequestLimit-acct.RequestCount, 0)
 
 	available := remaining > 0 || acct.RequestLimit == 0
 
@@ -412,10 +429,7 @@ func classifyApifyAvailability(limitsResp ApifyLimitsResponse, apifyMemoryMB int
 
 	usedCents := int(math.Round(usedUSD * 100))
 	maxCents := int(math.Round(maxUSD * 100))
-	remainingCents := maxCents - usedCents
-	if remainingCents < 0 {
-		remainingCents = 0
-	}
+	remainingCents := max(maxCents-usedCents, 0)
 
 	budgetAvailable := remainingCents > 0 || maxCents == 0
 
@@ -503,7 +517,7 @@ func GetBestFrom(quotas map[string]Info) string {
 	return ""
 }
 
-var providerPriority = []string{"local", "scrapingant", "scraperapi", "apify", "browserless"}
+var providerPriority = []string{"local", "local-browserless", "scrapingant", "scraperapi", "apify", "browserless"}
 
 func isProviderReady(name string, q Info) bool {
 	if !q.Available {

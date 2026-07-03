@@ -605,10 +605,7 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 
 func updateArtistCollectionSongs(record *core.Record, delta int) {
 	currentCount := record.GetInt("collection_songs")
-	nextCount := currentCount + delta
-	if nextCount < 0 {
-		nextCount = 0
-	}
+	nextCount := max(currentCount+delta, 0)
 
 	record.Set("collection_songs", nextCount)
 }

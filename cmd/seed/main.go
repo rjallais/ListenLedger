@@ -153,6 +153,29 @@ func (cfg albumSeedConfig) seedAlbumRow(ctx context.Context, row []string) int {
 	totalSongs := parseNumber(row[3])
 	status := determineAlbumStatus(collectionSongs, totalSongs)
 
+	existing, err := findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, title, artistName)
+	if err != nil {
+		log.Printf("[seed] Warning: lookup failed for album %q by %q: %v", title, artistName, err)
+		return 0
+	}
+
+	if existing != nil {
+		existing.Set("collection_songs", collectionSongs)
+		existing.Set("total_songs", totalSongs)
+		existing.Set("status", status)
+
+		if cfg.dryRun {
+			log.Printf("[seed] Would update album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
+			return 1
+		}
+
+		if err := cfg.app.SaveWithContext(ctx, existing); err != nil {
+			log.Printf("[seed] Warning: failed to update album %q: %v", title, err)
+			return 0
+		}
+		return 1
+	}
+
 	if cfg.dryRun {
 		log.Printf("[seed] Would create album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
 		return 1
@@ -250,6 +273,33 @@ func (c *seedContext) seedArtistGenreGroup(ctx context.Context, row []string, co
 	}
 	collectionSongs := parseNumber(row[cols.CollectionSongs])
 	totalSongs := parseNumber(row[cols.TotalSongs])
+
+	existing, err := findArtistBySpotifyID(ctx, c.app, c.collection, spotifyID)
+	if err != nil {
+		log.Printf("[seed] Warning: lookup failed for artist %q (%s): %v", name, spotifyID, err)
+		return
+	}
+
+	if existing != nil {
+		existing.Set("monthly_listeners", listeners)
+		existing.Set("collection_songs", collectionSongs)
+		existing.Set("total_songs", totalSongs)
+
+		if c.dryRun {
+			log.Printf("[seed] Would update %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
+			c.seen[spotifyID] = true
+			c.incrementGenreCount(genreGroup)
+			return
+		}
+
+		if err := c.app.SaveWithContext(ctx, existing); err != nil {
+			log.Printf("[seed] Warning: failed to update %s artist %q: %v", genreGroup, name, err)
+			return
+		}
+		c.seen[spotifyID] = true
+		c.incrementGenreCount(genreGroup)
+		return
+	}
 
 	if c.dryRun {
 		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
@@ -374,6 +424,30 @@ func (cfg sheet2Config) seedSongRow(ctx context.Context, row []string, added map
 		return 0
 	}
 
+	existing, err := findRecordByTitleAndArtist(ctx, cfg.app, cfg.songsCollection, songTitle, artistName)
+	if err != nil {
+		log.Printf("[seed] Warning: lookup failed for song %q by %q: %v", songTitle, artistName, err)
+		return 0
+	}
+
+	if existing != nil {
+		existing.Set("release_date", releaseDate)
+		existing.Set("is_recent", true)
+
+		if cfg.dryRun {
+			log.Printf("[seed] Would update song: %q by %q (%s)", songTitle, artistName, releaseDate)
+			added[songTitle+"|"+artistName] = true
+			return 1
+		}
+
+		if err := cfg.app.SaveWithContext(ctx, existing); err != nil {
+			log.Printf("[seed] Warning: failed to update song %q: %v", songTitle, err)
+			return 0
+		}
+		added[songTitle+"|"+artistName] = true
+		return 1
+	}
+
 	if cfg.dryRun {
 		log.Printf("[seed] Would create song: %q by %q (%s)", songTitle, artistName, releaseDate)
 		added[songTitle+"|"+artistName] = true
@@ -423,11 +497,28 @@ func findArtistBySpotifyID(ctx context.Context, app *pocketbase.PocketBase, coll
 	err := app.RecordQuery(collection.Id).
 		WithContext(ctx).
 		AndWhere(dbx.NewExp("spotify_id = {:spotifyId}", dbx.Params{"spotifyId": spotifyID})).
-		OrderBy("created DESC").
+		OrderBy("id DESC").
 		Limit(1).
 		All(&records)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find artist by spotify id %s in collection %s: %w", spotifyID, collection.Id, err)
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return records[0], nil
+}
+
+func findRecordByTitleAndArtist(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, title, artistName string) (*core.Record, error) {
+	records := make([]*core.Record, 0)
+	err := app.RecordQuery(collection.Id).
+		WithContext(ctx).
+		AndWhere(dbx.NewExp("title = {:title} AND artist_name = {:artistName}", dbx.Params{"title": title, "artistName": artistName})).
+		OrderBy("created DESC").
+		Limit(1).
+		All(&records)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find record by title %q and artist %q in collection %s: %w", title, artistName, collection.Id, err)
 	}
 	if len(records) == 0 {
 		return nil, nil

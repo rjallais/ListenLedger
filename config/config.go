@@ -90,6 +90,8 @@ type Config struct {
 
 	LocalHeadlessEnabled  bool
 	LocalIgnoreCertErrors bool
+
+	RecentBatchWindow time.Duration
 }
 
 // DefaultConfig returns a Config populated with sensible defaults for external providers,
@@ -166,6 +168,8 @@ func DefaultConfig() *Config {
 		ScrapeBackOff:            []time.Duration{10 * time.Second, 30 * time.Second, 2 * time.Minute},
 		ScrapeAckWait:            0, // computed dynamically if zero
 		ScrapeInProgressInterval: 20 * time.Second,
+
+		RecentBatchWindow: 13 * 24 * time.Hour,
 	}
 }
 
@@ -317,6 +321,17 @@ func (c *Config) loadSharedConfig() {
 	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
 		if logVal, err := strconv.ParseBool(logStr); err == nil {
 			c.LogSuccessfulFetches = logVal
+		}
+	}
+	ageStr := os.Getenv("MINIMUM_RELEASE_AGE")
+	if ageStr == "" {
+		ageStr = os.Getenv("RECENT_BATCH_WINDOW")
+	}
+	if ageStr != "" {
+		if d, err := time.ParseDuration(ageStr); err == nil && d >= 0 {
+			c.RecentBatchWindow = d
+		} else {
+			log.Printf("[config] invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW value %q, using default", ageStr)
 		}
 	}
 }

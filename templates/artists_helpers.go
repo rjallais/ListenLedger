@@ -201,17 +201,11 @@ func paginationURL(genre string, page int) string {
 }
 
 func paginationRange(current, total int) []int {
-	start := current - 2
-	if start < 1 {
-		start = 1
-	}
+	start := max(current-2, 1)
 	end := start + 4
 	if end > total {
 		end = total
-		start = end - 4
-		if start < 1 {
-			start = 1
-		}
+		start = max(end-4, 1)
 	}
 
 	var pages []int

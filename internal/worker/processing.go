@@ -300,10 +300,7 @@ func (w *Worker) retryDelay(meta *jetstream.MsgMetadata) time.Duration {
 		return w.backoff[0]
 	}
 
-	idx := int(meta.NumDelivered) - 1
-	if idx < 0 {
-		idx = 0
-	}
+	idx := max(int(meta.NumDelivered)-1, 0)
 	if idx >= len(w.backoff) {
 		idx = len(w.backoff) - 1
 	}

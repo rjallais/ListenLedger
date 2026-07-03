@@ -229,10 +229,7 @@ func (s *Service) fetchAllBatch(ctx context.Context, artistIDs []string, bf spot
 			break
 		}
 
-		end := i + batchSize
-		if end > len(artistIDs) {
-			end = len(artistIDs)
-		}
+		end := min(i+batchSize, len(artistIDs))
 		batch := artistIDs[i:end]
 
 		log.Printf("[fetcher] apify batch %d–%d of %d", i+1, end, len(artistIDs))

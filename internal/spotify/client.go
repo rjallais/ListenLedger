@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,10 +201,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		Timeout:   cfg.HTTPTimeout,
 	}
 
-	scraperAPITimeout := cfg.HTTPTimeout
-	if scraperAPITimeout < 180*time.Second {
-		scraperAPITimeout = 180 * time.Second
-	}
+	scraperAPITimeout := max(cfg.HTTPTimeout, 180*time.Second)
 	httpClientScraperAPI := &http.Client{
 		Transport: transport,
 		Timeout:   scraperAPITimeout,
@@ -222,10 +220,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	// Local Browserless HTTP client. The worker context timeout
 	// (ProviderLocalBrowserless) controls the effective deadline;
 	// this client timeout is just a safety net.
-	localBrowserlessTimeout := cfg.HTTPTimeout
-	if localBrowserlessTimeout > 60*time.Second {
-		localBrowserlessTimeout = 60 * time.Second
-	}
+	localBrowserlessTimeout := min(cfg.HTTPTimeout, 60*time.Second)
 	if localBrowserlessTimeout < 30*time.Second {
 		localBrowserlessTimeout = 30 * time.Second
 	}
@@ -575,10 +570,8 @@ func (c *Client) fetchViaLocalBrowserless(ctx context.Context, artistID string) 
 }
 
 func checkProviderHTTPStatus(resp *http.Response, provider string, quotaCodes ...int) error {
-	for _, code := range quotaCodes {
-		if resp.StatusCode == code {
-			return fmt.Errorf("%s billing/quota failure (status %d): %w", provider, resp.StatusCode, ErrQuotaExhausted)
-		}
+	if slices.Contains(quotaCodes, resp.StatusCode) {
+		return fmt.Errorf("%s billing/quota failure (status %d): %w", provider, resp.StatusCode, ErrQuotaExhausted)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:

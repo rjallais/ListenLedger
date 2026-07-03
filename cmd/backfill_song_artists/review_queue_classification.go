@@ -4,6 +4,7 @@ package main
 
 import (
 	"math"
+	"slices"
 	"strconv"
 
 	"ListenLedger/internal/songbackfill"
@@ -182,12 +183,7 @@ func isMatchingSelectedCandidate(candidate songbackfill.CandidateSummary, select
 }
 
 func hasNote(notes []string, target string) bool {
-	for _, note := range notes {
-		if note == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(notes, target)
 }
 
 func hasTidalCandidate(candidates []songbackfill.CandidateSummary) bool {

@@ -45,11 +45,11 @@ type apifyDatasetItem struct {
 		ErrorMessages []string `json:"errorMessages,omitzero"`
 	} `json:"#debug,omitzero"`
 
-	URL                  string `json:"url"`
-	MonthlyListenersRaw  string `json:"monthlyListenersRaw,omitzero"`
-	Error                string `json:"error,omitzero"`
-	MonthlyListeners     *int   `json:"monthlyListeners,omitzero"`
-	IsError              bool   `json:"#error,omitzero"`
+	URL                 string `json:"url"`
+	MonthlyListenersRaw string `json:"monthlyListenersRaw,omitzero"`
+	Error               string `json:"error,omitzero"`
+	MonthlyListeners    *int   `json:"monthlyListeners,omitzero"`
+	IsError             bool   `json:"#error,omitzero"`
 }
 
 type apifyRunResponse []apifyDatasetItem
@@ -77,11 +77,11 @@ func (c *Client) fetchViaApify(ctx context.Context, artistID string) (int, error
 	}
 
 	endpoint := buildApifyEndpoint(apifyEndpointParams{
-		BaseEndpoint:    c.config.ApifyEndpoint,
-		ActorID:         c.config.ApifyActorID,
-		Token:           c.config.ApifyToken,
-		MemoryMB:        c.config.ApifyMemoryMB,
-		TimeoutSeconds:  90,
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: 90,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
@@ -191,11 +191,11 @@ func (c *Client) FetchApifyBatch(ctx context.Context, artistIDs []string) (map[s
 	}
 
 	endpoint := buildApifyEndpoint(apifyEndpointParams{
-		BaseEndpoint:    c.config.ApifyEndpoint,
-		ActorID:         c.config.ApifyActorID,
-		Token:           c.config.ApifyToken,
-		MemoryMB:        c.config.ApifyMemoryMB,
-		TimeoutSeconds:  tuning.TimeoutSeconds,
+		BaseEndpoint:   c.config.ApifyEndpoint,
+		ActorID:        c.config.ApifyActorID,
+		Token:          c.config.ApifyToken,
+		MemoryMB:       c.config.ApifyMemoryMB,
+		TimeoutSeconds: tuning.TimeoutSeconds,
 	})
 
 	maxConc := input.MaxConcurrency
@@ -250,10 +250,7 @@ func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, apifyB
 		maxConc = len(artistIDs)
 	}
 
-	actorTimeoutSec := len(artistIDs)*15 + 30
-	if actorTimeoutSec > 290 {
-		actorTimeoutSec = 290
-	}
+	actorTimeoutSec := min(len(artistIDs)*15+30, 290)
 
 	input := apifyRunInput{
 		StartURLs:             startURLs,
@@ -349,11 +346,11 @@ func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 }
 
 type apifyEndpointParams struct {
-	BaseEndpoint    string
-	ActorID         string
-	Token           string
-	MemoryMB        int
-	TimeoutSeconds  int
+	BaseEndpoint   string
+	ActorID        string
+	Token          string
+	MemoryMB       int
+	TimeoutSeconds int
 }
 
 func buildApifyEndpoint(p apifyEndpointParams) string {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -127,10 +128,10 @@ func classifyResolutionHint(resolution songbackfill.Resolution) resolutionHints 
 
 func prioritizeSongsForRetry(songs []songbackfill.SongInput, hints map[string]resolutionHints) []songbackfill.SongInput {
 	type prioritizedSong struct {
-		song          songbackfill.SongInput
-		priority      int
+		song           songbackfill.SongInput
+		priority       int
 		previouslySeen bool
-		retryEligible bool
+		retryEligible  bool
 	}
 
 	prioritized := make([]prioritizedSong, 0, len(songs))
@@ -141,10 +142,10 @@ func prioritizeSongsForRetry(songs []songbackfill.SongInput, hints map[string]re
 			continue
 		}
 		prioritized = append(prioritized, prioritizedSong{
-			song:          song,
-			priority:      hint.Priority,
+			song:           song,
+			priority:       hint.Priority,
 			previouslySeen: true,
-			retryEligible: hint.RetryEligible,
+			retryEligible:  hint.RetryEligible,
 		})
 	}
 
@@ -184,19 +185,14 @@ func sanitizeStoredArtistName(value string) string {
 
 	value = trailingDotEllipsisPattern.ReplaceAllString(value, ", ...")
 	value = strings.Join(strings.Fields(value), " ")
-	if strings.HasSuffix(value, ", ....") {
-		value = strings.TrimSuffix(value, ", ....") + ", ..."
+	if before, ok := strings.CutSuffix(value, ", ...."); ok {
+		value = before + ", ..."
 	}
 	return value
 }
 
 func containsResolutionNote(notes []string, target string) bool {
-	for _, note := range notes {
-		if note == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(notes, target)
 }
 
 func selectCandidateArtistNames(resolution songbackfill.Resolution) []string {
