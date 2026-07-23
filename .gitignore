@@ -58,3 +58,6 @@ tools/count.txt
 cmd/lookup_artists/
 
 .mise.local.toml
+
+# Build artifacts
+ListenLedger.bin

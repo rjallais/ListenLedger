@@ -88,6 +88,10 @@ type Config struct {
 	ScraperAPIConcurrency  int
 	LocalConcurrency       int
 
+	// Browserbase (Stagehand) configuration
+	BrowserbaseAPIKey        string
+	BrowserbaseConcurrency   int
+
 	LocalHeadlessEnabled  bool
 	LocalIgnoreCertErrors bool
 
@@ -143,14 +147,25 @@ func DefaultConfig() *Config {
 		LocalConcurrency:     4,
 
 		// Local Browserless (self-hosted) defaults.
-		// Use the open-source Browserless v2 REST content API over IPv4 loopback:
-		// podman often publishes only 127.0.0.1, while "localhost" may resolve to ::1.
-		// Match the token used by the bundled `mise browserless:up` task. Users
-		// running a custom local container can override with
-		// LOCAL_BROWSERLESS_TOKEN or clear it explicitly.
+		// Use the open-source Browserless v2 REST content API. This works for
+		// a local podman container, a GCP Cloud Run deployment, or any other
+		// self-hosted Browserless v2 instance reachable over the network.
+		//
+		// Default IPv4 loopback for a local container: podman often publishes
+		// only 127.0.0.1, while "localhost" may resolve to ::1.
+		//
+		// Token matches the bundled `mise browserless:up` task. Users running
+		// a custom container (local or cloud) override with LOCAL_BROWSERLESS_TOKEN.
+		//
+		// Enabled by default — when the endpoint is reachable this provider
+		// is ready to scrape. Set LOCAL_BROWSERLESS_ENABLED=false to disable.
+		LocalBrowserlessEnabled:     true,
 		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/content",
 		LocalBrowserlessToken:       "listenledger-local",
-		LocalBrowserlessConcurrency: 4,
+		LocalBrowserlessConcurrency: 5,
+
+		// Browserbase defaults
+		BrowserbaseConcurrency: 3,
 
 		// Shared defaults
 		MaxConcurrency:       1, // Shared external providers that still use MAX_CONCURRENCY.
@@ -183,6 +198,7 @@ func (c *Config) LoadFromEnv() error {
 	c.loadScrapingAntConfig()
 	c.loadScraperAPIConfig()
 	c.loadApifyConfig()
+	c.loadBrowserbaseConfig()
 	if err := c.loadLocalHeadlessConfig(); err != nil {
 		return err
 	}
@@ -302,15 +318,21 @@ func (c *Config) loadLocalBrowserlessConfig() error {
 	return nil
 }
 
+// loadBrowserbaseConfig reads Browserbase/Stagehand provider settings from env.
+func (c *Config) loadBrowserbaseConfig() {
+	if key, ok := os.LookupEnv("BROWSERBASE_API_KEY"); ok {
+		c.BrowserbaseAPIKey = key
+	}
+	if conc, ok := parsePositiveInt("BROWSERBASE_CONCURRENCY"); ok {
+		c.BrowserbaseConcurrency = conc
+	}
+}
+
 // loadSharedConfig reads shared provider behavior settings from env.
 func (c *Config) loadSharedConfig() {
-	if conc, ok := parsePositiveInt("MAX_CONCURRENCY"); ok {
-		c.MaxConcurrency = conc
-	}
-	if retriesStr := os.Getenv("MAX_RETRIES"); retriesStr != "" {
-		if retries, err := strconv.Atoi(retriesStr); err == nil && retries >= 0 {
-			c.MaxRetries = retries
-		}
+	c.loadConcurrencySettings()
+	if retries, ok := parseNonNegativeInt("MAX_RETRIES"); ok {
+		c.MaxRetries = retries
 	}
 	if n, ok := parsePositiveInt("MAX_IDLE_CONNS"); ok {
 		c.MaxIdleConns = n
@@ -318,22 +340,69 @@ func (c *Config) loadSharedConfig() {
 	if n, ok := parsePositiveInt("MAX_IDLE_CONNS_PER_HOST"); ok {
 		c.MaxIdleConnsPerHost = n
 	}
-	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
-		if logVal, err := strconv.ParseBool(logStr); err == nil {
-			c.LogSuccessfulFetches = logVal
-		}
+	if logVal, ok := parseBoolEnv("LOG_SUCCESSFUL_FETCHES"); ok {
+		c.LogSuccessfulFetches = logVal
 	}
+	c.loadRecentBatchWindow()
+}
+
+// loadConcurrencySettings reads MAX_CONCURRENCY and BROWSERBASE_CONCURRENCY from env.
+func (c *Config) loadConcurrencySettings() {
+	if conc, ok := parsePositiveInt("MAX_CONCURRENCY"); ok {
+		c.MaxConcurrency = conc
+	}
+}
+
+// loadRecentBatchWindow reads MINIMUM_RELEASE_AGE (falling back to
+// RECENT_BATCH_WINDOW) and logs a warning on invalid values.
+func (c *Config) loadRecentBatchWindow() {
 	ageStr := os.Getenv("MINIMUM_RELEASE_AGE")
 	if ageStr == "" {
 		ageStr = os.Getenv("RECENT_BATCH_WINDOW")
 	}
-	if ageStr != "" {
-		if d, err := time.ParseDuration(ageStr); err == nil && d >= 0 {
-			c.RecentBatchWindow = d
-		} else {
-			log.Printf("[config] invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW value %q, using default", ageStr)
-		}
+	if ageStr == "" {
+		return
 	}
+	if d, ok := parseNonNegDuration(ageStr); ok {
+		c.RecentBatchWindow = d
+	} else {
+		log.Printf("[config] invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW value %q, using default", ageStr)
+	}
+}
+
+// parseNonNegativeInt returns a non-negative int parsed from the named env var.
+func parseNonNegativeInt(name string) (int, bool) {
+	val := os.Getenv(name)
+	if val == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseBoolEnv returns a bool parsed from the named env var.
+func parseBoolEnv(name string) (bool, bool) {
+	val := os.Getenv(name)
+	if val == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(val)
+	if err != nil {
+		return false, false
+	}
+	return b, true
+}
+
+// parseNonNegDuration returns a non-negative duration parsed from s.
+func parseNonNegDuration(s string) (time.Duration, bool) {
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // loadJetStreamConfig reads JetStream scrape worker tuning from env.
@@ -406,6 +475,11 @@ func (c *Config) HasBrowserless() bool {
 	return c.BrowserlessToken != "" && c.BrowserlessEndpoint != ""
 }
 
+// HasBrowserbase returns true if Browserbase is configured.
+func (c *Config) HasBrowserbase() bool {
+	return c.BrowserbaseAPIKey != ""
+}
+
 // HasScrapingAnt returns true if ScrapingAnt is configured.
 func (c *Config) HasScrapingAnt() bool {
 	return c.ScrapingAntToken != "" && c.ScrapingAntEndpoint != ""
@@ -421,14 +495,22 @@ func (c *Config) HasApify() bool {
 	return c.ApifyToken != "" && c.ApifyEndpoint != "" && c.ApifyActorID != ""
 }
 
+// HasMobileSSR returns true if mobile SSR scraping is enabled.
+// Mobile SSR is always available when local headless is enabled (shares the same binary).
+func (c *Config) HasMobileSSR() bool {
+	return c.LocalHeadlessEnabled
+}
+
 // hasAnyProvider returns true if at least one scraping provider is configured.
 func (c *Config) hasAnyProvider() bool {
 	return c.HasLocalHeadless() ||
 		c.HasLocalBrowserless() ||
+		c.HasBrowserbase() ||
 		c.HasBrowserless() ||
 		c.HasScrapingAnt() ||
 		c.HasScraperAPI() ||
-		c.HasApify()
+		c.HasApify() ||
+		c.HasMobileSSR()
 }
 
 // Validate ensures the configuration is valid.
@@ -443,7 +525,15 @@ func (c *Config) Validate() error {
 		validatePositive("local concurrency", c.LocalConcurrency),
 		validatePositive("scraperapi concurrency", c.ScraperAPIConcurrency),
 		validateLocalBrowserlessConcurrency(c),
+		validateBrowserbaseConcurrency(c),
 	)
+}
+
+func validateBrowserbaseConcurrency(c *Config) error {
+	if c.HasBrowserbase() && c.BrowserbaseConcurrency <= 0 {
+		return errors.New("browserbase concurrency must be positive")
+	}
+	return nil
 }
 
 func validatePositive(name string, v int) error {

@@ -32,7 +32,9 @@ func appendProviderSlot(slots []providerSlot, enabled bool, provider spotify.Pro
 
 // providerSlots returns one entry per enabled provider with its concurrency.
 func (w *Worker) providerSlots() []providerSlot {
-	slots := make([]providerSlot, 0, 6)
+	slots := make([]providerSlot, 0, 7)
+	// Mobile SSR is always available — no tokens or config required.
+	slots = appendProviderSlot(slots, true, spotify.ProviderMobileSSR, 16)
 	slots = appendProviderSlot(slots, w.cfg.HasLocalHeadless(), spotify.ProviderLocalHeadless, w.cfg.LocalConcurrency)
 	slots = appendProviderSlot(slots, w.cfg.HasBrowserless(), spotify.ProviderBrowserless, w.cfg.BrowserlessConcurrency)
 	slots = appendProviderSlot(slots, w.cfg.HasScrapingAnt(), spotify.ProviderScrapingAnt, w.cfg.MaxConcurrency)
@@ -40,6 +42,7 @@ func (w *Worker) providerSlots() []providerSlot {
 	// Keep Apify provider processing single-flight at the worker level.
 	slots = appendProviderSlot(slots, w.cfg.HasApify(), spotify.ProviderApify, 1)
 	slots = appendProviderSlot(slots, w.cfg.HasLocalBrowserless(), spotify.ProviderLocalBrowserless, w.cfg.LocalBrowserlessConcurrency)
+	slots = appendProviderSlot(slots, w.cfg.HasBrowserbase(), spotify.ProviderBrowserbase, w.cfg.BrowserbaseConcurrency)
 	return slots
 }
 
@@ -227,21 +230,24 @@ func (w *Worker) providerLoop(g *providerGroup, slot int) {
 	}
 }
 
+// providerLabel maps a spotify.Provider to its messaging subject label via a
+// lookup table, avoiding a high-cyclomatic-complexity switch.
+var providerLabels = map[spotify.Provider]string{
+	spotify.ProviderLocalHeadless:     messaging.ScrapeProviderLocal,
+	spotify.ProviderBrowserless:       messaging.ScrapeProviderBrowserless,
+	spotify.ProviderScrapingAnt:       messaging.ScrapeProviderScrapingAnt,
+	spotify.ProviderScraperAPI:        messaging.ScrapeProviderScraperAPI,
+	spotify.ProviderApify:             messaging.ScrapeProviderApify,
+	spotify.ProviderLocalBrowserless:  messaging.ScrapeProviderLocalBrowserless,
+	spotify.ProviderBrowserbase:       messaging.ScrapeProviderBrowserbase,
+	spotify.ProviderMobileSSR:         messaging.ScrapeProviderMobileSSR,
+}
+
+// providerLabel returns the messaging subject label for the given provider, or
+// ScrapeProviderAny when the provider is unrecognised.
 func providerLabel(provider spotify.Provider) string {
-	switch provider {
-	case spotify.ProviderLocalHeadless:
-		return messaging.ScrapeProviderLocal
-	case spotify.ProviderBrowserless:
-		return messaging.ScrapeProviderBrowserless
-	case spotify.ProviderScrapingAnt:
-		return messaging.ScrapeProviderScrapingAnt
-	case spotify.ProviderScraperAPI:
-		return messaging.ScrapeProviderScraperAPI
-	case spotify.ProviderApify:
-		return messaging.ScrapeProviderApify
-	case spotify.ProviderLocalBrowserless:
-		return messaging.ScrapeProviderLocalBrowserless
-	default:
-		return messaging.ScrapeProviderAny
+	if label, ok := providerLabels[provider]; ok {
+		return label
 	}
+	return messaging.ScrapeProviderAny
 }

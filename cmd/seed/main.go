@@ -153,43 +153,76 @@ func (cfg albumSeedConfig) seedAlbumRow(ctx context.Context, row []string) int {
 	totalSongs := parseNumber(row[3])
 	status := determineAlbumStatus(collectionSongs, totalSongs)
 
-	existing, err := findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, title, artistName)
+	existing, err := cfg.findAlbumByTitleAndArtist(ctx, title, artistName)
 	if err != nil {
 		log.Printf("[seed] Warning: lookup failed for album %q by %q: %v", title, artistName, err)
 		return 0
 	}
 
-	if existing != nil {
-		existing.Set("collection_songs", collectionSongs)
-		existing.Set("total_songs", totalSongs)
-		existing.Set("status", status)
-
-		if cfg.dryRun {
-			log.Printf("[seed] Would update album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
-			return 1
-		}
-
-		if err := cfg.app.SaveWithContext(ctx, existing); err != nil {
-			log.Printf("[seed] Warning: failed to update album %q: %v", title, err)
-			return 0
-		}
-		return 1
+	albumFields := albumRowFields{
+		Title:          title,
+		ArtistName:     artistName,
+		CollectionSongs: collectionSongs,
+		TotalSongs:     totalSongs,
+		Status:         status,
 	}
 
+	if existing != nil {
+		return cfg.updateExistingAlbum(ctx, existing, albumFields)
+	}
+	return cfg.createNewAlbum(ctx, albumFields)
+}
+
+// albumRowFields carries the parsed fields for a seed album row.
+type albumRowFields struct {
+	Title          string
+	ArtistName     string
+	CollectionSongs int
+	TotalSongs     int
+	Status         string
+}
+
+// findAlbumByTitleAndArtist is a thin wrapper around findRecordByTitleAndArtist
+// that supplies cfg's app and collection, keeping the call sites below 5 args.
+func (cfg albumSeedConfig) findAlbumByTitleAndArtist(ctx context.Context, title, artistName string) (*core.Record, error) {
+	return findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, title, artistName)
+}
+
+// updateExistingAlbum sets fields on an existing album record and saves it (or
+// logs a dry-run message). Returns 1 on success or dry-run, 0 on save failure.
+func (cfg albumSeedConfig) updateExistingAlbum(ctx context.Context, existing *core.Record, f albumRowFields) int {
+	existing.Set("collection_songs", f.CollectionSongs)
+	existing.Set("total_songs", f.TotalSongs)
+	existing.Set("status", f.Status)
+
 	if cfg.dryRun {
-		log.Printf("[seed] Would create album: %q by %q (%d/%d, %s)", title, artistName, collectionSongs, totalSongs, status)
+		log.Printf("[seed] Would update album: %q by %q (%d/%d, %s)", f.Title, f.ArtistName, f.CollectionSongs, f.TotalSongs, f.Status)
+		return 1
+	}
+	if err := cfg.app.SaveWithContext(ctx, existing); err != nil {
+		log.Printf("[seed] Warning: failed to update album %q: %v", f.Title, err)
+		return 0
+	}
+	return 1
+}
+
+// createNewAlbum creates a new album record from f and saves it (or logs a
+// dry-run message). Returns 1 on success or dry-run, 0 on save failure.
+func (cfg albumSeedConfig) createNewAlbum(ctx context.Context, f albumRowFields) int {
+	if cfg.dryRun {
+		log.Printf("[seed] Would create album: %q by %q (%d/%d, %s)", f.Title, f.ArtistName, f.CollectionSongs, f.TotalSongs, f.Status)
 		return 1
 	}
 
 	record := core.NewRecord(cfg.collection)
-	record.Set("title", title)
-	record.Set("artist_name", artistName)
-	record.Set("collection_songs", collectionSongs)
-	record.Set("total_songs", totalSongs)
-	record.Set("status", status)
+	record.Set("title", f.Title)
+	record.Set("artist_name", f.ArtistName)
+	record.Set("collection_songs", f.CollectionSongs)
+	record.Set("total_songs", f.TotalSongs)
+	record.Set("status", f.Status)
 
 	if err := cfg.app.SaveWithContext(ctx, record); err != nil {
-		log.Printf("[seed] Warning: failed to save album %q: %v", title, err)
+		log.Printf("[seed] Warning: failed to save album %q: %v", f.Title, err)
 		return 0
 	}
 	return 1
@@ -280,50 +313,83 @@ func (c *seedContext) seedArtistGenreGroup(ctx context.Context, row []string, co
 		return
 	}
 
+	artistFields := artistRowFields{
+		Name:           name,
+		SpotifyID:      spotifyID,
+		Listeners:      listeners,
+		CollectionSongs: collectionSongs,
+		TotalSongs:     totalSongs,
+		GenreGroup:     genreGroup,
+	}
+
 	if existing != nil {
-		existing.Set("monthly_listeners", listeners)
-		existing.Set("collection_songs", collectionSongs)
-		existing.Set("total_songs", totalSongs)
+		c.updateExistingArtist(ctx, existing, artistFields)
+		return
+	}
+	c.createNewArtist(ctx, artistFields)
+}
 
-		if c.dryRun {
-			log.Printf("[seed] Would update %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
-			c.seen[spotifyID] = true
-			c.incrementGenreCount(genreGroup)
-			return
-		}
+// artistRowFields carries the parsed fields for a seed artist row.
+type artistRowFields struct {
+	Name           string
+	SpotifyID      string
+	Listeners      int
+	CollectionSongs int
+	TotalSongs     int
+	GenreGroup     string
+}
 
-		if err := c.app.SaveWithContext(ctx, existing); err != nil {
-			log.Printf("[seed] Warning: failed to update %s artist %q: %v", genreGroup, name, err)
-			return
-		}
-		c.seen[spotifyID] = true
-		c.incrementGenreCount(genreGroup)
+// markArtistSeen records the artist in the seen set and increments its genre
+// count, so subsequent rows for the same artist are skipped.
+func (c *seedContext) markArtistSeen(spotifyID, genreGroup string) {
+	c.seen[spotifyID] = true
+	c.incrementGenreCount(genreGroup)
+}
+
+// updateExistingArtist sets listener and song-count fields on an existing
+// artist record and saves it (or logs a dry-run message).
+func (c *seedContext) updateExistingArtist(ctx context.Context, existing *core.Record, f artistRowFields) {
+	existing.Set("monthly_listeners", f.Listeners)
+	existing.Set("collection_songs", f.CollectionSongs)
+	existing.Set("total_songs", f.TotalSongs)
+
+	if c.dryRun {
+		log.Printf("[seed] Would update %s artist: %q (%s, %d listeners)", f.GenreGroup, f.Name, f.SpotifyID, f.Listeners)
+		c.markArtistSeen(f.SpotifyID, f.GenreGroup)
 		return
 	}
 
+	if err := c.app.SaveWithContext(ctx, existing); err != nil {
+		log.Printf("[seed] Warning: failed to update %s artist %q: %v", f.GenreGroup, f.Name, err)
+		return
+	}
+	c.markArtistSeen(f.SpotifyID, f.GenreGroup)
+}
+
+// createNewArtist creates a new artist record from f and saves it (or logs a
+// dry-run message).
+func (c *seedContext) createNewArtist(ctx context.Context, f artistRowFields) {
 	if c.dryRun {
-		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", genreGroup, name, spotifyID, listeners)
-		c.seen[spotifyID] = true
-		c.incrementGenreCount(genreGroup)
+		log.Printf("[seed] Would create %s artist: %q (%s, %d listeners)", f.GenreGroup, f.Name, f.SpotifyID, f.Listeners)
+		c.markArtistSeen(f.SpotifyID, f.GenreGroup)
 		return
 	}
 
 	record := core.NewRecord(c.collection)
-	record.Set("name", name)
-	record.Set("spotify_id", spotifyID)
-	record.Set("monthly_listeners", listeners)
-	record.Set("genre_group", genreGroup)
+	record.Set("name", f.Name)
+	record.Set("spotify_id", f.SpotifyID)
+	record.Set("monthly_listeners", f.Listeners)
+	record.Set("genre_group", f.GenreGroup)
 	record.Set("list_status", "included")
 	record.Set("fetch_status", "idle")
-	record.Set("collection_songs", collectionSongs)
-	record.Set("total_songs", totalSongs)
+	record.Set("collection_songs", f.CollectionSongs)
+	record.Set("total_songs", f.TotalSongs)
 
 	if err := c.app.SaveWithContext(ctx, record); err != nil {
-		log.Printf("[seed] Warning: failed to save %s artist %q: %v", genreGroup, name, err)
+		log.Printf("[seed] Warning: failed to save %s artist %q: %v", f.GenreGroup, f.Name, err)
 		return
 	}
-	c.seen[spotifyID] = true
-	c.incrementGenreCount(genreGroup)
+	c.markArtistSeen(f.SpotifyID, f.GenreGroup)
 }
 
 type sheet2Config struct {

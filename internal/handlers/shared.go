@@ -63,7 +63,10 @@ func renderTempl(e *core.RequestEvent, component templ.Component) error {
 
 func renderDatastar(e *core.RequestEvent, c templ.Component, opts ...datastar.PatchElementOption) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	return sse.PatchElementTempl(c, opts...)
+	if err := sse.PatchElementTempl(c, opts...); err != nil {
+		return fmt.Errorf("patch element via datastar: %w", err)
+	}
+	return nil
 }
 
 func formatBatchSignal(id string, total, completed int, done bool) []byte {

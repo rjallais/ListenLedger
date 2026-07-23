@@ -20,6 +20,7 @@ func testConfig() *config.Config {
 	cfg := config.DefaultConfig()
 	// Disable everything by default; individual tests enable what they need.
 	cfg.LocalHeadlessEnabled = false
+	cfg.LocalBrowserlessEnabled = false
 	cfg.BrowserlessToken = ""
 	cfg.ScrapingAntToken = ""
 	cfg.ScraperAPIToken = ""

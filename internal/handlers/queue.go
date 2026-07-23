@@ -105,78 +105,82 @@ func (h *Handler) reconcileOrphanQueueState(ctx context.Context) (queueRetryStat
 }
 
 func (h *Handler) resetOrphanPendingArtists(ctx context.Context, stats *queueRetryStats) error {
-	records := make([]*core.Record, 0)
-	err := h.app.RecordQuery("artists").
-		WithContext(ctx).
-		AndWhere(dbx.NewExp(
-			"fetch_status = {:pending} AND id NOT IN (SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing}, {:failed}))",
-			dbx.Params{
-				"pending":    "pending",
-				"queued":     "queued",
-				"processing": "processing",
-				"failed":     "failed",
-			},
-		)).
-		Limit(500).
-		All(&records)
-	if err != nil {
-		return fmt.Errorf("query orphan pending artists: %w", err)
-	}
-	if len(records) == 500 {
-		log.Printf("[queue-retry] orphan pending reconciliation hit 500-record cap; remaining artists will be processed on next retry")
-	}
-
-	for _, record := range records {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		record.Set("fetch_status", "idle")
-		if err := h.app.SaveWithContext(ctx, record); err != nil {
-			return fmt.Errorf("reset orphan pending artist %s: %w", record.Id, err)
-		}
-		correlation.Clear(record.Id)
-		stats.OrphanPendingReset++
-	}
-
-	return nil
+	return h.reconcilePendingArtists(ctx, reconcileArtistsParams{
+		whereExp: "fetch_status = {:pending} AND id NOT IN (SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing}, {:failed}))",
+		params: dbx.Params{
+			"pending":    "pending",
+			"queued":     "queued",
+			"processing": "processing",
+			"failed":     "failed",
+		},
+		newStatus:    "idle",
+		queryErrFmt:  "query orphan pending artists: %w",
+		saveErrFmt:   "reset orphan pending artist %s: %w",
+		capLabel:     "orphan pending",
+		statCounter:  &stats.OrphanPendingReset,
+	})
 }
 
 func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetryStats) error {
+	return h.reconcilePendingArtists(ctx, reconcileArtistsParams{
+		whereExp: `fetch_status = {:pending}
+		 AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})
+		 AND id NOT IN (
+		   SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing})
+		 )`,
+		params: dbx.Params{
+			"pending":    "pending",
+			"failed":     "failed",
+			"queued":     "queued",
+			"processing": "processing",
+		},
+		newStatus:   "failed",
+		queryErrFmt: "query failed-job pending artists: %w",
+		saveErrFmt:  "mark failed-job artist %s failed: %w",
+		capLabel:    "failed-job",
+		statCounter: &stats.FailedArtistsMarked,
+	})
+}
+
+// reconcileArtistsParams configures a pending-artist reconciliation pass.
+type reconcileArtistsParams struct {
+	whereExp   string
+	params     dbx.Params
+	newStatus  string
+	queryErrFmt string
+	saveErrFmt string
+	capLabel   string
+	statCounter *int
+}
+
+// reconcilePendingArtists queries artists matching whereExp, sets their
+// fetch_status to newStatus, saves each record, clears correlation state, and
+// increments statCounter per record. It logs a warning when the 500-record cap
+// is hit so callers know remaining rows will be processed on the next retry.
+func (h *Handler) reconcilePendingArtists(ctx context.Context, p reconcileArtistsParams) error {
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
-		AndWhere(dbx.NewExp(
-			`fetch_status = {:pending}
-			 AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})
-			 AND id NOT IN (
-			   SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing})
-			 )`,
-			dbx.Params{
-				"pending":    "pending",
-				"failed":     "failed",
-				"queued":     "queued",
-				"processing": "processing",
-			},
-		)).
+		AndWhere(dbx.NewExp(p.whereExp, p.params)).
 		Limit(500).
 		All(&records)
 	if err != nil {
-		return fmt.Errorf("query failed-job pending artists: %w", err)
+		return fmt.Errorf(p.queryErrFmt, err)
 	}
 	if len(records) == 500 {
-		log.Printf("[queue-retry] failed-job reconciliation hit 500-record cap; remaining artists will be processed on next retry")
+		log.Printf("[queue-retry] %s reconciliation hit 500-record cap; remaining artists will be processed on next retry", p.capLabel)
 	}
 
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		record.Set("fetch_status", "failed")
+		record.Set("fetch_status", p.newStatus)
 		if err := h.app.SaveWithContext(ctx, record); err != nil {
-			return fmt.Errorf("mark failed-job artist %s failed: %w", record.Id, err)
+			return fmt.Errorf(p.saveErrFmt, record.Id, err)
 		}
 		correlation.Clear(record.Id)
-		stats.FailedArtistsMarked++
+		*p.statCounter++
 	}
 
 	return nil
@@ -410,12 +414,12 @@ func (h *Handler) handleRetryPublishFailure(params retryJobParams, stats *queueR
 	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
 		return err
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cleanupCancel()
-	if saveErr := h.saveRetryPublishFailure(cleanupCtx, params.Job, params.PublishErr); saveErr != nil {
-		return fmt.Errorf("failed to record publish failure: %w", saveErr)
-	}
-	return nil
+	return h.withRetryCleanup(func(ctx context.Context) error {
+		if saveErr := h.saveRetryPublishFailure(ctx, params.Job, params.PublishErr); saveErr != nil {
+			return fmt.Errorf("failed to record publish failure: %w", saveErr)
+		}
+		return nil
+	})
 }
 
 func (h *Handler) handleRetryDuplicate(params retryJobParams, stats *queueRetryStats) error {
@@ -423,13 +427,22 @@ func (h *Handler) handleRetryDuplicate(params retryJobParams, stats *queueRetryS
 	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
 		return err
 	}
+	return h.withRetryCleanup(func(ctx context.Context) error {
+		if saveErr := h.saveRetryDeduped(ctx, params.Job); saveErr != nil {
+			return fmt.Errorf("failed to record deduped status: %w", saveErr)
+		}
+		h.deleteRetryScrapeJob(params.RequestID, params.ArtistID)
+		return nil
+	})
+}
+
+// withRetryCleanup runs fn on a 5-second server-side context. It is used for
+// retry finalisation steps (status saves, job deletions) that must not be
+// cancelled by a client-side XHR abort.
+func (h *Handler) withRetryCleanup(fn func(ctx context.Context) error) error {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cleanupCancel()
-	if saveErr := h.saveRetryDeduped(cleanupCtx, params.Job); saveErr != nil {
-		return fmt.Errorf("failed to record deduped status: %w", saveErr)
-	}
-	h.deleteRetryScrapeJob(params.RequestID, params.ArtistID)
-	return nil
+	return fn(cleanupCtx)
 }
 
 func (h *Handler) rollbackRetryQueuedState(artist *core.Record, artistID, previousFetchStatus string) error {

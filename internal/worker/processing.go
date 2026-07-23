@@ -160,7 +160,7 @@ func (w *Worker) handleProcessError(ctx context.Context, env msgEnvelope, err er
 	}
 
 	if errors.Is(err, spotify.ErrRateLimited) {
-		return w.handleRateLimited(env, err)
+		return w.handleRateLimited(ctx, env, err)
 	}
 
 	return w.handleRetryableError(ctx, env, err)
@@ -187,17 +187,28 @@ func (w *Worker) handleQuotaExhausted(env msgEnvelope, err error) msgResult {
 	return msgQuotaExpired
 }
 
-// handleRateLimited NAKs the message with an appropriate backoff delay.
-func (w *Worker) handleRateLimited(env msgEnvelope, err error) msgResult {
+// handleRateLimited NAKs the message without delay so another provider can pick
+// it up immediately, and then sleeps this provider goroutine for the retry-after
+// duration so the pool stops pulling new messages and other providers can drain
+// the queue.
+func (w *Worker) handleRateLimited(ctx context.Context, env msgEnvelope, err error) msgResult {
 	w.recordRateLimited(env.label)
-	delay := w.retryDelay(env.meta)
-	if retryAfter, ok := spotify.RetryAfter(err); ok && retryAfter > delay {
-		delay = retryAfter
+	sleepDur := w.retryDelay(env.meta)
+	if retryAfter, ok := spotify.RetryAfter(err); ok && retryAfter > sleepDur {
+		sleepDur = retryAfter
 	}
-	delay = withJitter(delay, min(2*time.Second, delay/4))
-	log.Printf("[worker] Provider %s rate-limited for %s; delaying redelivery by %s", env.label, env.req.ArtistID, delay.Round(time.Millisecond))
-	if nakErr := env.msg.NakWithDelay(delay); nakErr != nil {
+	sleepDur = withJitter(sleepDur, min(2*time.Second, sleepDur/4))
+
+	log.Printf("[worker] Provider %s rate-limited for %s; NAK-ing to other providers, sleeping %s", env.label, env.req.ArtistID, sleepDur.Round(time.Millisecond))
+	if nakErr := env.msg.Nak(); nakErr != nil {
 		log.Printf("[worker] Failed to NAK message on rate limit: %v", nakErr)
+	}
+
+	// Respect context cancellation during the backoff sleep.
+	select {
+	case <-ctx.Done():
+		return msgOK
+	case <-time.After(sleepDur):
 	}
 	return msgOK
 }
@@ -270,6 +281,8 @@ func providerMinTimeout(provider spotify.Provider) time.Duration {
 		return 60 * time.Second
 	case spotify.ProviderBrowserless:
 		return 30 * time.Second
+	case spotify.ProviderBrowserbase:
+		return 120 * time.Second
 	default:
 		return 30 * time.Second
 	}

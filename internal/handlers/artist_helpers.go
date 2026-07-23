@@ -322,41 +322,63 @@ type artistStatusUpdateParams struct {
 	Artist       templates.Artist
 }
 
-func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
+func renderUpdatedArtistStatus(e *core.RequestEvent, params artistStatusUpdateParams) error {
 	if isWaitingListStatusTransition(params.OldStatus, params.NewStatus) {
-		sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
-
-		// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
-		var removeID string
-		if params.OldStatus == waitingArtistStatus {
-			removeID = templates.ArtistCardID(params.Artist.ID)
-		} else {
-			removeID = templates.ArtistRowID(params.Artist.ID)
-		}
-		if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
-			return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
-		}
-
-		// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
-		if params.NewStatus == waitingArtistStatus {
-			if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
-				return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
-			}
-		} else if params.Artist.GenreGroup == params.CurrentGenre {
-			targetID := templates.ArtistsTBodyID(params.CurrentGenre)
-			if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
-				return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
-			}
-		}
-
-		return nil
+		return renderWaitingListTransition(e.Request.Context(), params)
 	}
 
 	if params.NewStatus == waitingArtistStatus {
-		return renderDatastar(params.Event, templates.WaitingArtistCard(params.Artist))
+		return renderDatastar(e, templates.WaitingArtistCard(params.Artist))
 	}
 
-	return renderDatastar(params.Event, templates.ArtistRow(params.Artist))
+	return renderDatastar(e, templates.ArtistRow(params.Artist))
+}
+
+// renderWaitingListTransition patches the DOM to move an artist between the
+// waiting list and a genre tbody (or vice versa) using Datastar SSE.
+func renderWaitingListTransition(ctx context.Context, params artistStatusUpdateParams) error {
+	sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
+
+	if err := removeOldArtistElement(sse, params.Artist.ID, params.OldStatus); err != nil {
+		return err
+	}
+	return prependNewArtistElement(sse, params)
+}
+
+// removeOldArtistElement emits a Datastar remove patch for the artist's old DOM
+// element, choosing the card or row selector based on the previous status.
+func removeOldArtistElement(sse *datastar.ServerSentEventGenerator, artistID, oldStatus string) error {
+	var removeID string
+	if oldStatus == waitingArtistStatus {
+		removeID = templates.ArtistCardID(artistID)
+	} else {
+		removeID = templates.ArtistRowID(artistID)
+	}
+	if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
+		return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
+	}
+	return nil
+}
+
+// prependNewArtistElement prepends the artist's new DOM element to the correct
+// container: the waiting list when transitioning into it, or the matching genre
+// tbody when transitioning out of it.
+func prependNewArtistElement(sse *datastar.ServerSentEventGenerator, params artistStatusUpdateParams) error {
+	if params.NewStatus == waitingArtistStatus {
+		if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
+			return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
+		}
+		return nil
+	}
+
+	if params.Artist.GenreGroup != params.CurrentGenre {
+		return nil
+	}
+	targetID := templates.ArtistsTBodyID(params.CurrentGenre)
+	if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+		return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
+	}
+	return nil
 }
 
 func rankedArtistTotalSongs(totalCount, offset, index int) int {
@@ -542,7 +564,7 @@ func (h *Handler) handleDuplicateAck(record *core.Record, requestID, previousFet
 	}
 }
 
-func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
+func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int, error) {
 	queuedArtistIDs := make([]string, 0, len(jobs))
 	stats := make(map[string]int)
 
@@ -566,7 +588,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 		stats[job.Priority.String()]++
 	}
 
-	return queuedArtistIDs, stats
+	return queuedArtistIDs, stats, nil
 }
 
 func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record) error {
@@ -647,4 +669,63 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	}
 
 	return collectionSongs
+}
+
+// jobIDsAndStats extracts artist IDs and priority stats from a job list,
+// limited to the first count entries.
+func jobIDsAndStats(jobs []priority.Job, count int) ([]string, map[string]int) {
+	if count <= 0 || len(jobs) == 0 {
+		return nil, nil
+	}
+	limit := count
+	if limit > len(jobs) {
+		limit = len(jobs)
+	}
+	ids := make([]string, 0, limit)
+	stats := make(map[string]int)
+	for _, job := range jobs[:limit] {
+		ids = append(ids, job.Record.Id)
+		stats[job.Priority.String()]++
+	}
+	return ids, stats
+}
+
+// removeArtistsFromBatchSilent removes artist IDs from the batch's pending set
+// and the global artist-to-batch mapping without emitting any event. Used to
+// clean up artists that were pre-registered in a batch but never actually
+// queued (e.g., duplicate detection or error during enqueue).
+func (h *Handler) removeArtistsFromBatchSilent(batchID string, keepIDs []string) {
+	h.batchMu.Lock()
+	defer h.batchMu.Unlock()
+
+	batch, ok := h.batches[batchID]
+	if !ok {
+		return
+	}
+
+	keep := make(map[string]struct{}, len(keepIDs))
+	for _, id := range keepIDs {
+		keep[id] = struct{}{}
+	}
+
+	for artistID := range batch.Pending {
+		if _, kept := keep[artistID]; !kept {
+			delete(batch.Pending, artistID)
+			delete(h.artistBatch, artistID)
+		}
+	}
+
+	// Align Total with the actually-queued set so the displayed denominator
+	// can never exceed the number of tracked artists. Without this the batch
+	// can complete every queued artist yet stay below Total forever (the
+	// 99/100 stuck case). Total is the union of pending and already-completed
+	// artists; Completed counts only settled ones, so removed (never-settled)
+	// artists drop out of both numerator and denominator.
+	alive := len(batch.Pending) + batch.Completed
+	if batch.Total > alive {
+		batch.Total = alive
+	}
+	// A drained pending set means every tracked artist has settled.
+	batch.Done = batch.Done || len(batch.Pending) == 0
+	batch.UpdatedAt = time.Now()
 }

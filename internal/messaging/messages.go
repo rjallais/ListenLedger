@@ -39,6 +39,12 @@ const (
 	ScrapeProviderApify = "apify"
 	// ScrapeProviderLocalBrowserless targets self-hosted Browserless scraping.
 	ScrapeProviderLocalBrowserless = "local-browserless"
+	// ScrapeProviderBrowserbase targets Browserbase cloud browser scraping.
+	ScrapeProviderBrowserbase = "browserbase"
+	// ScrapeProviderMobileSSR targets Spotify's mobile server-side rendered pages
+	// directly (no JS rendering, no paid API). Uses an iOS Safari user-agent to
+	// get the monthly listeners count from the initial HTML response.
+	ScrapeProviderMobileSSR = "mobile-ssr"
 )
 
 // ScrapeRequested is the durable queue payload for a listener refresh job.
@@ -84,7 +90,9 @@ func NormalizeScrapeProvider(provider string) string {
 		ScrapeProviderLocalBrowserless,
 		ScrapeProviderScrapingAnt,
 		ScrapeProviderScraperAPI,
-		ScrapeProviderApify:
+		ScrapeProviderApify,
+		ScrapeProviderBrowserbase,
+		ScrapeProviderMobileSSR:
 		return provider
 	default:
 		return ScrapeProviderAny

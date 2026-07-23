@@ -119,6 +119,10 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 		results["local-browserless"] = c.CheckLocalBrowserless()
 	}
 
+	if c.cfg.HasMobileSSR() {
+		results["mobile-ssr"] = c.CheckMobileSSR()
+	}
+
 	if c.cfg.HasScrapingAnt() {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
 	}
@@ -133,6 +137,10 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 
 	if c.cfg.HasApify() {
 		results["apify"] = c.CheckApify(ctx)
+	}
+
+	if c.cfg.HasBrowserbase() {
+		results["browserbase"] = c.CheckBrowserbase()
 	}
 
 	return results
@@ -169,6 +177,23 @@ func (c *Checker) CheckLocalBrowserless() Info {
 
 	return Info{
 		Provider:  "local-browserless",
+		Available: true,
+	}
+}
+
+// CheckMobileSSR checks whether mobile SSR scraping is available.
+// Mobile SSR shares the local headless binary — it is available when local headless is enabled.
+func (c *Checker) CheckMobileSSR() Info {
+	if !c.cfg.HasMobileSSR() {
+		return Info{
+			Provider:  "mobile-ssr",
+			Available: false,
+			Error:     "Mobile SSR not enabled (requires local headless)",
+		}
+	}
+
+	return Info{
+		Provider:  "mobile-ssr",
 		Available: true,
 	}
 }
@@ -479,6 +504,24 @@ func (c *Checker) CheckBrowserless() Info {
 	}
 }
 
+// CheckBrowserbase checks the quota for Browserbase.
+// Browserbase does not have a public usage/quota API.
+func (c *Checker) CheckBrowserbase() Info {
+	if !c.cfg.HasBrowserbase() {
+		return Info{
+			Provider:  "browserbase",
+			Available: false,
+			Error:     "Browserbase not configured",
+		}
+	}
+
+	return Info{
+		Provider:  "browserbase",
+		Available: true,
+		Error:     "Browserbase does not provide a usage API; quota assumed available",
+	}
+}
+
 // HasAvailableQuota returns true if at least one provider has available quota.
 func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 	quotas := c.CheckAll(ctx)
@@ -517,7 +560,7 @@ func GetBestFrom(quotas map[string]Info) string {
 	return ""
 }
 
-var providerPriority = []string{"local", "local-browserless", "scrapingant", "scraperapi", "apify", "browserless"}
+var providerPriority = []string{"local", "mobile-ssr", "local-browserless", "browserbase", "scrapingant", "scraperapi", "apify", "browserless"}
 
 func isProviderReady(name string, q Info) bool {
 	if !q.Available {

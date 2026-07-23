@@ -29,10 +29,7 @@ func TestNextRecentBatchAssignmentFromEntriesCountsDownWithinBatch(t *testing.T)
 		},
 	}
 
-	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now, songsRecentBatchWindow)
-	if seq != 3 || pos != 11 {
-		t.Fatalf("nextRecentBatchAssignmentFromEntries(countdown batch) = (%d, %d), want (3, 11)", seq, pos)
-	}
+	assertNextRecentBatchAssignment(t, entries, now, 3, 11)
 }
 
 func TestNextRecentBatchAssignmentFromEntriesStartsNewBatchAtOne(t *testing.T) {
@@ -48,9 +45,14 @@ func TestNextRecentBatchAssignmentFromEntriesStartsNewBatchAtOne(t *testing.T) {
 		},
 	}
 
+	assertNextRecentBatchAssignment(t, entries, now, 5, 13)
+}
+
+func assertNextRecentBatchAssignment(t *testing.T, entries []songListEntry, now time.Time, wantSeq, wantPos int) {
+	t.Helper()
 	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now, songsRecentBatchWindow)
-	if seq != 5 || pos != 13 {
-		t.Fatalf("nextRecentBatchAssignmentFromEntries(full batch) = (%d, %d), want (5, 13)", seq, pos)
+	if seq != wantSeq || pos != wantPos {
+		t.Fatalf("nextRecentBatchAssignmentFromEntries = (%d, %d), want (%d, %d)", seq, pos, wantSeq, wantPos)
 	}
 }
 
@@ -152,16 +154,22 @@ func TestParseSongReleaseDate(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		parsed, valid := parseSongReleaseDate(tc.input)
-		if valid != tc.valid {
-			t.Errorf("parseSongReleaseDate(%q) valid = %v, want %v", tc.input, valid, tc.valid)
-		}
-		if tc.valid {
-			formatted := parsed.Format("2006-01-02")
-			if formatted != tc.expected {
-				t.Errorf("parseSongReleaseDate(%q) = %s, want %s", tc.input, formatted, tc.expected)
-			}
-		}
+		assertParsedSongReleaseDate(t, tc.input, tc.expected, tc.valid)
+	}
+
+}
+
+func assertParsedSongReleaseDate(t *testing.T, input, expected string, valid bool) {
+	t.Helper()
+	parsed, ok := parseSongReleaseDate(input)
+	if ok != valid {
+		t.Errorf("parseSongReleaseDate(%q) valid = %v, want %v", input, ok, valid)
+	}
+	if !valid {
+		return
+	}
+	if formatted := parsed.Format("2006-01-02"); formatted != expected {
+		t.Errorf("parseSongReleaseDate(%q) = %s, want %s", input, formatted, expected)
 	}
 }
 

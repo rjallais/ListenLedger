@@ -392,9 +392,16 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		return renderAlbumResponse(e, album)
 	}
 
+	return h.patchAlbumStatusTransition(e, album, oldStatus)
+}
+
+// patchAlbumStatusTransition emits the Datastar SSE patches needed to move an
+// album between the waiting list and a status tbody (or vice versa): first
+// removes the old DOM element, then prepends the new one to its target container.
+func (h *Handler) patchAlbumStatusTransition(e *core.RequestEvent, album templates.Album, oldStatus string) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
 
-	// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
+	// 1. Remove the old element from the DOM cleanly using true Datastar remove mode.
 	var removeID string
 	if oldStatus == templates.StatusWaiting {
 		removeID = "album-card-" + album.ID
@@ -405,22 +412,22 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		return fmt.Errorf("remove album element %s: %w", removeID, err)
 	}
 
-	// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
-	var component templ.Component
-	var prependTargetID string
-	if album.Status == templates.StatusWaiting {
-		component = templates.AlbumCard(album)
-		prependTargetID = "albums-waiting"
-	} else {
-		component = templates.AlbumRow(album)
-		prependTargetID = "albums-" + album.Status
-	}
-
+	// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode.
+	component, prependTargetID := albumReplacementElement(album)
 	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(prependTargetID), datastar.WithModePrepend()); err != nil {
 		return fmt.Errorf("prepend album %s into %s: %w", album.ID, prependTargetID, err)
 	}
 
 	return nil
+}
+
+// albumReplacementElement returns the templ component and target container ID
+// for rendering an album that just transitioned into its new status.
+func albumReplacementElement(album templates.Album) (templ.Component, string) {
+	if album.Status == templates.StatusWaiting {
+		return templates.AlbumCard(album), "albums-waiting"
+	}
+	return templates.AlbumRow(album), "albums-" + album.Status
 }
 
 func (h *Handler) atomicUpdateAlbumStatus(ctx context.Context, albumID string, statusDB string) (*core.Record, string, error) {
