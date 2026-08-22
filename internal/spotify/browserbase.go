@@ -145,7 +145,12 @@ func dialBrowserbaseCDP(ctx context.Context, connectURL string) (*rod.Browser, e
 
 	adapter := &gorillaAdapter{conn: gorillaConn}
 	cdpClient := cdp.New().Start(adapter)
-	return rod.New().Client(cdpClient).Context(ctx).MustConnect(), nil
+	browser := rod.New().Client(cdpClient).Context(ctx)
+	if err := browser.Connect(); err != nil {
+		_ = gorillaConn.Close()
+		return nil, &providerHTTPError{provider: "browserbase", err: fmt.Errorf("cdp connect: %w", err)}
+	}
+	return browser, nil
 }
 
 // gorillaAdapter adapts a *gorilla.Conn to implement cdp.WebSocketable interface.

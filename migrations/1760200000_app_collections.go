@@ -192,5 +192,5 @@ func artistsSpotifyIDHasDuplicates(app core.App) (bool, []string, error) {
 
 //go:fix inline
 func float64Ptr(value float64) *float64 {
-	return new(value)
+	return &value
 }

@@ -110,5 +110,5 @@ func songOrderingTime(record *core.Record) time.Time {
 }
 
 func float64PtrLocal(value float64) *float64 {
-	return new(value)
+	return &value
 }

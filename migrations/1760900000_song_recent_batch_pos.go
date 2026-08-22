@@ -115,5 +115,5 @@ func backfillSongRecentBatchPos(app core.App) error {
 }
 
 func float64PtrLocalBatchPos(value float64) *float64 {
-	return new(value)
+	return &value
 }
