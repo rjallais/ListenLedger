@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -27,8 +26,19 @@ func (c *Client) scraperAPICooldownRemaining(now time.Time) time.Duration {
 	return until.Sub(now)
 }
 
+// clearScraperAPICooldown CAS-clears the cooldown only when the stored deadline
+// does not exceed the observed success time. This preserves a newer cooldown
+// installed concurrently by markScraperAPIRateLimited.
 func (c *Client) clearScraperAPICooldown(now time.Time) {
-	c.scraperAPICooldownUntil.Store(now.UnixNano())
+	for {
+		current := c.scraperAPICooldownUntil.Load()
+		if now.UnixNano() < current {
+			return
+		}
+		if c.scraperAPICooldownUntil.CompareAndSwap(current, now.UnixNano()) {
+			return
+		}
+	}
 }
 
 func (c *Client) markScraperAPISuccess() {
@@ -145,7 +155,7 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to close ScraperAPI response body: %v\n", closeErr)
+			log.Printf("[spotify] warning: failed to close ScraperAPI response body: %v", closeErr)
 		}
 	}()
 
@@ -167,12 +177,11 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 }
 
 // isScraperAPIQuotaStatus reports whether the HTTP status indicates a
-// ScraperAPI quota exhaustion or billing condition.
-// ScraperAPI returns 402 Payment Required for quota limits and 403 Forbidden
-// when the account is suspended, payment is overdue, or the API key has been
-// disabled — all of which are terminal and should not be retried.
+// ScraperAPI quota exhaustion condition.
+// ScraperAPI returns 402 Payment Required for quota limits. 403 Forbidden
+// (suspended account / invalid key) is treated as auth failure, not quota.
 func isScraperAPIQuotaStatus(code int) bool {
-	return code == http.StatusPaymentRequired || code == http.StatusForbidden
+	return code == http.StatusPaymentRequired
 }
 
 func (c *Client) checkScraperAPIHTTPStatus(resp *http.Response) error {
