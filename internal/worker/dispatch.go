@@ -233,14 +233,14 @@ func (w *Worker) providerLoop(g *providerGroup, slot int) {
 // providerLabel maps a spotify.Provider to its messaging subject label via a
 // lookup table, avoiding a high-cyclomatic-complexity switch.
 var providerLabels = map[spotify.Provider]string{
-	spotify.ProviderLocalHeadless:     messaging.ScrapeProviderLocal,
-	spotify.ProviderBrowserless:       messaging.ScrapeProviderBrowserless,
-	spotify.ProviderScrapingAnt:       messaging.ScrapeProviderScrapingAnt,
-	spotify.ProviderScraperAPI:        messaging.ScrapeProviderScraperAPI,
-	spotify.ProviderApify:             messaging.ScrapeProviderApify,
-	spotify.ProviderLocalBrowserless:  messaging.ScrapeProviderLocalBrowserless,
-	spotify.ProviderBrowserbase:       messaging.ScrapeProviderBrowserbase,
-	spotify.ProviderMobileSSR:         messaging.ScrapeProviderMobileSSR,
+	spotify.ProviderLocalHeadless:    messaging.ScrapeProviderLocal,
+	spotify.ProviderBrowserless:      messaging.ScrapeProviderBrowserless,
+	spotify.ProviderScrapingAnt:      messaging.ScrapeProviderScrapingAnt,
+	spotify.ProviderScraperAPI:       messaging.ScrapeProviderScraperAPI,
+	spotify.ProviderApify:            messaging.ScrapeProviderApify,
+	spotify.ProviderLocalBrowserless: messaging.ScrapeProviderLocalBrowserless,
+	spotify.ProviderBrowserbase:      messaging.ScrapeProviderBrowserbase,
+	spotify.ProviderMobileSSR:        messaging.ScrapeProviderMobileSSR,
 }
 
 // providerLabel returns the messaging subject label for the given provider, or
