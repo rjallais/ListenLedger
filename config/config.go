@@ -402,6 +402,7 @@ func parseNonNegativeInt(name string) (int, bool) {
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil || n < 0 {
+		slog.Warn("invalid config value, using default", "key", name, "value", val)
 		return 0, false
 	}
 	return n, true
@@ -415,6 +416,7 @@ func parseBoolEnv(name string) (bool, bool) {
 	}
 	b, err := strconv.ParseBool(val)
 	if err != nil {
+		slog.Warn("invalid config value, using default", "key", name, "value", val)
 		return false, false
 	}
 	return b, true

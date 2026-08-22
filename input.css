@@ -67,10 +67,7 @@
 }
 
 /* v5 inputs/selects are bordered by default; keep the old names as no-ops so
-   markup doesn't have to change. */
-.input-bordered,
-.select-bordered {
-}
+   markup doesn't have to change. (empty shim removed — v5 borders by default) */
 
 /* v4 .tabs-boxed container look */
 .tabs-boxed {
