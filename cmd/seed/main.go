@@ -222,6 +222,17 @@ func (cfg albumSeedConfig) createNewAlbum(ctx context.Context, f albumRowFields)
 	record.Set("status", f.Status)
 
 	if err := cfg.app.SaveWithContext(ctx, record); err != nil {
+		if isUniqueConstraintError(err) {
+			if existing, findErr := findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, f.Title, f.ArtistName); findErr == nil && existing != nil {
+				existing.Set("collection_songs", f.CollectionSongs)
+				existing.Set("total_songs", f.TotalSongs)
+				existing.Set("status", f.Status)
+				if saveErr := cfg.app.SaveWithContext(ctx, existing); saveErr == nil {
+					log.Printf("[seed] Resolved duplicate for album %q by %q via update", f.Title, f.ArtistName)
+					return 1
+				}
+			}
+		}
 		log.Printf("[seed] Warning: failed to save album %q: %v", f.Title, err)
 		return 0
 	}
@@ -590,6 +601,14 @@ func findRecordByTitleAndArtist(ctx context.Context, app *pocketbase.PocketBase,
 		return nil, nil
 	}
 	return records[0], nil
+}
+
+func isUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint")
 }
 
 func (cfg sheet2Config) logDryRunArtistUpsert(ctx context.Context, bandName, spotifyID string, listeners int) int {
