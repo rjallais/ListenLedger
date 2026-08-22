@@ -552,7 +552,7 @@ func GetBestFrom(quotas map[string]Info) string {
 	return ""
 }
 
-var providerPriority = []string{"local", "mobile-ssr", "local-browserless", "browserbase", "scrapingant", "scraperapi", "apify", "browserless"}
+var providerPriority = []string{"local", "local-browserless", "browserbase", "scrapingant", "scraperapi", "apify", "browserless"}
 
 func isProviderReady(name string, q Info) bool {
 	if !q.Available {
