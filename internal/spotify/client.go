@@ -98,6 +98,8 @@ type Client struct {
 	semBrowserbase      chan struct{}
 	semMobileSSR        chan struct{}
 
+	providerTable []providerEntry
+
 	local *localBrowser
 	// localInit is non-nil while a browser launch is in progress.
 	// Other goroutines wait on it then re-read c.local.
@@ -282,8 +284,22 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 
 	client.initLocalHeadless()
+	client.providerTable = client.buildProviderTable()
 
 	return client, nil
+}
+
+func (c *Client) buildProviderTable() []providerEntry {
+	return []providerEntry{
+		{ProviderMobileSSR, func() bool { return true }, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr", noCtx},
+		{ProviderLocalHeadless, c.useLocal.Load, c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
+		{ProviderLocalBrowserless, func() bool { return c.useLocalBrowserless }, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", localBrowserCtx},
+		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", noCtx},
+		{ProviderBrowserless, func() bool { return c.useBrowserless }, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
+		{ProviderScrapingAnt, func() bool { return c.useScrapingAnt }, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
+		{ProviderScraperAPI, func() bool { return c.useScraperAPI }, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
+		{ProviderApify, func() bool { return c.useApify }, c.semApify, c.fetchViaApify, "apify", noCtx},
+	}
 }
 
 // providerEntry associates a provider's identity, enabled-flag, semaphore,
@@ -332,18 +348,10 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 // providerSlots() mirrors this list for concurrency accounting — keep the two
 // in sync when adding a provider.
 func (c *Client) providerRegistry() []providerEntry {
-	return []providerEntry{
-		// Mobile SSR is always attempted first — no JS rendering, no paid API,
-		// just a direct HTTP GET with an iOS Safari user-agent.
-		{ProviderMobileSSR, func() bool { return true }, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr", noCtx},
-		{ProviderLocalHeadless, c.useLocal.Load, c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
-		{ProviderLocalBrowserless, func() bool { return c.useLocalBrowserless }, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", localBrowserCtx},
-		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", noCtx},
-		{ProviderBrowserless, func() bool { return c.useBrowserless }, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
-		{ProviderScrapingAnt, func() bool { return c.useScrapingAnt }, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
-		{ProviderScraperAPI, func() bool { return c.useScraperAPI }, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
-		{ProviderApify, func() bool { return c.useApify }, c.semApify, c.fetchViaApify, "apify", noCtx},
+	if c.providerTable != nil {
+		return c.providerTable
 	}
+	return c.buildProviderTable()
 }
 
 // resolveProvider selects an enabled provider from the registry by identity.
@@ -465,7 +473,14 @@ func (c *Client) fetchViaMobileSSR(ctx context.Context, artistID string) (int, e
 		return 0, fmt.Errorf("mobile-ssr: read body: %w", err)
 	}
 
-	return parseHTMLMonthlyListeners(body, "mobile-ssr")
+	count, err := parseHTMLMonthlyListeners(body, "mobile-ssr")
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("mobile-ssr: parsed 0 listeners, treating as failure to allow fallback")
+	}
+	return count, nil
 }
 
 func checkProviderHTTPStatus(resp *http.Response, provider string, quotaCodes ...int) error {
@@ -488,7 +503,7 @@ func checkProviderHTTPStatus(resp *http.Response, provider string, quotaCodes ..
 
 func (c *Client) fetchViaBrowserbase(ctx context.Context, artistID string) (int, error) {
 	if !c.useBrowserbase {
-		return 0, fmt.Errorf("browserbase: %w", ErrQuotaExhausted)
+		return 0, fmt.Errorf("browserbase: not configured")
 	}
 
 	apiKey := c.config.BrowserbaseAPIKey
@@ -526,7 +541,6 @@ func (c *Client) fetchViaBrowserbase(ctx context.Context, artistID string) (int,
 	return parseListenersFromRawText(result)
 }
 
-// buildBrowserlessRequest creates an HTTP request for fetching listener data via Browserless/BQL.
 func parseListenerCountFromSuffix(numberStr, suffix, source string) (int, error) {
 	val, err := strconv.ParseFloat(numberStr, 64)
 	if err != nil {
