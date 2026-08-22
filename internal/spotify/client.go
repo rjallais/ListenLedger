@@ -37,7 +37,9 @@ var secretQueryParamPattern = regexp.MustCompile(`(?i)(api_key|x-api-key|token)=
 type Provider int
 
 const (
-	// ProviderAny tries Local headless first, then Browserless, ScrapingAnt, ScraperAPI, and Apify.
+	// ProviderAny tries each configured provider in providerRegistry fallback
+	// order: mobile SSR, local headless, local browserless, browserbase,
+	// browserless, scrapingant, scraperapi, then apify.
 	ProviderAny Provider = iota
 	// ProviderLocalHeadless uses local go-rod.
 	ProviderLocalHeadless
@@ -257,41 +259,56 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	useBrowserbase := cfg.HasBrowserbase()
 
 	client := &Client{
-			config:                     cfg,
-			httpClient:                 httpClient,
-			httpClientScraperAPI:       httpClientScraperAPI,
-			httpClientApify:            httpClientApify,
-			httpClientLocalBrowserless: httpClientLocalBrowserless,
-			httpClientBrowserbase:      httpClientBrowserbase,
-			semLocal:                   make(chan struct{}, cfg.LocalConcurrency),
-			semBrowserless:             make(chan struct{}, max(1, cfg.BrowserlessConcurrency)),
-			semScrapingAnt:             make(chan struct{}, cfg.MaxConcurrency),
-			semScraperAPI:              make(chan struct{}, max(1, cfg.ScraperAPIConcurrency)),
-			semApify:                   make(chan struct{}, 1),
-			semLocalBrowserless:        make(chan struct{}, max(1, cfg.LocalBrowserlessConcurrency)),
-			semBrowserbase:             make(chan struct{}, max(1, cfg.BrowserbaseConcurrency)),
-			semMobileSSR:               make(chan struct{}, 16),
-			useBrowserless:             useBrowserless,
-			useScrapingAnt:             useScrapingAnt,
-			useScraperAPI:              useScraperAPI,
-			useApify:                   useApify,
-			useLocalBrowserless:        useLocalBrowserless,
-			useBrowserbase:             useBrowserbase,
-		}
+		config:                     cfg,
+		httpClient:                 httpClient,
+		httpClientScraperAPI:       httpClientScraperAPI,
+		httpClientApify:            httpClientApify,
+		httpClientLocalBrowserless: httpClientLocalBrowserless,
+		httpClientBrowserbase:      httpClientBrowserbase,
+		semLocal:                   make(chan struct{}, cfg.LocalConcurrency),
+		semBrowserless:             make(chan struct{}, max(1, cfg.BrowserlessConcurrency)),
+		semScrapingAnt:             make(chan struct{}, cfg.MaxConcurrency),
+		semScraperAPI:              make(chan struct{}, max(1, cfg.ScraperAPIConcurrency)),
+		semApify:                   make(chan struct{}, 1),
+		semLocalBrowserless:        make(chan struct{}, max(1, cfg.LocalBrowserlessConcurrency)),
+		semBrowserbase:             make(chan struct{}, max(1, cfg.BrowserbaseConcurrency)),
+		semMobileSSR:               make(chan struct{}, 16),
+		useBrowserless:             useBrowserless,
+		useScrapingAnt:             useScrapingAnt,
+		useScraperAPI:              useScraperAPI,
+		useApify:                   useApify,
+		useLocalBrowserless:        useLocalBrowserless,
+		useBrowserbase:             useBrowserbase,
+	}
 
 	client.initLocalHeadless()
 
 	return client, nil
 }
 
-// providerEntry associates a provider's enabled-flag, semaphore, fetch func,
-// and label so ProviderAny can dispatch through a table rather than 7 if-blocks.
+// providerEntry associates a provider's identity, enabled-flag, semaphore,
+// fetch func, label, and per-attempt context wrapper so that both explicit
+// (resolveProvider) and fallback (ProviderAny) dispatch go through the same
+// table rather than per-provider if-blocks.
 type providerEntry struct {
-	enabled   bool
-	sem       chan struct{}
-	fetchFunc func(context.Context, string) (int, error)
-	label     string
-	ctxWith   func(context.Context) (context.Context, context.CancelFunc)
+	provider Provider
+	enabled  func() bool
+	sem      chan struct{}
+	fetch    func(context.Context, string) (int, error)
+	name     string
+	ctxWith  func(context.Context) (context.Context, context.CancelFunc)
+}
+
+// noCtx passes the parent context through unchanged.
+func noCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return parent, func() {}
+}
+
+// localBrowserCtx bounds self-hosted Browserless content requests; they
+// regularly exceed the shared HTTP timeout under load, and this is the only
+// provider whose attempts carry a dedicated sub-timeout.
+func localBrowserCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, 60*time.Second)
 }
 
 // FetchListenerCount fetches the monthly listener count for an artist.
@@ -304,83 +321,59 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 	if !ok {
 		return 0, fmt.Errorf("provider %d not configured", provider)
 	}
-	return c.fetchWithProvider(ctx, artistID, p.sem, p.fetch, p.name)
+	pCtx, cancel := p.ctxWith(ctx)
+	defer cancel()
+	return c.fetchWithSemaphore(pCtx, artistID, p.sem, p.fetch, p.name)
 }
 
-type resolvedProvider struct {
-	sem   chan struct{}
-	fetch func(context.Context, string) (int, error)
-	name  string
-}
-
-type providerDescriptor struct {
-	provider Provider
-	enabled  func() bool
-	sem      chan struct{}
-	fetch    func(context.Context, string) (int, error)
-	name     string
-}
-
-func (c *Client) providerRegistry() []providerDescriptor {
-	return []providerDescriptor{
-		{ProviderLocalHeadless, c.useLocal.Load, c.semLocal, c.fetchViaLocalHeadless, "local"},
-		{ProviderScrapingAnt, func() bool { return c.useScrapingAnt }, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant"},
-		{ProviderScraperAPI, func() bool { return c.useScraperAPI }, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi"},
-		{ProviderApify, func() bool { return c.useApify }, c.semApify, c.fetchViaApify, "apify"},
-		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase"},
-		{ProviderMobileSSR, func() bool { return true }, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr"},
-		{ProviderBrowserless, func() bool { return c.useBrowserless }, c.semBrowserless, c.fetchViaBrowserless, "browserless"},
-		{ProviderLocalBrowserless, func() bool { return c.useLocalBrowserless }, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless"},
+// providerRegistry is the single dispatch table for every provider, in
+// fallback (ProviderAny) priority order. resolveProvider selects by identity;
+// tryEachProvider iterates it in order. internal/worker dispatch.go's
+// providerSlots() mirrors this list for concurrency accounting — keep the two
+// in sync when adding a provider.
+func (c *Client) providerRegistry() []providerEntry {
+	return []providerEntry{
+		// Mobile SSR is always attempted first — no JS rendering, no paid API,
+		// just a direct HTTP GET with an iOS Safari user-agent.
+		{ProviderMobileSSR, func() bool { return true }, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr", noCtx},
+		{ProviderLocalHeadless, c.useLocal.Load, c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
+		{ProviderLocalBrowserless, func() bool { return c.useLocalBrowserless }, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", localBrowserCtx},
+		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", noCtx},
+		{ProviderBrowserless, func() bool { return c.useBrowserless }, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
+		{ProviderScrapingAnt, func() bool { return c.useScrapingAnt }, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
+		{ProviderScraperAPI, func() bool { return c.useScraperAPI }, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
+		{ProviderApify, func() bool { return c.useApify }, c.semApify, c.fetchViaApify, "apify", noCtx},
 	}
 }
 
-func (c *Client) resolveProvider(provider Provider) (resolvedProvider, bool) {
-	for _, desc := range c.providerRegistry() {
-		if desc.provider == provider {
-			if !desc.enabled() {
-				return resolvedProvider{}, false
+// resolveProvider selects an enabled provider from the registry by identity.
+func (c *Client) resolveProvider(provider Provider) (providerEntry, bool) {
+	for _, entry := range c.providerRegistry() {
+		if entry.provider == provider {
+			if !entry.enabled() {
+				return providerEntry{}, false
 			}
-			return resolvedProvider{desc.sem, desc.fetch, desc.name}, true
+			return entry, true
 		}
 	}
-	return resolvedProvider{}, false
+	return providerEntry{}, false
 }
 
 // tryEachProvider tries each configured provider in order and returns the
 // first successful result. It stops early on context cancellation.
 func (c *Client) tryEachProvider(ctx context.Context, artistID string) (int, error) {
-	lbCtxWith := func(parent context.Context) (context.Context, context.CancelFunc) {
-		return context.WithTimeout(parent, 60*time.Second)
-	}
-	noCtx := func(parent context.Context) (context.Context, context.CancelFunc) {
-		return parent, func() {}
-	}
-
-	providers := []providerEntry{
-		// Mobile SSR is always tried first — no JS rendering, no paid API,
-		// just a direct HTTP GET with an iOS Safari user-agent.
-		{true, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr", noCtx},
-		{c.useLocal.Load(), c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
-		{c.useLocalBrowserless, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", lbCtxWith},
-		{c.useBrowserbase, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", noCtx},
-		{c.useBrowserless, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
-		{c.useScrapingAnt, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
-		{c.useScraperAPI, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
-		{c.useApify, c.semApify, c.fetchViaApify, "apify", noCtx},
-	}
-
 	var providerErrors []string
-	for _, p := range providers {
-		if !p.enabled {
+	for _, p := range c.providerRegistry() {
+		if !p.enabled() {
 			continue
 		}
 		pCtx, cancel := p.ctxWith(ctx)
-		count, err := c.fetchWithProvider(pCtx, artistID, p.sem, p.fetchFunc, p.label)
+		count, err := c.fetchWithSemaphore(pCtx, artistID, p.sem, p.fetch, p.name)
 		cancel()
 		if err == nil {
 			return count, nil
 		}
-		providerErrors = append(providerErrors, fmt.Sprintf("%s: %v", p.label, err))
+		providerErrors = append(providerErrors, fmt.Sprintf("%s: %v", p.name, err))
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
@@ -390,10 +383,6 @@ func (c *Client) tryEachProvider(ctx context.Context, artistID string) (int, err
 		return 0, fmt.Errorf("all providers failed (%s)", strings.Join(providerErrors, "; "))
 	}
 	return 0, fmt.Errorf("no scraping provider configured")
-}
-
-func (c *Client) fetchWithProvider(ctx context.Context, artistID string, sem chan struct{}, fetchFunc func(context.Context, string) (int, error), providerName string) (int, error) {
-	return c.fetchWithSemaphore(ctx, artistID, sem, fetchFunc, providerName)
 }
 
 // fetchWithSemaphore executes a fetch function while respecting the given semaphore.

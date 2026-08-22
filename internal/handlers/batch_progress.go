@@ -275,5 +275,6 @@ func (h *Handler) patchBatchRefreshState(ctx context.Context, e *core.RequestEve
 	}
 	return sse.PatchElementTempl(
 		templates.BatchRefreshResult(snapshot.ID, snapshot.Total, snapshot.Completed, snapshot.Stats, snapshot.Done),
+		patchOpts(h.cfg, "#batch-refresh-result", datastar.WithSelectorID("batch-refresh-result"), datastar.WithModeOuter())...,
 	)
 }

@@ -6,6 +6,7 @@ package handlers
 import (
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ type Handler struct {
 
 	js        jetstream.JetStream
 	staticDir string
+	// staticDirAbs is the absolute static directory, precomputed so
+	// handleStatic can assert served paths stay inside it.
+	staticDirAbs string
 
 	app          *pocketbase.PocketBase
 	nc           *nats.Conn
@@ -41,6 +45,12 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	staticDir := "static"
 	if cfg != nil && cfg.StaticDir != "" {
 		staticDir = cfg.StaticDir
+	}
+	staticDirAbs, err := filepath.Abs(staticDir)
+	if err != nil {
+		// Absolute resolution should not fail for a plain relative path;
+		// fall back to the raw value only to keep New() infallible.
+		staticDirAbs = staticDir
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -86,12 +96,13 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	}
 
 	return &Handler{
-		app:       app,
-		nc:        nc,
-		js:        js,
-		cfg:       cfg,
-		staticDir: staticDir,
-		startedAt: time.Now(),
+		app:          app,
+		nc:           nc,
+		js:           js,
+		cfg:          cfg,
+		staticDir:    staticDir,
+		staticDirAbs: staticDirAbs,
+		startedAt:    time.Now(),
 
 		batches:     make(map[string]*batchProgress),
 		artistBatch: make(map[string]string),

@@ -588,7 +588,7 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 		pageData.WaitingRemoval,
 		pageData.NotRecentCount,
 		pageData.PlaylistSort,
-	))
+	), patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
 }
 
 func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {
@@ -614,13 +614,15 @@ func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, is
 
 func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
 	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.CurrentPlaylistSection(d.CurrentPlaylist, d.PlaylistSort))
+		return renderDatastar(e, templates.CurrentPlaylistSection(d.CurrentPlaylist, d.PlaylistSort),
+			patchOpts(h.cfg, "#songs-current-playlist-section", datastar.WithSelectorID("songs-current-playlist-section"), datastar.WithModeOuter())...)
 	})
 }
 
 func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {
 	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.SongsSections(d.CurrentPlaylist, d.WaitingRemoval, d.NotRecentCount, d.PlaylistSort))
+		return renderDatastar(e, templates.SongsSections(d.CurrentPlaylist, d.WaitingRemoval, d.NotRecentCount, d.PlaylistSort),
+			patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
 	})
 }
 
@@ -679,7 +681,10 @@ func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 
 	// Append each archived song row inside "#songs-not-recent"
 	for _, song := range songs {
-		if err := sse.PatchElementTempl(templates.SongRow(song, playlistSort), datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend()); err != nil {
+		if err := sse.PatchElementTempl(
+			templates.SongRow(song, playlistSort),
+			patchOpts(h.cfg, "#songs-not-recent", datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend())...,
+		); err != nil {
 			return err
 		}
 	}

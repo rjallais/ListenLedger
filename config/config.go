@@ -6,7 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +14,20 @@ import (
 
 	"ListenLedger/internal/chrome"
 )
+
+// LogLevel parses LOG_LEVEL env (DEBUG/INFO/WARN/ERROR) like Northstar.
+func LogLevel() slog.Level {
+	switch strings.ToUpper(os.Getenv("LOG_LEVEL")) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
 
 // Config holds application configuration
 type Config struct {
@@ -69,13 +83,13 @@ type Config struct {
 	LocalBrowserlessConcurrency int
 
 	// Shared behavior configuration
-	MaxConcurrency       int
-	MaxRetries           int
-	RequestTimeout       time.Duration
-	HTTPTimeout          time.Duration
-	MaxIdleConns         int
-	MaxIdleConnsPerHost  int
-	IdleConnTimeout      time.Duration
+	MaxConcurrency      int
+	MaxRetries          int
+	RequestTimeout      time.Duration
+	HTTPTimeout         time.Duration
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	IdleConnTimeout     time.Duration
 	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
 	LogSuccessfulFetches bool
 
@@ -89,13 +103,19 @@ type Config struct {
 	LocalConcurrency       int
 
 	// Browserbase (Stagehand) configuration
-	BrowserbaseAPIKey        string
-	BrowserbaseConcurrency   int
+	BrowserbaseAPIKey      string
+	BrowserbaseConcurrency int
 
 	LocalHeadlessEnabled  bool
 	LocalIgnoreCertErrors bool
 
 	RecentBatchWindow time.Duration
+
+	// UseViewTransitions enables the View Transitions API for Datastar SSE fragment
+	// patches (read-my-writes UI updates animate instead of snapping). Enabled by
+	// default; set VIEW_TRANSITIONS=false to disable. Fragments should be audited
+	// for view-transition-id hygiene so existing transitions never get interrupted.
+	UseViewTransitions bool
 }
 
 // DefaultConfig returns a Config populated with sensible defaults for external providers,
@@ -185,6 +205,9 @@ func DefaultConfig() *Config {
 		ScrapeInProgressInterval: 20 * time.Second,
 
 		RecentBatchWindow: 13 * 24 * time.Hour,
+
+		// View Transitions on by default; opt out via VIEW_TRANSITIONS=false.
+		UseViewTransitions: true,
 	}
 }
 
@@ -207,6 +230,7 @@ func (c *Config) LoadFromEnv() error {
 	}
 	c.loadSharedConfig()
 	c.loadJetStreamConfig()
+	c.loadViewTransitionsConfig()
 
 	return nil
 }
@@ -366,7 +390,7 @@ func (c *Config) loadRecentBatchWindow() {
 	if d, ok := parseNonNegDuration(ageStr); ok {
 		c.RecentBatchWindow = d
 	} else {
-		log.Printf("[config] invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW value %q, using default", ageStr)
+		slog.Warn("invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW", "value", ageStr)
 	}
 }
 
@@ -427,6 +451,13 @@ func (c *Config) loadJetStreamConfig() {
 	}
 }
 
+// loadViewTransitionsConfig reads the VIEW_TRANSITIONS env flag (default true).
+func (c *Config) loadViewTransitionsConfig() {
+	if v, ok := parseBoolEnv("VIEW_TRANSITIONS"); ok {
+		c.UseViewTransitions = v
+	}
+}
+
 // parsePositiveInt reads the named env variable and returns its integer value
 // if present and positive, along with a boolean indicating success.
 // Invalid or non-positive values are logged and ignored.
@@ -437,7 +468,7 @@ func parsePositiveInt(envKey string) (int, bool) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
-		log.Printf("[config] invalid value for %s: %q, ignoring and using default", envKey, s)
+		slog.Warn("invalid config value, using default", "key", envKey, "value", s)
 		return 0, false
 	}
 	return n, true
@@ -496,12 +527,16 @@ func (c *Config) HasApify() bool {
 }
 
 // HasMobileSSR returns true if mobile SSR scraping is enabled.
-// Mobile SSR is always available when local headless is enabled (shares the same binary).
+// Mobile SSR is a plain HTTP GET with an iOS Safari user-agent — it needs no
+// tokens, API keys, or a local browser binary — so it is always available and
+// acts as the final fallback provider.
 func (c *Config) HasMobileSSR() bool {
-	return c.LocalHeadlessEnabled
+	return true
 }
 
-// hasAnyProvider returns true if at least one scraping provider is configured.
+// hasAnyProvider returns true if at least one non-mobile scraping provider is
+// configured. Mobile SSR is deliberately excluded: it requires no
+// configuration, so it never gates boot (Validate below only warns).
 func (c *Config) hasAnyProvider() bool {
 	return c.HasLocalHeadless() ||
 		c.HasLocalBrowserless() ||
@@ -509,24 +544,37 @@ func (c *Config) hasAnyProvider() bool {
 		c.HasBrowserless() ||
 		c.HasScrapingAnt() ||
 		c.HasScraperAPI() ||
-		c.HasApify() ||
-		c.HasMobileSSR()
+		c.HasApify()
 }
 
 // Validate ensures the configuration is valid.
 func (c *Config) Validate() error {
 	if !c.hasAnyProvider() {
-		return errors.New("at least one usable provider must be configured: set BROWSERLESS_TOKEN with BrowserlessEndpoint, SCRAPINGANT_TOKEN with ScrapingAntEndpoint, SCRAPERAPI_TOKEN with ScraperAPIEndpoint, or APIFY_TOKEN with ApifyEndpoint and ApifyActorID; or enable local headless/self-hosted browserless")
+		slog.Warn("no scraping provider configured; only mobile SSR will be used")
 	}
 	return errors.Join(
 		validatePositive("max concurrency", c.MaxConcurrency),
-		validatePositive("browserless concurrency", c.BrowserlessConcurrency),
+		validateBrowserlessConcurrency(c),
 		validateNonNegative("max retries", c.MaxRetries),
 		validatePositive("local concurrency", c.LocalConcurrency),
-		validatePositive("scraperapi concurrency", c.ScraperAPIConcurrency),
+		validateScraperAPIConcurrency(c),
 		validateLocalBrowserlessConcurrency(c),
 		validateBrowserbaseConcurrency(c),
 	)
+}
+
+func validateBrowserlessConcurrency(c *Config) error {
+	if c.HasBrowserless() && c.BrowserlessConcurrency <= 0 {
+		return errors.New("browserless concurrency must be positive")
+	}
+	return nil
+}
+
+func validateScraperAPIConcurrency(c *Config) error {
+	if c.HasScraperAPI() && c.ScraperAPIConcurrency <= 0 {
+		return errors.New("scraperapi concurrency must be positive")
+	}
+	return nil
 }
 
 func validateBrowserbaseConcurrency(c *Config) error {

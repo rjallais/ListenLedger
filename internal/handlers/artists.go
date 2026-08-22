@@ -71,7 +71,10 @@ func (h *Handler) handleCreateArtist(e *core.RequestEvent) error {
 
 	// 1. Prepend the new artist row inside the respective genre group table body
 	targetID := templates.ArtistsTBodyID(artist.GenreGroup)
-	if err := sse.PatchElementTempl(templates.ArtistRow(artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+	if err := sse.PatchElementTempl(
+		templates.ArtistRow(artist),
+		patchOpts(h.cfg, "#"+targetID, datastar.WithSelectorID(targetID), datastar.WithModePrepend())...,
+	); err != nil {
 		return err
 	}
 
@@ -84,11 +87,13 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 	params := parseArtistListParams(e.Request)
 	filterParams := nonWaitingArtistParams(params.genre)
 
-	// Get total count for pagination (excluding waiting).
-	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, params.genre)
+	// One GROUP BY pass supplies the requested genre total and both genre
+	// badge counts, instead of a COUNT(*) scan per genre.
+	genreCounts, err := h.countArtistsByGenreGroups(ctx)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load artists")
 	}
+	totalCount := genreCounts[params.genre]
 	totalPages := (totalCount + params.limit - 1) / params.limit
 
 	// Fetch paginated artists
@@ -105,15 +110,8 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 		return e.String(http.StatusInternalServerError, "Failed to load artists")
 	}
 
-	// Get counts for each genre (excluding waiting).
-	rockMetalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, "rock_metal")
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load artists")
-	}
-	everythingElseCount, err := h.countArtistsByGenreExcludingWaiting(ctx, "everything_else")
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load artists")
-	}
+	rockMetalCount := genreCounts["rock_metal"]
+	everythingElseCount := genreCounts["everything_else"]
 
 	// Get waiting artists count (for queue section).
 	waitingCount, err := h.countWaitingArtists(ctx)
@@ -168,7 +166,10 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 
 	// Append each waiting artist card inside "#artists-waiting"
 	for _, artist := range artists {
-		if err := sse.PatchElementTempl(templates.WaitingArtistCard(artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModeAppend()); err != nil {
+		if err := sse.PatchElementTempl(
+			templates.WaitingArtistCard(artist),
+			patchOpts(h.cfg, "#artists-waiting", datastar.WithSelectorID("artists-waiting"), datastar.WithModeAppend())...,
+		); err != nil {
 			return err
 		}
 	}
@@ -176,7 +177,6 @@ func (h *Handler) handleWaitingArtistsAPI(e *core.RequestEvent) error {
 	// Morph/replace the Load More button container "#load-more-artists"
 	if hasMore {
 		return sse.PatchElementTempl(templates.WaitingArtistsLoadMore(params.offset + len(records)))
-	} else {
-		return sse.PatchElementTempl(templates.WaitingArtistsCompleteNotice())
 	}
+	return sse.PatchElementTempl(templates.WaitingArtistsCompleteNotice())
 }

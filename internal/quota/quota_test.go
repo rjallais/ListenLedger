@@ -718,12 +718,13 @@ func TestCheckAll_MultipleProviders(t *testing.T) {
 // HasAvailableQuota
 // --------------------------------------------------------------------------
 
-func TestHasAvailableQuota_NoneConfigured(t *testing.T) {
+func TestHasAvailableQuota_MobileSSRAlwaysAvailable(t *testing.T) {
+	// Nothing configured — mobile SSR needs no config and is always available.
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	if c.HasAvailableQuota(context.Background()) {
-		t.Fatal("expected no available quota when nothing is configured")
+	if !c.HasAvailableQuota(context.Background()) {
+		t.Fatal("expected available quota via mobile SSR even when nothing is configured")
 	}
 }
 
@@ -775,7 +776,8 @@ func TestGetBestProvider_PrefersLocal(t *testing.T) {
 }
 
 func TestGetBestProvider_FallsThroughPriority(t *testing.T) {
-	// Only browserless configured → should return browserless.
+	// Only browserless configured → mobile SSR (always available, second in
+	// priority after local) is preferred over browserless.
 	cfg := testConfig()
 	cfg.BrowserlessToken = "test"
 	cfg.BrowserlessEndpoint = "https://example.com"
@@ -783,19 +785,19 @@ func TestGetBestProvider_FallsThroughPriority(t *testing.T) {
 	c := NewChecker(cfg)
 	best := c.GetBestProvider(context.Background())
 
-	if best != "browserless" {
-		t.Errorf("GetBestProvider() = %q, want %q", best, "browserless")
+	if best != "mobile-ssr" {
+		t.Errorf("GetBestProvider() = %q, want %q", best, "mobile-ssr")
 	}
 }
 
-func TestGetBestProvider_EmptyWhenNoneConfigured(t *testing.T) {
+func TestGetBestProvider_MobileSSRWhenNoneConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
 	best := c.GetBestProvider(context.Background())
 
-	if best != "" {
-		t.Errorf("GetBestProvider() = %q, want empty string when nothing configured", best)
+	if best != "mobile-ssr" {
+		t.Errorf("GetBestProvider() = %q, want %q (mobile SSR is always available)", best, "mobile-ssr")
 	}
 }
 

@@ -50,15 +50,21 @@ sources = ["**/*.templ"]
 outputs = ["**/*_templ.go"]
 
 [tasks."build:css"]
-description = "Build Tailwind CSS for production"
-run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' --minify"
-sources = ["./templates/**/*.{templ,go}", "./input.css"]
+description = "Build Tailwind CSS for production (via embedded esbuild Go binary)"
+run = "go run ./cmd/build"
+sources = ["./templates/**/*.{templ,go}", "./input.css", "./daisyui/*.js"]
 outputs = ["static/styles.css"]
+
+[tasks."build:bundle"]
+description = "Bundle JS/TS libs via embedded esbuild (no-op if no entrypoints)"
+run = "go run ./cmd/build"
+sources = ["web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}"]
+outputs = ["static/libs/**"]
 
 [tasks.build]
 description = "Build the application for production"
 run = "go build -o bin/ListenLedger ."
-depends = ["build:templ", "build:css"]
+depends = ["build:templ", "build:css", "build:bundle"]
 
 # =============================================================================
 # LIVE TASKS - Used for development with hot-reloading
@@ -69,8 +75,8 @@ description = "Watch and regenerate Templ templates"
 run = "go tool templ generate -watch"
 
 [tasks."live:css"]
-description = "Watch and rebuild CSS on changes"
-run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' -w"
+description = "Watch and rebuild CSS/JS via embedded esbuild"
+run = "go run ./cmd/build --watch"
 
 [tasks."live:server"]
 description = "Run the server with Air hot-reloading (configured via .air.toml)"

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
 
+	"ListenLedger/config"
 	"ListenLedger/templates"
 )
 
@@ -43,15 +43,6 @@ type albumCreateInput struct {
 	statusDB        string
 	collectionSongs int
 	totalSongs      int
-}
-
-func (h *Handler) handleStatic(e *core.RequestEvent) error {
-	path := e.Request.PathValue("path")
-	e.Response.Header().Set("Cache-Control", "public, max-age=3600")
-	if err := e.FileFS(os.DirFS(h.staticDir), path); err != nil {
-		return fmt.Errorf("serve static file %q: %w", path, err)
-	}
-	return nil
 }
 
 func (h *Handler) handleIndex(e *core.RequestEvent) error {
@@ -211,14 +202,16 @@ func albumsFromRecords(records []*core.Record) []templates.Album {
 	return albums
 }
 
-func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
+func renderAlbumResponse(e *core.RequestEvent, cfg *config.Config, album templates.Album) error {
 	if album.Status == templates.StatusWaiting {
-		return renderDatastar(e, templates.AlbumCard(album))
+		return renderDatastar(e, templates.AlbumCard(album),
+			patchOpts(cfg, "#"+templates.AlbumCardID(album.ID), datastar.WithSelectorID(templates.AlbumCardID(album.ID)), datastar.WithModeOuter())...)
 	}
-	return renderDatastar(e, templates.AlbumRow(album))
+	return renderDatastar(e, templates.AlbumRow(album),
+		patchOpts(cfg, "#"+templates.AlbumRowID(album.ID), datastar.WithSelectorID(templates.AlbumRowID(album.ID)), datastar.WithModeOuter())...)
 }
 
-func patchAlbums(sse *datastar.ServerSentEventGenerator, targetID string, albums []templates.Album, isWaiting bool) error {
+func patchAlbums(sse *datastar.ServerSentEventGenerator, targetID string, albums []templates.Album, isWaiting bool, cfg *config.Config) error {
 	for _, album := range albums {
 		var component templ.Component
 		if isWaiting {
@@ -226,7 +219,10 @@ func patchAlbums(sse *datastar.ServerSentEventGenerator, targetID string, albums
 		} else {
 			component = templates.AlbumRow(album)
 		}
-		if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModeAppend()); err != nil {
+		if err := sse.PatchElementTempl(
+			component,
+			patchOpts(cfg, "#"+targetID, datastar.WithSelectorID(targetID), datastar.WithModeAppend())...,
+		); err != nil {
 			return fmt.Errorf("patch album %s into %s: %w", album.ID, targetID, err)
 		}
 	}
@@ -255,7 +251,7 @@ func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 	targetID := "albums-" + status
 
 	// Append each album card/row inside the target container using helper
-	if err := patchAlbums(sse, targetID, albumsFromRecords(records), status == templates.StatusWaiting); err != nil {
+	if err := patchAlbums(sse, targetID, albumsFromRecords(records), status == templates.StatusWaiting, h.cfg); err != nil {
 		return err
 	}
 
@@ -359,7 +355,10 @@ func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
 		targetID = "albums-" + album.Status
 	}
 
-	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+	if err := sse.PatchElementTempl(
+		component,
+		patchOpts(h.cfg, "#"+targetID, datastar.WithSelectorID(targetID), datastar.WithModePrepend())...,
+	); err != nil {
 		return fmt.Errorf("prepend album %s into %s: %w", album.ID, targetID, err)
 	}
 
@@ -389,7 +388,7 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 
 	album := albumFromRecord(record)
 	if oldStatus == album.Status {
-		return renderAlbumResponse(e, album)
+		return renderAlbumResponse(e, h.cfg, album)
 	}
 
 	return h.patchAlbumStatusTransition(e, album, oldStatus)
@@ -414,7 +413,10 @@ func (h *Handler) patchAlbumStatusTransition(e *core.RequestEvent, album templat
 
 	// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode.
 	component, prependTargetID := albumReplacementElement(album)
-	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(prependTargetID), datastar.WithModePrepend()); err != nil {
+	if err := sse.PatchElementTempl(
+		component,
+		patchOpts(h.cfg, "#"+prependTargetID, datastar.WithSelectorID(prependTargetID), datastar.WithModePrepend())...,
+	); err != nil {
 		return fmt.Errorf("prepend album %s into %s: %w", album.ID, prependTargetID, err)
 	}
 
@@ -485,7 +487,7 @@ func (h *Handler) handleUpdateAlbumSongField(field albumSongField) func(*core.Re
 			return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
 		}
 
-		return renderAlbumResponse(e, albumFromRecord(record))
+		return renderAlbumResponse(e, h.cfg, albumFromRecord(record))
 	}
 }
 

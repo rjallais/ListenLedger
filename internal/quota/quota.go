@@ -119,9 +119,7 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 		results["local-browserless"] = c.CheckLocalBrowserless()
 	}
 
-	if c.cfg.HasMobileSSR() {
-		results["mobile-ssr"] = c.CheckMobileSSR()
-	}
+	results["mobile-ssr"] = c.CheckMobileSSR()
 
 	if c.cfg.HasScrapingAnt() {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
@@ -182,16 +180,8 @@ func (c *Checker) CheckLocalBrowserless() Info {
 }
 
 // CheckMobileSSR checks whether mobile SSR scraping is available.
-// Mobile SSR shares the local headless binary — it is available when local headless is enabled.
+// Mobile SSR is a plain HTTP GET and needs no configuration, so it is always available.
 func (c *Checker) CheckMobileSSR() Info {
-	if !c.cfg.HasMobileSSR() {
-		return Info{
-			Provider:  "mobile-ssr",
-			Available: false,
-			Error:     "Mobile SSR not enabled (requires local headless)",
-		}
-	}
-
 	return Info{
 		Provider:  "mobile-ssr",
 		Available: true,
@@ -539,7 +529,8 @@ func HasAvailableFrom(quotas map[string]Info) bool {
 }
 
 // GetBestProvider returns the provider with the most remaining credits.
-// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// Priority order: Local headless (always free) -> Mobile SSR (always free, no
+// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
 // ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func (c *Checker) GetBestProvider(ctx context.Context) string {
@@ -548,7 +539,8 @@ func (c *Checker) GetBestProvider(ctx context.Context) string {
 }
 
 // GetBestFrom returns the best available provider from a precomputed quota map.
-// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// Priority order: Local headless (always free) -> Mobile SSR (always free, no
+// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
 // ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func GetBestFrom(quotas map[string]Info) string {
