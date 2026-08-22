@@ -42,19 +42,10 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 		return w.handleDedupSkip(ctx, env)
 	}
 
-	if provider == spotify.ProviderLocalHeadless || provider == spotify.ProviderLocalBrowserless {
-		if result, ok := w.checkLocalProviderHealth(env.msg, label); ok {
-			return result
-		}
+	if result, ok := w.runProviderPreflight(ctx, provider, env); ok {
+		return result
 	}
 
-	if provider == spotify.ProviderApify {
-		if result, ok := w.checkApifyPreflight(ctx, env); ok {
-			return result
-		}
-	}
-
-	// Start an InProgress heartbeat for this provider's processing time.
 	progress := newProgressHandle()
 	go w.inProgressLoop(env.msg, progress.done)
 	defer progress.Stop()
@@ -70,6 +61,23 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 		log.Printf("[worker] Failed to ack message: %v", err)
 	}
 	return msgOK
+}
+
+func (w *Worker) runProviderPreflight(ctx context.Context, provider spotify.Provider, env msgEnvelope) (msgResult, bool) {
+	if result, ok := w.checkLocalProviderPreflight(provider, env); ok {
+		return result, true
+	}
+	if result, ok := w.checkApifyPreflight(ctx, provider, env); ok {
+		return result, true
+	}
+	return msgResult(0), false
+}
+
+func (w *Worker) checkLocalProviderPreflight(provider spotify.Provider, env msgEnvelope) (msgResult, bool) {
+	if provider == spotify.ProviderLocalHeadless || provider == spotify.ProviderLocalBrowserless {
+		return w.checkLocalProviderHealth(env.msg, env.label)
+	}
+	return msgResult(0), false
 }
 
 // handleDedupSkip acks a message that was already handled by another provider
@@ -110,7 +118,10 @@ func (w *Worker) checkLocalProviderHealth(msg jetstream.Msg, label string) (msgR
 // expensive Actor run. If budget or memory is insufficient the message is
 // NAK-ed immediately so another provider (or a future restart) can handle it,
 // saving credits and avoiding a guaranteed HTTP 402.
-func (w *Worker) checkApifyPreflight(ctx context.Context, env msgEnvelope) (msgResult, bool) {
+func (w *Worker) checkApifyPreflight(ctx context.Context, provider spotify.Provider, env msgEnvelope) (msgResult, bool) {
+	if provider != spotify.ProviderApify {
+		return msgOK, false
+	}
 	checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer checkCancel()
 	info := w.quota.CheckApify(checkCtx)
@@ -222,6 +233,9 @@ func (w *Worker) handleDLQ(ctx context.Context, env msgEnvelope, err error) msgR
 		log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
 		return msgOK
 	}
+	if statusErr := w.updateArtistStatus(ctx, env.req.ArtistID, "failed"); statusErr != nil {
+		log.Printf("[worker] Failed to mark retry-exhausted artist %s as failed: %v", env.req.ArtistID, statusErr)
+	}
 	w.setScrapeJobFinished(env.req.RequestID, "failed", "retry_exhausted")
 	w.recordDLQ(env.label)
 	return msgOK
@@ -309,14 +323,10 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 		return
 	}
 
-	if err := msg.InProgress(); err != nil {
-		log.Printf("[worker] Warning: initial InProgress failed: %v", err)
-	}
+	msg.InProgress()
 
 	t := time.NewTicker(w.progress)
 	defer t.Stop()
-
-	allGroupsDead := w.allGroupsDead
 
 	for {
 		select {
@@ -324,45 +334,42 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 			return
 		case <-w.ctx.Done():
 			return
-		case <-allGroupsDead:
+		case <-w.allGroupsDead:
 			return
 		case <-t.C:
-			if err := msg.InProgress(); err != nil {
-				log.Printf("[worker] Warning: InProgress failed: %v", err)
-			}
+			msg.InProgress()
 		}
 	}
 }
 
 func (w *Worker) ackMsg(ctx context.Context, msg jetstream.Msg) error {
-	var lastErr error
 	for attempt := range 3 {
-		ackCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		err := msg.DoubleAck(ackCtx)
-		cancel()
-		if err == nil {
+		if err := w.tryAck(ctx, msg, attempt); err == nil {
 			return nil
 		}
-		lastErr = err
-
-		if attempt == 2 {
-			break
-		}
-
-		delay := time.Duration(attempt+1) * 100 * time.Millisecond
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
 	}
+	return msg.Ack()
+}
 
-	if err := msg.Ack(); err == nil {
+func (w *Worker) tryAck(ctx context.Context, msg jetstream.Msg, attempt int) error {
+	ackCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	err := msg.DoubleAck(ackCtx)
+	if err == nil {
 		return nil
-	} else if lastErr != nil {
-		return errors.Join(lastErr, err)
 	}
-	return lastErr
+	if attempt < 2 {
+		w.ackRetryDelay(ctx, attempt)
+	}
+	return err
+}
+
+func (w *Worker) ackRetryDelay(ctx context.Context, attempt int) {
+	delay := time.Duration(attempt+1) * 100 * time.Millisecond
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +442,12 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 		return errRequestAlreadySucceeded
 	}
 
-	return w.persistListeners(ctx, req, env.label, listeners, startedAt)
+	return w.persistListeners(ctx, listenerPersistParams{
+		Req:       req,
+		Label:     env.label,
+		Listeners: listeners,
+		StartedAt: startedAt,
+	})
 }
 
 // logProcessingStart logs the standard processing start message.
@@ -494,23 +506,28 @@ func (w *Worker) fetchListeners(ctx context.Context, req messaging.ScrapeRequest
 	return listeners, nil
 }
 
-// persistListeners writes the fetched listener count to PocketBase and marks
-// the scrape job as succeeded.
-func (w *Worker) persistListeners(ctx context.Context, req messaging.ScrapeRequested, label string, listeners int, startedAt time.Time) error {
+type listenerPersistParams struct {
+	Req       messaging.ScrapeRequested
+	Label     string
+	Listeners int
+	StartedAt time.Time
+}
+
+func (w *Worker) persistListeners(ctx context.Context, params listenerPersistParams) error {
 	persistCtx, persistCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer persistCancel()
 
-	if err := w.updateArtistListeners(persistCtx, req.ArtistID, listeners); err != nil {
+	if err := w.updateArtistListeners(persistCtx, params.Req.ArtistID, params.Listeners); err != nil {
 		return fmt.Errorf("update listeners: %w", err)
 	}
 
-	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", req.ArtistName, listeners, label)
-	if err := w.setScrapeJobFinishedWithContext(persistCtx, req.RequestID, "succeeded", ""); err != nil {
+	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", params.Req.ArtistName, params.Listeners, params.Label)
+	if err := w.setScrapeJobFinishedWithContext(persistCtx, params.Req.RequestID, "succeeded", ""); err != nil {
 		return fmt.Errorf("mark scrape job succeeded: %w", err)
 	}
-	w.markRequestSucceeded(req.RequestID)
-	w.recordSucceeded(label, time.Since(startedAt))
-	w.queueTotalSongsRecalc(req.ArtistID)
-	w.clearFailedJobsForArtist(persistCtx, req.ArtistID, req.RequestID)
+	w.markRequestSucceeded(params.Req.RequestID)
+	w.recordSucceeded(params.Label, time.Since(params.StartedAt))
+	w.queueTotalSongsRecalc(params.Req.ArtistID)
+	w.clearFailedJobsForArtist(persistCtx, params.Req.ArtistID, params.Req.RequestID)
 	return nil
 }

@@ -24,15 +24,15 @@ type Handler struct {
 	js        jetstream.JetStream
 	staticDir string
 
-	app        *pocketbase.PocketBase
-	nc         *nats.Conn
-	cfg        *config.Config
-	batches    map[string]*batchProgress
-	artistBatch map[string]string
-	latestBatch string
+	app          *pocketbase.PocketBase
+	nc           *nats.Conn
+	cfg          *config.Config
+	batches      map[string]*batchProgress
+	artistBatch  map[string]string
+	latestBatch  string
 	batchUpdates *nats.Subscription
 	batchSubMu   sync.Mutex
-	
+
 	httpClient *http.Client
 }
 
@@ -44,31 +44,35 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	
+
 	dialTimeout := 10 * time.Second
 	if cfg != nil && cfg.RequestTimeout > 0 {
 		dialTimeout = cfg.RequestTimeout
 	}
-	
+
 	transport.DialContext = (&net.Dialer{
 		Timeout:   dialTimeout,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
-	
+
 	if cfg != nil && cfg.MaxIdleConns > 0 {
 		transport.MaxIdleConns = cfg.MaxIdleConns
 	} else {
 		transport.MaxIdleConns = 100
 	}
-	
-	transport.MaxIdleConnsPerHost = 2
-	
+
+	if cfg != nil && cfg.MaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	} else {
+		transport.MaxIdleConnsPerHost = 32
+	}
+
 	if cfg != nil && cfg.IdleConnTimeout > 0 {
 		transport.IdleConnTimeout = cfg.IdleConnTimeout
 	} else {
 		transport.IdleConnTimeout = 90 * time.Second
 	}
-	
+
 	transport.TLSHandshakeTimeout = 10 * time.Second
 
 	httpTimeout := 30 * time.Second
@@ -89,9 +93,9 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 		staticDir: staticDir,
 		startedAt: time.Now(),
 
-		batches:    make(map[string]*batchProgress),
+		batches:     make(map[string]*batchProgress),
 		artistBatch: make(map[string]string),
-		
+
 		httpClient: httpClient,
 	}
 }

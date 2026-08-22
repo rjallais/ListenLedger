@@ -508,7 +508,10 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return 0, fmt.Errorf("browserless quota exceeded (401): %w", ErrQuotaExhausted)
+		return 0, fmt.Errorf("browserless authentication failed (status 401)")
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return 0, fmt.Errorf("browserless quota exceeded (status 402): %w", ErrQuotaExhausted)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("browserless unexpected status code: %d", resp.StatusCode)
@@ -645,7 +648,7 @@ func applyLocalhostPort(u *url.URL) {
 }
 
 // fixLocalBrowserlessPath rewrites a BQL path (or bare root) to the
-// /chromium/content endpoint used by the open-source Browserless v2 image.
+// /content endpoint used by the open-source Browserless v2 image.
 func fixLocalBrowserlessPath(u *url.URL) {
 	if !needsLocalBrowserlessPathFix(u.Path) {
 		return
@@ -654,7 +657,7 @@ func fixLocalBrowserlessPath(u *url.URL) {
 	if basePath == "/" {
 		basePath = ""
 	}
-	u.Path = basePath + "/chromium/content"
+	u.Path = basePath + "/content"
 }
 
 func needsLocalBrowserlessPathFix(path string) bool {
@@ -758,14 +761,20 @@ func isQuoted(s string) bool {
 }
 
 // isScrapingAntQuotaStatus reports whether the HTTP status indicates a
-// ScrapingAnt quota exhaustion or permanent rate-limit condition.
+// ScrapingAnt quota exhaustion condition.
 func isScrapingAntQuotaStatus(code int) bool {
-	return code == http.StatusForbidden || code == http.StatusTooManyRequests || code == http.StatusPaymentRequired
+	return code == http.StatusPaymentRequired
 }
 
 func checkScrapingAntHTTPStatus(resp *http.Response) error {
 	if isScrapingAntQuotaStatus(resp.StatusCode) {
-		return fmt.Errorf("scrapingant quota/rate limit exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+		return fmt.Errorf("scrapingant quota exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("scrapingant forbidden (status 403): check token and IP restrictions")
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &RateLimitError{Provider: "scrapingant", StatusCode: http.StatusTooManyRequests}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("scrapingant unexpected status code: %d%s", resp.StatusCode, readBodySnippet(resp.Body))
@@ -868,14 +877,6 @@ func (c *Client) tryScraperAPIProfiles(ctx context.Context, artistID string) (in
 	return 0, fmt.Errorf("scraperapi request failed with no retryable profile remaining")
 }
 
-// isScraperAPIQuotaStatus reports whether the HTTP status indicates a
-// ScraperAPI quota exhaustion or authentication failure.
-func isScraperAPIQuotaStatus(code int) bool {
-	return code == http.StatusUnauthorized ||
-		code == http.StatusPaymentRequired ||
-		code == http.StatusForbidden
-}
-
 func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string, profile scraperAPIRequestProfile) (int, bool, error) {
 	req, err := c.buildScraperAPIRequest(ctx, artistID, profile)
 	if err != nil {
@@ -909,9 +910,21 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 	return count, false, nil
 }
 
+// isScraperAPIQuotaStatus reports whether the HTTP status indicates a
+// ScraperAPI quota exhaustion condition.
+func isScraperAPIQuotaStatus(code int) bool {
+	return code == http.StatusPaymentRequired
+}
+
 func (c *Client) checkScraperAPIHTTPStatus(resp *http.Response) error {
 	if isScraperAPIQuotaStatus(resp.StatusCode) {
-		return fmt.Errorf("scraperapi quota/authentication error (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+		return fmt.Errorf("scraperapi quota exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("scraperapi authentication failed (status 401): check SCRAPERAPI_TOKEN")
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("scraperapi forbidden (status 403): check token validity and account status")
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfter := c.markScraperAPIRateLimited(resp.Header.Get("Retry-After"))

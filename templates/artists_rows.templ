@@ -54,12 +54,3 @@ templ ArtistRowContent(artist Artist) {
 		@ArtistRefreshAction(artist.ID)
 	</td>
 }
-
-// NewArtistRow wraps ArtistRow for prepending to the table with a success highlight.
-templ NewArtistRow(artist Artist) {
-	<tbody id={ artistsTBodyID(artist.GenreGroup) } data-merge-mode="prepend">
-		<tr id={ artistRowID(artist.ID) } class="bg-success/10" data-signals={ artistSignalsJSON(artist) }>
-			@ArtistRowContent(artist)
-		</tr>
-	</tbody>
-}

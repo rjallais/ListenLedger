@@ -150,35 +150,8 @@ templ AlbumStatusBadge(status string) {
 	}
 }
 
-// AlbumRemoveElement removes an album element from the DOM after a status change.
-templ AlbumRemoveElement(albumID, currentStatus string) {
-	if currentStatus == StatusWaiting {
-		<div id={ "album-card-" + albumID } data-merge-mode="remove"></div>
-	} else {
-		<tr id={ "album-" + albumID } data-merge-mode="remove"></tr>
-	}
-}
-
-// AlbumInsertElement inserts an album into the correct section container.
-templ AlbumInsertElement(album Album) {
-	if album.Status == StatusWaiting {
-		<div id="albums-waiting" data-merge-mode="prepend">
-			@AlbumCard(album)
-		</div>
-	} else {
-		<tbody id={ "albums-" + album.Status } data-merge-mode="prepend">
-			@AlbumRow(album)
-		</tbody>
-	}
-}
-
-// NewAlbumEntry inserts a newly created album into the correct section.
-templ NewAlbumEntry(album Album) {
-	@AlbumInsertElement(album)
-}
-
 templ AddAlbumSuccessNotice(albumTitle string) {
-	<div id="add-album-feedback" class="mt-2" data-merge-mode="morph">
+	<div id="add-album-feedback" class="mt-2">
 		<div class="alert alert-success">
 			@IconCheck("h-5 w-5")
 			<div class="flex-1">
@@ -190,30 +163,21 @@ templ AddAlbumSuccessNotice(albumTitle string) {
 	</div>
 }
 
-templ NewAlbumCreateResponse(album Album) {
-	@NewAlbumEntry(album)
-	@AddAlbumSuccessNotice(album.Title)
-}
-
-// AlbumStatusTransition moves an album between sections after a status change.
-templ AlbumStatusTransition(oldStatus string, album Album) {
-	@AlbumRemoveElement(album.ID, oldStatus)
-	@AlbumInsertElement(album)
-}
-
 // AddAlbumModal renders the modal for adding a new album.
 templ AddAlbumModal() {
 	<input type="checkbox" id="add-album-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle">
+	<div class="modal modal-bottom sm:modal-middle" role="dialog" aria-modal="true" aria-labelledby="add-album-title">
 		<div class="modal-box">
 			<div class="flex items-center justify-between mb-4">
-				<h3 class="font-bold text-lg">Add New Album</h3>
+				<h2 id="add-album-title" class="font-bold text-lg">Add New Album</h2>
 				<label for="add-album-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
 			<form
 				id="add-album-form"
-				data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
-				data-on-success="document.getElementById('add-album-form').reset()"
+				data-signals="{albumInFlight:false}"
+				data-indicator:album-in-flight
+				data-on:submit__prevent="if ($albumInFlight) { return; } @post('/api/albums', {contentType: 'form'})"
+				data-on:datastar-fetch="evt.detail.type === 'finished' && $albumInFlight && document.getElementById('add-album-form').reset()"
 			>
 				<div class="form-control w-full mb-4">
 					<label class="label" for="album-title">
@@ -283,7 +247,7 @@ templ AddAlbumModal() {
 				</div>
 				<div class="modal-action">
 					<label for="add-album-modal" class="btn btn-ghost">Cancel</label>
-					<button type="submit" class="btn btn-primary gap-2">
+					<button type="submit" class="btn btn-primary gap-2" data-attr="{'disabled': $albumInFlight}">
 						@IconPlus("h-5 w-5")
 						Add Album
 					</button>

@@ -22,28 +22,39 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 	errorsSeen := []error{}
 
 	for _, lookup := range l.Lookups {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if lookup == nil {
-			continue
-		}
-
-		candidates, err := lookup.Lookup(ctx, song, primaryArtistPrefix)
+		candidates, err := l.executeSingleLookup(ctx, lookup, song, primaryArtistPrefix)
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
 			}
-			errorsSeen = append(errorsSeen, fmt.Errorf("%T lookup failed: %w", lookup, err))
+			errorsSeen = append(errorsSeen, err)
 			continue
 		}
-		if len(candidates) == 0 {
-			continue
-		}
-
 		allCandidates = append(allCandidates, candidates...)
 	}
 
+	return l.finalizeLookupResults(allCandidates, errorsSeen)
+}
+
+func (l ChainTrackLookup) executeSingleLookup(ctx context.Context, lookup TrackMetadataLookup, song SongInput, primaryArtistPrefix string) ([]TrackCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if lookup == nil {
+		return nil, nil
+	}
+
+	candidates, err := lookup.Lookup(ctx, song, primaryArtistPrefix)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("%T lookup failed: %w", lookup, err)
+	}
+	return candidates, nil
+}
+
+func (l ChainTrackLookup) finalizeLookupResults(allCandidates []TrackCandidate, errorsSeen []error) ([]TrackCandidate, error) {
 	allCandidates = dedupeTrackCandidates(allCandidates)
 	if len(allCandidates) > 0 {
 		return allCandidates, nil
@@ -56,12 +67,12 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 
 func selectTrackCandidate(candidates []TrackCandidate) (TrackCandidate, bool, []string, bool) {
 	if len(candidates) == 0 {
-		return TrackCandidate{}, false, []string{"external lookup did not find a confident full artist credit"}, false
+		return noCandidateResult()
 	}
 
 	candidates = preferCanonicalTrackCandidates(candidates)
 	if len(candidates) == 0 {
-		return TrackCandidate{}, false, []string{"external lookup did not find a confident full artist credit"}, false
+		return noCandidateResult()
 	}
 	if selected, ok := selectCanonicalSingleCandidate(candidates); ok {
 		return selected, false, []string{
@@ -69,6 +80,21 @@ func selectTrackCandidate(candidates []TrackCandidate) (TrackCandidate, bool, []
 		}, true
 	}
 
+	nearTop := filterNearTopCandidates(candidates)
+	groups := groupCandidatesByArtistList(nearTop)
+
+	if len(groups) != 1 {
+		return selectFromMultipleGroups(nearTop, groups, candidates[0].Confidence)
+	}
+
+	return selectFromSingleGroup(groups)
+}
+
+func noCandidateResult() (TrackCandidate, bool, []string, bool) {
+	return TrackCandidate{}, false, []string{"external lookup did not find a confident full artist credit"}, false
+}
+
+func filterNearTopCandidates(candidates []TrackCandidate) []TrackCandidate {
 	topScore := candidates[0].Confidence
 	nearTop := make([]TrackCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -76,43 +102,49 @@ func selectTrackCandidate(candidates []TrackCandidate) (TrackCandidate, bool, []
 			nearTop = append(nearTop, candidate)
 		}
 	}
+	return nearTop
+}
 
+func groupCandidatesByArtistList(candidates []TrackCandidate) map[string][]TrackCandidate {
 	groups := map[string][]TrackCandidate{}
-	for _, candidate := range nearTop {
+	for _, candidate := range candidates {
 		key := normalizedArtistListKey(candidate.ArtistNames)
 		groups[key] = append(groups[key], candidate)
 	}
+	return groups
+}
 
-	if len(groups) != 1 {
-		if selected, ok := selectFeaturedCanonicalCandidate(nearTop); ok {
-			return selected, false, []string{
-				fmt.Sprintf("selected %q from %s with confidence %.2f after featured-track canonical filtering", selected.Title, selected.Source, selected.Confidence),
-			}, true
-		}
-		if bestKey, sourceCount, ok := selectCorroboratedGroup(groups); ok {
-			bestGroup := groups[bestKey]
-			sortTrackCandidates(bestGroup)
-			selected := bestGroup[0]
-			return selected, false, []string{
-				fmt.Sprintf(
-					"selected %q from %s with confidence %.2f after corroboration from %d sources",
-					selected.Title, selected.Source, selected.Confidence, sourceCount,
-				),
-			}, true
-		}
-		return TrackCandidate{}, true, []string{
-			fmt.Sprintf("external lookup returned multiple competing artist lists near confidence %.2f", topScore),
-		}, false
+func selectFromMultipleGroups(nearTop []TrackCandidate, groups map[string][]TrackCandidate, topScore float64) (TrackCandidate, bool, []string, bool) {
+	if selected, ok := selectFeaturedCanonicalCandidate(nearTop); ok {
+		return selected, false, []string{
+			fmt.Sprintf("selected %q from %s with confidence %.2f after featured-track canonical filtering", selected.Title, selected.Source, selected.Confidence),
+		}, true
 	}
+	if bestKey, sourceCount, ok := selectCorroboratedGroup(groups); ok {
+		bestGroup := groups[bestKey]
+		sortTrackCandidates(bestGroup)
+		selected := bestGroup[0]
+		return selected, false, []string{
+			fmt.Sprintf(
+				"selected %q from %s with confidence %.2f after corroboration from %d sources",
+				selected.Title, selected.Source, selected.Confidence, sourceCount,
+			),
+		}, true
+	}
+	return TrackCandidate{}, true, []string{
+		fmt.Sprintf("external lookup returned multiple competing artist lists near confidence %.2f", topScore),
+	}, false
+}
 
-	bestKey := normalizedArtistListKey(nearTop[0].ArtistNames)
-	bestGroup := groups[bestKey]
-	sortTrackCandidates(bestGroup)
-
-	selected := bestGroup[0]
-	return selected, false, []string{
-		fmt.Sprintf("selected %q from %s with confidence %.2f", selected.Title, selected.Source, selected.Confidence),
-	}, true
+func selectFromSingleGroup(groups map[string][]TrackCandidate) (TrackCandidate, bool, []string, bool) {
+	for _, group := range groups {
+		sortTrackCandidates(group)
+		selected := group[0]
+		return selected, false, []string{
+			fmt.Sprintf("selected %q from %s with confidence %.2f", selected.Title, selected.Source, selected.Confidence),
+		}, true
+	}
+	return noCandidateResult()
 }
 
 func selectFeaturedCanonicalCandidate(candidates []TrackCandidate) (TrackCandidate, bool) {
@@ -285,12 +317,17 @@ func filterCandidatesWithoutVersionKeywords(candidates []TrackCandidate) []Track
 }
 
 func filterCandidatesWithFewestArtists(candidates []TrackCandidate) []TrackCandidate {
-	if len(candidates) == 0 {
+	if len(candidates) == 0 || hasExplicitFeatureSignals(candidates) {
 		return nil
 	}
-	if hasExplicitFeatureSignals(candidates) {
+	minArtists := findMinArtistCount(candidates)
+	if minArtists == 0 {
 		return nil
 	}
+	return filterByArtistCount(candidates, minArtists)
+}
+
+func findMinArtistCount(candidates []TrackCandidate) int {
 	minArtists := 0
 	for _, candidate := range candidates {
 		count := distinctArtistCount(candidate.ArtistNames)
@@ -301,12 +338,13 @@ func filterCandidatesWithFewestArtists(candidates []TrackCandidate) []TrackCandi
 			minArtists = count
 		}
 	}
-	if minArtists == 0 {
-		return nil
-	}
+	return minArtists
+}
+
+func filterByArtistCount(candidates []TrackCandidate, targetCount int) []TrackCandidate {
 	filtered := make([]TrackCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if distinctArtistCount(candidate.ArtistNames) == minArtists {
+		if distinctArtistCount(candidate.ArtistNames) == targetCount {
 			filtered = append(filtered, candidate)
 		}
 	}
