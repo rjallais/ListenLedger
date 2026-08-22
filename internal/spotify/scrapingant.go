@@ -2,6 +2,7 @@
 
 // scrapingant.go provides ScrapingAnt HTML scraping for Spotify artist
 // listener data via the ScrapingAnt "general" API.
+
 package spotify
 
 import (
@@ -12,27 +13,7 @@ import (
 	"os"
 )
 
-// isScrapingAntQuotaStatus reports whether the HTTP status indicates a
-// ScrapingAnt quota exhaustion condition.
-func isScrapingAntQuotaStatus(code int) bool {
-	return code == http.StatusPaymentRequired
-}
 
-func checkScrapingAntHTTPStatus(resp *http.Response) error {
-	if isScrapingAntQuotaStatus(resp.StatusCode) {
-		return fmt.Errorf("scrapingant quota exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
-	}
-	if resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("scrapingant forbidden (status 403): check token and IP restrictions")
-	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return &RateLimitError{Provider: "scrapingant", StatusCode: http.StatusTooManyRequests}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("scrapingant unexpected status code: %d%s", resp.StatusCode, readBodySnippet(resp.Body))
-	}
-	return nil
-}
 
 // fetchViaScrapingAnt fetches the monthly listener count via ScrapingAnt HTML scraping.
 func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int, error) {
@@ -69,7 +50,7 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 		}
 	}()
 
-	if err := checkScrapingAntHTTPStatus(resp); err != nil {
+	if err := checkProviderHTTPStatus(resp, "scrapingant", http.StatusPaymentRequired); err != nil {
 		return 0, err
 	}
 

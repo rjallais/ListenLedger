@@ -35,14 +35,8 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 		}
 	}()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		return 0, fmt.Errorf("browserless authentication failed (status 401)")
-	}
-	if resp.StatusCode == http.StatusPaymentRequired {
-		return 0, fmt.Errorf("browserless quota exceeded (status 402): %w", ErrQuotaExhausted)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("browserless unexpected status code: %d", resp.StatusCode)
+	if err := checkProviderHTTPStatus(resp, "browserless", http.StatusPaymentRequired); err != nil {
+		return 0, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -186,8 +180,16 @@ func (c *Client) buildBrowserlessRequest(ctx context.Context, artistID string) (
 		return nil, fmt.Errorf("failed to marshal Browserless payload: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s?token=%s&humanlike=true&blockConsentModals=true",
-		c.config.BrowserlessEndpoint, c.config.BrowserlessToken)
+	base, err := url.Parse(c.config.BrowserlessEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("parse browserless endpoint: %w", err)
+	}
+	q := base.Query()
+	q.Set("token", c.config.BrowserlessToken)
+	q.Set("humanlike", "true")
+	q.Set("blockConsentModals", "true")
+	base.RawQuery = q.Encode()
+	endpoint := base.String()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
