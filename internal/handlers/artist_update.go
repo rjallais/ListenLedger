@@ -52,7 +52,13 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 	}
 	totalSongs := h.dynamicTotalSongs(ctx, record, rankCache)
 
-	return renderUpdatedArtistStatus(e, oldStatus, newStatus, currentGenre, artistFromRecord(record, totalSongs))
+	return renderUpdatedArtistStatus(artistStatusUpdateParams{
+		Event:        e,
+		OldStatus:    oldStatus,
+		NewStatus:    newStatus,
+		CurrentGenre: currentGenre,
+		Artist:       artistFromRecord(record, totalSongs),
+	})
 }
 
 // handleUpdateCollectionSongs increments or decrements the collection_songs count.

@@ -2,10 +2,10 @@ package templates
 
 templ BatchRefreshModal() {
 	<input type="checkbox" id="batch-refresh-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false,batchInFlight:false}">
+	<div class="modal modal-bottom sm:modal-middle" data-signals="{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false,batchInFlight:false}" role="dialog" aria-modal="true" aria-labelledby="batch-refresh-title">
 		<div class="modal-box">
 			<div class="flex items-center justify-between mb-4">
-				<h3 class="font-bold text-lg">Batch Refresh Artists</h3>
+				<h2 id="batch-refresh-title" class="font-bold text-lg">Batch Refresh Artists</h2>
 				<label for="batch-refresh-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
 			<p class="text-sm text-base-content/70 mb-4">
@@ -14,9 +14,8 @@ templ BatchRefreshModal() {
 			</p>
 			<form
 				id="batch-refresh-form"
-				data-on:submit__prevent="if ($batchInFlight) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
-				data-on:datastar-fetch:finished="$batchInFlight = false"
-				data-on:datastar-fetch:error="$batchInFlight = false"
+				data-on:submit__prevent="if ($batchInFlight && !$batchDone) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})"
+				data-on:datastar-fetch="if (evt.detail.type === 'finished' || evt.detail.type === 'error') { $batchInFlight = false }"
 			>
 				<input type="hidden" name="batch_id" data-bind="$batchID"/>
 				@BatchRefreshCountField()
@@ -47,6 +46,6 @@ templ BatchRefreshCountField() {
 templ BatchRefreshModalActions() {
 	<div class="modal-action">
 		<label for="batch-refresh-modal" class="btn btn-ghost">Cancel</label>
-		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight}">Start Refresh</button>
+		<button type="submit" class="btn btn-primary" data-attr="{'disabled': $batchInFlight && !$batchDone}">Start Refresh</button>
 	</div>
 }

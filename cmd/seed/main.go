@@ -28,9 +28,9 @@ func main() {
 	})
 
 	opts := seedOptions{
-		dryRun:          flag.Bool("dry-run", false, "Show what would be seeded without making changes"),
-		sheet1:          flag.String("sheet1", "Music - Sheet1.csv", "Path to Sheet1 CSV file"),
-		sheet2:          flag.String("sheet2", "Music - Sheet2.csv", "Path to Sheet2 CSV file"),
+		dryRun:           flag.Bool("dry-run", false, "Show what would be seeded without making changes"),
+		sheet1:           flag.String("sheet1", "Music - Sheet1.csv", "Path to Sheet1 CSV file"),
+		sheet2:           flag.String("sheet2", "Music - Sheet2.csv", "Path to Sheet2 CSV file"),
 		sheet2GenreGroup: flag.String("sheet2-genre-group", "rock_metal", "Genre group for artists seeded from Sheet2"),
 	}
 	flag.Parse()
@@ -52,9 +52,9 @@ func main() {
 }
 
 type seedOptions struct {
-	dryRun          *bool
-	sheet1          *string
-	sheet2          *string
+	dryRun           *bool
+	sheet1           *string
+	sheet2           *string
 	sheet2GenreGroup *string
 }
 
@@ -67,24 +67,55 @@ func runSeed(ctx context.Context, app *pocketbase.PocketBase, opts seedOptions) 
 		return fmt.Errorf("failed to seed artists from Sheet1: %w", err)
 	}
 
-	if err := seedFromSheet2(ctx, app, *opts.dryRun, *opts.sheet2, *opts.sheet2GenreGroup); err != nil {
+	if err := seedFromSheet2(ctx, seedSheet2Params{
+		App:        app,
+		DryRun:     *opts.dryRun,
+		Sheet2Path: *opts.sheet2,
+		GenreGroup: *opts.sheet2GenreGroup,
+	}); err != nil {
 		return fmt.Errorf("failed to seed from Sheet2: %w", err)
 	}
 
 	return nil
 }
 
-func seedAlbums(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	file, err := os.Open(sheet1Path)
+func readCSVRecords(ctx context.Context, path, sheetName string) ([][]string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet1: %w", err)
+		return nil, fmt.Errorf("failed to open %s: %w", sheetName, err)
 	}
 	defer func() { _ = file.Close() }()
 
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", sheetName, err)
+	}
+
 	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
+	type csvReadResult struct {
+		records [][]string
+		err     error
+	}
+	readResultCh := make(chan csvReadResult, 1)
+	go func() {
+		records, readErr := reader.ReadAll()
+		readResultCh <- csvReadResult{records: records, err: readErr}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("failed to read %s: %w", sheetName, ctx.Err())
+	case result := <-readResultCh:
+		if result.err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", sheetName, result.err)
+		}
+		return result.records, nil
+	}
+}
+
+func seedAlbums(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
+	records, err := readCSVRecords(ctx, sheet1Path, "Sheet1")
 	if err != nil {
-		return fmt.Errorf("failed to read Sheet1: %w", err)
+		return err
 	}
 
 	collection, err := app.FindCollectionByNameOrId("albums")
@@ -142,24 +173,17 @@ func (cfg albumSeedConfig) seedAlbumRow(ctx context.Context, row []string) int {
 }
 
 type artistColumnMapping struct {
-	Name int
-	SpotifyID int
-	Listeners int
+	Name            int
+	SpotifyID       int
+	Listeners       int
 	CollectionSongs int
-	TotalSongs int
+	TotalSongs      int
 }
 
 func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet1Path string) error {
-	file, err := os.Open(sheet1Path)
+	records, err := readCSVRecords(ctx, sheet1Path, "Sheet1")
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet1: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return fmt.Errorf("failed to read Sheet1: %w", err)
+		return err
 	}
 
 	collection, err := app.FindCollectionByNameOrId("artists")
@@ -189,11 +213,11 @@ func seedArtistsFromSheet1(ctx context.Context, app *pocketbase.PocketBase, dryR
 }
 
 type seedContext struct {
-	app              *pocketbase.PocketBase
-	collection       *core.Collection
-	dryRun           bool
-	seen             map[string]bool
-	rockMetalCount   int
+	app                 *pocketbase.PocketBase
+	collection          *core.Collection
+	dryRun              bool
+	seen                map[string]bool
+	rockMetalCount      int
 	everythingElseCount int
 }
 
@@ -260,43 +284,43 @@ type sheet2Config struct {
 	genreGroup        string
 }
 
-func seedFromSheet2(ctx context.Context, app *pocketbase.PocketBase, dryRun bool, sheet2Path, genreGroup string) error {
-	if genreGroup == "" {
+type seedSheet2Params struct {
+	App        *pocketbase.PocketBase
+	DryRun     bool
+	Sheet2Path string
+	GenreGroup string
+}
+
+func seedFromSheet2(ctx context.Context, params seedSheet2Params) error {
+	if params.GenreGroup == "" {
 		return fmt.Errorf("sheet2-genre-group must not be empty")
 	}
-	file, err := os.Open(sheet2Path)
+	records, err := readCSVRecords(ctx, params.Sheet2Path, "Sheet2")
 	if err != nil {
-		return fmt.Errorf("failed to open Sheet2: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return fmt.Errorf("failed to read Sheet2: %w", err)
+		return err
 	}
 
-	songsCollection, err := app.FindCollectionByNameOrId("songs")
+	songsCollection, err := params.App.FindCollectionByNameOrId("songs")
 	if err != nil {
 		return fmt.Errorf("songs collection not found: %w", err)
 	}
 
-	artistsCollection, err := app.FindCollectionByNameOrId("artists")
+	artistsCollection, err := params.App.FindCollectionByNameOrId("artists")
 	if err != nil {
 		return fmt.Errorf("artists collection not found: %w", err)
 	}
 
 	cfg := sheet2Config{
-		app:               app,
-		dryRun:            dryRun,
+		app:               params.App,
+		dryRun:            params.DryRun,
 		songsCollection:   songsCollection,
 		artistsCollection: artistsCollection,
-		genreGroup:        genreGroup,
+		genreGroup:        params.GenreGroup,
 	}
 
 	songCount, artistUpsertCount := cfg.processSheet2Rows(ctx, records)
 
-	if dryRun {
+	if params.DryRun {
 		log.Printf("[seed] Would create %d song records, would upsert %d artists from Sheet2", songCount, artistUpsertCount)
 	} else {
 		log.Printf("[seed] Created %d song records, upserted %d artists from Sheet2", songCount, artistUpsertCount)
@@ -481,15 +505,6 @@ func parseNumber(s string) int {
 	return n
 }
 
-func parseListeners(s string) int {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.ReplaceAll(s, "\"", "")
-
-	n, _ := strconv.Atoi(s)
-	return n
-}
-
 func parseListenersStrict(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, ",", "")
@@ -498,6 +513,9 @@ func parseListenersStrict(s string) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
 		return 0, fmt.Errorf("parseListenersStrict: invalid listeners %q: %w", s, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("parseListenersStrict: invalid listeners %q: must be non-negative", s)
 	}
 	return n, nil
 }

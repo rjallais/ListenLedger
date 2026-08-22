@@ -5,6 +5,7 @@ package handlers
 import (
 	"log"
 
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 )
@@ -15,12 +16,13 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 
 	// Static files (CSS, JS, images)
 	r.GET("/static/{path...}", h.handleStatic)
+	r.GET("/robots.txt", h.handleRobots)
 
-	// Main views
+	// Main views with gzip compression
 	r.GET("/", h.handleIndex)
-	r.GET("/albums", h.handleAlbums)
-	r.GET("/artists", h.handleArtists)
-	r.GET("/songs", h.handleSongs)
+	r.GET("/albums", h.handleAlbums).Bind(apis.Gzip())
+	r.GET("/artists", h.handleArtists).Bind(apis.Gzip())
+	r.GET("/songs", h.handleSongs).Bind(apis.Gzip())
 
 	// Album lazy loading endpoints
 	r.GET("/api/albums/{status}", h.handleAlbumsAPI)

@@ -69,12 +69,13 @@ type Config struct {
 	LocalBrowserlessConcurrency int
 
 	// Shared behavior configuration
-	MaxConcurrency  int
-	MaxRetries      int
-	RequestTimeout  time.Duration
-	HTTPTimeout     time.Duration
-	MaxIdleConns    int
-	IdleConnTimeout time.Duration
+	MaxConcurrency       int
+	MaxRetries           int
+	RequestTimeout       time.Duration
+	HTTPTimeout          time.Duration
+	MaxIdleConns         int
+	MaxIdleConnsPerHost  int
+	IdleConnTimeout      time.Duration
 	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
 	LogSuccessfulFetches bool
 
@@ -145,7 +146,7 @@ func DefaultConfig() *Config {
 		// Match the token used by the bundled `mise browserless:up` task. Users
 		// running a custom local container can override with
 		// LOCAL_BROWSERLESS_TOKEN or clear it explicitly.
-		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/chromium/content",
+		LocalBrowserlessEndpoint:    "http://127.0.0.1:3001/content",
 		LocalBrowserlessToken:       "listenledger-local",
 		LocalBrowserlessConcurrency: 4,
 
@@ -154,7 +155,8 @@ func DefaultConfig() *Config {
 		MaxRetries:           2,
 		RequestTimeout:       15 * time.Second,
 		HTTPTimeout:          30 * time.Second,
-		MaxIdleConns:         2, // Reduced since we're using little concurrency
+		MaxIdleConns:         200, // Global pool sized for ~6 upstream hosts × 32 idle each
+		MaxIdleConnsPerHost:  32,  // Sensible default for connection pooling
 		IdleConnTimeout:      90 * time.Second,
 		LogSuccessfulFetches: false,
 
@@ -305,6 +307,12 @@ func (c *Config) loadSharedConfig() {
 		if retries, err := strconv.Atoi(retriesStr); err == nil && retries >= 0 {
 			c.MaxRetries = retries
 		}
+	}
+	if n, ok := parsePositiveInt("MAX_IDLE_CONNS"); ok {
+		c.MaxIdleConns = n
+	}
+	if n, ok := parsePositiveInt("MAX_IDLE_CONNS_PER_HOST"); ok {
+		c.MaxIdleConnsPerHost = n
 	}
 	if logStr := os.Getenv("LOG_SUCCESSFUL_FETCHES"); logStr != "" {
 		if logVal, err := strconv.ParseBool(logStr); err == nil {

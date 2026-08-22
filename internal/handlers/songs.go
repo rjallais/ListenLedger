@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/templates"
 )
@@ -45,13 +46,6 @@ func songReleaseNameFromRecord(record *core.Record) string {
 		return releaseName
 	}
 
-	// Legacy seed/import flows may omit album; fall back to title so the
-	// release column remains meaningful instead of empty.
-	releaseName = strings.TrimSpace(record.GetString("title"))
-	if releaseName != "" {
-		return releaseName
-	}
-
 	return "—"
 }
 
@@ -79,10 +73,10 @@ func songFromRecord(record *core.Record) templates.Song {
 }
 
 type songListEntry struct {
-	song              templates.Song
-	createdAt         time.Time
-	releaseDate       time.Time
-	releaseDateValid  bool
+	song             templates.Song
+	createdAt        time.Time
+	releaseDate      time.Time
+	releaseDateValid bool
 }
 
 type songPageData struct {
@@ -131,10 +125,10 @@ func (h *Handler) listSongEntriesWithApp(ctx context.Context, app core.App) ([]s
 	for _, record := range records {
 		rd, valid := parseSongReleaseDate(record.GetString("release_date"))
 		entries = append(entries, songListEntry{
-			song:              songFromRecord(record),
-			createdAt:         record.GetDateTime("created").Time(),
-			releaseDate:       rd,
-			releaseDateValid:  valid,
+			song:             songFromRecord(record),
+			createdAt:        record.GetDateTime("created").Time(),
+			releaseDate:      rd,
+			releaseDateValid: valid,
 		})
 	}
 
@@ -657,5 +651,15 @@ func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 	nextOffset := offset + len(songs)
 	hasMore := nextOffset < totalCount
 
-	return renderDatastar(e, templates.NotRecentSongRows(songs, nextOffset, hasMore, playlistSort))
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+
+	// Append each archived song row inside "#songs-not-recent"
+	for _, song := range songs {
+		if err := sse.PatchElementTempl(templates.SongRow(song, playlistSort), datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend()); err != nil {
+			return err
+		}
+	}
+
+	// Morph/replace the load-more button container "#load-more-songs-not-recent"
+	return sse.PatchElementTempl(templates.NotRecentSongsLoadMore(nextOffset, hasMore, playlistSort))
 }

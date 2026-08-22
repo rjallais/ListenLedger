@@ -52,60 +52,65 @@ func NewJetStream(nc *nats.Conn) (jetstream.JetStream, error) {
 	return jetstream.New(nc)
 }
 
+type streamConfig struct {
+	Name       string
+	Subjects   []string
+	Retention  jetstream.RetentionPolicy
+	MaxAge     time.Duration
+	MaxMsgs    int64
+	Duplicates time.Duration
+}
+
+func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) error {
+	cfg := jetstream.StreamConfig{
+		Name:       sc.Name,
+		Subjects:   sc.Subjects,
+		Retention:  sc.Retention,
+		Storage:    jetstream.FileStorage,
+		Discard:    jetstream.DiscardOld,
+		MaxAge:     sc.MaxAge,
+		MaxMsgs:    sc.MaxMsgs,
+		Duplicates: sc.Duplicates,
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
+		return fmt.Errorf("ensure %s stream: %w", displayName, err)
+	}
+	return nil
+}
+
 // EnsureScrapeRequestStream creates or updates the scrape request stream.
 func EnsureScrapeRequestStream(ctx context.Context, js jetstream.JetStream) error {
-	cfg := jetstream.StreamConfig{
+	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       ScrapeRequestsStreamName,
 		Subjects:   []string{SubjectScrapeRequest, SubjectScrapeRequestWildcard},
 		Retention:  jetstream.WorkQueuePolicy,
-		Storage:    jetstream.FileStorage,
-		Discard:    jetstream.DiscardOld,
 		MaxAge:     24 * time.Hour,
 		MaxMsgs:    100_000,
 		Duplicates: ScrapeRequestDedupWindow,
-	}
-
-	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
-		return fmt.Errorf("ensure scrape stream: %w", err)
-	}
-	return nil
+	}, "scrape")
 }
 
 // EnsureScrapeDLQStream creates or updates the dead-letter stream for scrape jobs.
 func EnsureScrapeDLQStream(ctx context.Context, js jetstream.JetStream) error {
-	cfg := jetstream.StreamConfig{
+	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:      ScrapeDLQStreamName,
 		Subjects:  []string{SubjectScrapeDLQ},
 		Retention: jetstream.LimitsPolicy,
-		Storage:   jetstream.FileStorage,
-		Discard:   jetstream.DiscardOld,
 		MaxAge:    7 * 24 * time.Hour,
 		MaxMsgs:   100_000,
-	}
-
-	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
-		return fmt.Errorf("ensure scrape dlq stream: %w", err)
-	}
-	return nil
+	}, "scrape dlq")
 }
 
 // EnsureEventsStream creates or updates the replayable EVENTS stream.
 func EnsureEventsStream(ctx context.Context, js jetstream.JetStream) error {
-	cfg := jetstream.StreamConfig{
+	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       EventsStreamName,
 		Subjects:   []string{SubjectArtistUpdated},
 		Retention:  jetstream.LimitsPolicy,
-		Storage:    jetstream.FileStorage,
-		Discard:    jetstream.DiscardOld,
 		MaxAge:     7 * 24 * time.Hour,
 		MaxMsgs:    1_000_000,
 		Duplicates: 10 * time.Minute,
-	}
-
-	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
-		return fmt.Errorf("ensure events stream: %w", err)
-	}
-	return nil
+	}, "events")
 }
 
 // EnsureScrapeWorkerConsumer creates or updates the durable scrape worker consumer.
@@ -126,30 +131,43 @@ func ScrapeRequestMsgID(artistID string) string {
 	return "scrape.request:" + artistID
 }
 
-// PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
-func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID string) (*jetstream.PubAck, error) {
-	return PublishScrapeRequestedToSubject(ctx, js, req, msgID, SubjectScrapeRequest)
+type scrapePublishParams struct {
+	JetStream jetstream.JetStream
+	Request   ScrapeRequested
+	MsgID     string
+	Subject   string
 }
 
-// PublishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
-func PublishScrapeRequestedToSubject(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID, subject string) (*jetstream.PubAck, error) {
-	data, err := MarshalScrapeRequested(req)
+ // PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
+func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID string) (*jetstream.PubAck, error) {
+	return publishScrapeRequestedToSubject(ctx, scrapePublishParams{
+		JetStream: js,
+		Request:   req,
+		MsgID:     msgID,
+		Subject:   SubjectScrapeRequest,
+	})
+}
+
+ // publishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
+func publishScrapeRequestedToSubject(ctx context.Context, params scrapePublishParams) (*jetstream.PubAck, error) {
+	data, err := MarshalScrapeRequested(params.Request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("marshal scrape request failed: %w", err)
 	}
 
+	subject := params.Subject
 	if subject == "" {
 		subject = SubjectScrapeRequest
 	}
 
-	opts := make([]jetstream.PublishOpt, 0, 1)
-	if msgID != "" {
-		opts = append(opts, jetstream.WithMsgID(msgID))
+	var opts []jetstream.PublishOpt
+	if params.MsgID != "" {
+		opts = []jetstream.PublishOpt{jetstream.WithMsgID(params.MsgID)}
 	}
 
-	ack, err := js.Publish(ctx, subject, data, opts...)
+	ack, err := params.JetStream.Publish(ctx, subject, data, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("publish to subject %s failed: %w", subject, err)
 	}
 	return ack, nil
 }

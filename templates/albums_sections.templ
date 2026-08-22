@@ -89,13 +89,13 @@ templ AlbumSectionWaitingLoadButton() {
 // AlbumRowsList renders the album list portion for lazy loading.
 templ AlbumRowsList(albums []Album, status string) {
 	if status == StatusWaiting {
-		<div id={ "albums-" + status } data-merge-mode="append">
+		<div id={ "albums-" + status }>
 			for _, album := range albums {
 				@AlbumCard(album)
 			}
 		</div>
 	} else {
-		<tbody id={ "albums-" + status } data-merge-mode="append">
+		<tbody id={ "albums-" + status }>
 			for _, album := range albums {
 				@AlbumRow(album)
 			}
@@ -114,7 +114,7 @@ templ AlbumLoadMore(status string, nextOffset int, hasMore bool) {
 
 templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
 	if hasMore {
-		<div id="load-more-waiting" data-merge-mode="morph">
+		<div id="load-more-waiting">
 			<button
 				class="btn btn-primary btn-sm gap-2"
 				data-on:click={ albumsWaitingURL(nextOffset) }
@@ -124,7 +124,7 @@ templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
 			</button>
 		</div>
 	} else {
-		<div id="load-more-waiting" data-merge-mode="morph">
+		<div id="load-more-waiting">
 			<p class="text-sm text-success">✓ All albums shown</p>
 		</div>
 	}
@@ -132,7 +132,7 @@ templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
 
 templ AlbumLoadMoreNonWaiting(status string, nextOffset int, hasMore bool) {
 	if hasMore {
-		<div id={ "load-more-" + status } data-merge-mode="morph">
+		<div id={ "load-more-" + status }>
 			<button
 				class="btn btn-outline btn-sm"
 				data-on:click={ albumsStatusURL(status, nextOffset) }
@@ -141,7 +141,7 @@ templ AlbumLoadMoreNonWaiting(status string, nextOffset int, hasMore bool) {
 			</button>
 		</div>
 	} else {
-		<div id={ "load-more-" + status } data-merge-mode="morph">
+		<div id={ "load-more-" + status }>
 			<p class="text-sm text-success text-center">✓ All albums loaded</p>
 		</div>
 	}

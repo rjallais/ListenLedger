@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/a-h/templ"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/templates"
 )
@@ -45,11 +47,26 @@ type albumCreateInput struct {
 
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
-	return e.FileFS(os.DirFS(h.staticDir), path)
+func (h *Handler) handleStatic(e *core.RequestEvent) error {
+	path := e.Request.PathValue("path")
+	e.Response.Header().Set("Cache-Control", "public, max-age=3600")
+	if err := e.FileFS(os.DirFS(h.staticDir), path); err != nil {
+		return fmt.Errorf("serve static file %q: %w", path, err)
+	}
+	return nil
+}
 }
 
 func (h *Handler) handleIndex(e *core.RequestEvent) error {
 	return e.Redirect(http.StatusFound, "/albums")
+}
+
+func (h *Handler) handleRobots(e *core.RequestEvent) error {
+	e.Response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if err := e.String(http.StatusOK, "User-agent: *\nAllow: /\n"); err != nil {
+		return fmt.Errorf("write robots.txt response: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) handleAlbums(e *core.RequestEvent) error {
@@ -204,6 +221,21 @@ func renderAlbumResponse(e *core.RequestEvent, album templates.Album) error {
 	return renderDatastar(e, templates.AlbumRow(album))
 }
 
+func patchAlbums(sse *datastar.ServerSentEventGenerator, targetID string, albums []templates.Album, isWaiting bool) error {
+	for _, album := range albums {
+		var component templ.Component
+		if isWaiting {
+			component = templates.AlbumCard(album)
+		} else {
+			component = templates.AlbumRow(album)
+		}
+		if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModeAppend()); err != nil {
+			return fmt.Errorf("patch album %s into %s: %w", album.ID, targetID, err)
+		}
+	}
+	return nil
+}
+
 func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 	status := e.Request.PathValue("status")
 
@@ -221,7 +253,17 @@ func (h *Handler) handleAlbumsAPI(e *core.RequestEvent) error {
 	}
 
 	hasMore := params.offset+len(records) < totalCount
-	return renderDatastar(e, templates.AlbumRows(albumsFromRecords(records), status, params.offset+len(records), hasMore))
+
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+	targetID := "albums-" + status
+
+	// Append each album card/row inside the target container using helper
+	if err := patchAlbums(sse, targetID, albumsFromRecords(records), status == templates.StatusWaiting); err != nil {
+		return err
+	}
+
+	// Morph/replace the load-more control container
+	return sse.PatchElementTempl(templates.AlbumLoadMore(status, params.offset+len(records), hasMore))
 }
 
 func parseAlbumCreateInput(r *http.Request) (albumCreateInput, error) {
@@ -306,7 +348,26 @@ func (h *Handler) handleCreateAlbum(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create album"})
 	}
 
-	return renderDatastar(e, templates.NewAlbumCreateResponse(albumFromRecord(record)))
+	album := albumFromRecord(record)
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+
+	// 1. Prepend the new album inside the target container
+	var component templ.Component
+	var targetID string
+	if album.Status == templates.StatusWaiting {
+		component = templates.AlbumCard(album)
+		targetID = "albums-waiting"
+	} else {
+		component = templates.AlbumRow(album)
+		targetID = "albums-" + album.Status
+	}
+
+	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+		return fmt.Errorf("prepend album %s into %s: %w", album.ID, targetID, err)
+	}
+
+	// 2. Morph/replace the feedback notice in the modal
+	return sse.PatchElementTempl(templates.AddAlbumSuccessNotice(album.Title))
 }
 
 func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
@@ -322,10 +383,9 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 	}
 
 	record, oldStatus, err := h.atomicUpdateAlbumStatus(e.Request.Context(), albumID, statusDB)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
-		}
+	if errors.Is(err, sql.ErrNoRows) {
+		return e.JSON(http.StatusNotFound, map[string]string{"error": "album not found"})
+	} else if err != nil {
 		log.Printf("[albums] atomicUpdateAlbumStatus error: %v", err)
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update album"})
 	}
@@ -335,7 +395,35 @@ func (h *Handler) handleUpdateAlbumStatus(e *core.RequestEvent) error {
 		return renderAlbumResponse(e, album)
 	}
 
-	return renderDatastar(e, templates.AlbumStatusTransition(oldStatus, album))
+	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+
+	// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
+	var removeID string
+	if oldStatus == templates.StatusWaiting {
+		removeID = "album-card-" + album.ID
+	} else {
+		removeID = "album-" + album.ID
+	}
+	if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
+		return fmt.Errorf("remove album element %s: %w", removeID, err)
+	}
+
+	// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
+	var component templ.Component
+	var prependTargetID string
+	if album.Status == templates.StatusWaiting {
+		component = templates.AlbumCard(album)
+		prependTargetID = "albums-waiting"
+	} else {
+		component = templates.AlbumRow(album)
+		prependTargetID = "albums-" + album.Status
+	}
+
+	if err := sse.PatchElementTempl(component, datastar.WithSelectorID(prependTargetID), datastar.WithModePrepend()); err != nil {
+		return fmt.Errorf("prepend album %s into %s: %w", album.ID, prependTargetID, err)
+	}
+
+	return nil
 }
 
 func (h *Handler) atomicUpdateAlbumStatus(ctx context.Context, albumID string, statusDB string) (*core.Record, string, error) {

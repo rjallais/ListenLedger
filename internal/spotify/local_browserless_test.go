@@ -25,17 +25,17 @@ func TestNormalizeLocalBrowserlessEndpoint(t *testing.T) {
 		{
 			name: "localhost bql upgraded to ipv4 content endpoint",
 			in:   "http://localhost:3001/chromium/bql",
-			want: "http://127.0.0.1:3001/chromium/content",
+			want: "http://127.0.0.1:3001/content",
 		},
 		{
 			name: "root endpoint gets content path",
 			in:   "http://localhost:3001/",
-			want: "http://127.0.0.1:3001/chromium/content",
+			want: "http://127.0.0.1:3001/content",
 		},
 		{
 			name: "non localhost host is preserved",
-			in:   "http://browserless.internal:3001/chromium/content",
-			want: "http://browserless.internal:3001/chromium/content",
+			in:   "http://browserless.internal:3001/content",
+			want: "http://browserless.internal:3001/content",
 		},
 	}
 
@@ -66,7 +66,7 @@ func TestBuildLocalBrowserlessRequest(t *testing.T) {
 		t.Fatalf("buildLocalBrowserlessRequest() error = %v", err)
 	}
 
-	if got, want := req.URL.String(), "http://127.0.0.1:3001/chromium/content?token=listenledger-local"; got != want {
+	if got, want := req.URL.String(), "http://127.0.0.1:3001/content?token=listenledger-local"; got != want {
 		t.Fatalf("request URL = %q, want %q", got, want)
 	}
 	if got := req.Header.Get("Content-Type"); got != "application/json" {
@@ -88,8 +88,8 @@ func TestFetchViaLocalBrowserlessParsesHTMLContent(t *testing.T) {
 
 	handlerErrs := make(chan string, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Path; got != "/chromium/content" {
-			handlerErrs <- fmt.Sprintf("request path = %q, want /chromium/content", got)
+		if got := r.URL.Path; got != "/content" {
+			handlerErrs <- fmt.Sprintf("request path = %q, want /content", got)
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
 		}
@@ -153,7 +153,7 @@ func TestFetchViaLocalBrowserlessUnauthorizedIsNotQuotaExhausted(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.LocalHeadlessEnabled = false
 	cfg.LocalBrowserlessEnabled = true
-	cfg.LocalBrowserlessEndpoint = server.URL + "/chromium/content"
+	cfg.LocalBrowserlessEndpoint = server.URL + "/content"
 
 	client, err := NewClient(cfg)
 	if err != nil {

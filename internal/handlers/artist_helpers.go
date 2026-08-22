@@ -85,7 +85,7 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC, id ASC").
+		OrderBy("monthly_listeners DESC", "id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {
@@ -295,46 +295,68 @@ func artistFromRecord(record *core.Record, totalSongs int) templates.Artist {
 }
 
 // artistsFromRecords converts Records to Artist structs.
-// If cache is provided, uses O(1) rank lookup from the cache.
-// For backward compatibility when cache is nil, expects totalSongs closure.
-func artistsFromRecords(records []*core.Record, cache *artistRankCache) []templates.Artist {
+func artistsFromRecords(records []*core.Record) []templates.Artist {
 	artists := make([]templates.Artist, 0, len(records))
 	for _, record := range records {
-		var total int
-		if cache != nil {
-			genre := record.GetString("genre_group")
-			if genre != cache.genre {
-				log.Printf("[handlers] warning: record %s genre %q != cache genre %q, falling back to collection_songs", record.Id, genre, cache.genre)
-				total = record.GetInt("collection_songs")
-			} else if r := cache.rank(record.Id); r > 0 {
-				total = rankedArtistTotalSongs(cache.totalCount, 0, r-1)
-			} else {
-				total = record.GetInt("collection_songs")
-			}
-		} else {
-			// Backward compatibility: should not reach here in normal usage
-			total = record.GetInt("collection_songs")
-		}
+		total := record.GetInt("collection_songs")
 		artists = append(artists, artistFromRecord(record, total))
 	}
 
 	return artists
 }
 
-func renderUpdatedArtistStatus(
-	e *core.RequestEvent,
-	oldStatus, newStatus, currentGenre string,
-	artist templates.Artist,
-) error {
-	if isWaitingListStatusTransition(oldStatus, newStatus) {
-		return renderDatastar(e, templates.ArtistStatusTransition(oldStatus, artist, currentGenre))
+func artistsFromRankedRecords(records []*core.Record, totalCount, offset int) []templates.Artist {
+	artists := make([]templates.Artist, 0, len(records))
+	for i, record := range records {
+		artists = append(artists, artistFromRecord(record, rankedArtistTotalSongs(totalCount, offset, i)))
 	}
 
-	if newStatus == waitingArtistStatus {
-		return renderDatastar(e, templates.WaitingArtistCard(artist))
+	return artists
+}
+
+type artistStatusUpdateParams struct {
+	Event        *core.RequestEvent
+	OldStatus    string
+	NewStatus    string
+	CurrentGenre string
+	Artist       templates.Artist
+}
+
+func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
+	if isWaitingListStatusTransition(params.OldStatus, params.NewStatus) {
+		sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
+
+		// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
+		var removeID string
+		if params.OldStatus == waitingArtistStatus {
+			removeID = templates.ArtistCardID(params.Artist.ID)
+		} else {
+			removeID = templates.ArtistRowID(params.Artist.ID)
+		}
+		if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
+			return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
+		}
+
+		// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
+		if params.NewStatus == waitingArtistStatus {
+			if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
+			}
+		} else if params.Artist.GenreGroup == params.CurrentGenre {
+			targetID := templates.ArtistsTBodyID(params.CurrentGenre)
+			if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
+			}
+		}
+
+		return nil
 	}
 
-	return renderDatastar(e, templates.ArtistRow(artist))
+	if params.NewStatus == waitingArtistStatus {
+		return renderDatastar(params.Event, templates.WaitingArtistCard(params.Artist))
+	}
+
+	return renderDatastar(params.Event, templates.ArtistRow(params.Artist))
 }
 
 func rankedArtistTotalSongs(totalCount, offset, index int) int {
@@ -468,15 +490,7 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	correlation.Associate(record.Id, requestID)
 	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelCleanup()
-		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
-			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rollback also failed: %v)", record.Id, err, rollbackErr)
-		} else {
-			correlation.Clear(record.Id)
-			_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
-			log.Printf("[queueArtistRefresh] failed to create scrape job for artist %s: %v (rolled back)", record.Id, err)
-		}
+		h.rollbackQueueArtistRefresh(record, requestID, previousFetchStatus)
 		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
 	}
 
@@ -492,27 +506,40 @@ func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelCleanup()
-		if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
-			return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w (rollback queued state failed: %v)", err, rollbackErr)
-		}
-		correlation.Clear(record.Id)
-		_ = h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id)
+		h.rollbackQueueArtistRefresh(record, requestID, previousFetchStatus)
 		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
 	}
 
 	if ack != nil && ack.Duplicate {
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelCleanup()
-		correlation.Clear(record.Id)
-		if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
-			log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
-		}
+		h.handleDuplicateAck(record, requestID, previousFetchStatus)
 		return requestID, true, nil
 	}
 
 	return requestID, false, nil
+}
+
+func (h *Handler) rollbackQueueArtistRefresh(record *core.Record, requestID, previousFetchStatus string) {
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
+		log.Printf("[queueArtistRefresh] rollback failed for artist %s: %v", record.Id, rollbackErr)
+	}
+	correlation.Clear(record.Id)
+	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
+		log.Printf("[queueArtistRefresh] rollback cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+	}
+}
+
+func (h *Handler) handleDuplicateAck(record *core.Record, requestID, previousFetchStatus string) {
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCleanup()
+	correlation.Clear(record.Id)
+	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
+		log.Printf("[queueArtistRefresh] duplicate ack rollback failed for artist %s request %s: %v", record.Id, requestID, rollbackErr)
+	}
+	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
+		log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+	}
 }
 
 func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
@@ -608,7 +635,7 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	err = h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, filterParams)).
-		OrderBy("monthly_listeners DESC, id ASC").
+		OrderBy("monthly_listeners DESC", "id ASC").
 		Limit(int64(totalCount)).
 		All(&records)
 	if err != nil {

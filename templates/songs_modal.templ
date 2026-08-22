@@ -3,18 +3,17 @@ package templates
 // AddSongModal renders the modal for adding a new song.
 templ AddSongModal() {
 	<input type="checkbox" id="add-song-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle">
+	<div class="modal modal-bottom sm:modal-middle" role="dialog" aria-modal="true" aria-labelledby="add-song-title">
 		<div class="modal-box">
 			<div class="flex items-center justify-between mb-4">
-				<h3 class="font-bold text-lg">Add New Song</h3>
+				<h2 id="add-song-title" class="font-bold text-lg">Add New Song</h2>
 				<label for="add-song-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
 			</div>
 			<form
 				id="add-song-form"
 				data-signals="{songInFlight:false}"
-				data-on:submit__prevent="if ($songInFlight) { return; } $songInFlight = true; @post('/api/songs', {contentType: 'form'})"
-				data-on:datastar-fetch:finished="$songInFlight = false"
-				data-on:datastar-fetch:error="$songInFlight = false"
+				data-indicator:song-in-flight
+				data-on:submit__prevent="if ($songInFlight) { return; } @post('/api/songs', {contentType: 'form'})"
 			>
 				<div class="form-control w-full mb-4">
 					<label class="label" for="song-name">
@@ -107,6 +106,7 @@ templ AddSongModal() {
 						placeholder="e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 06HL4z0CvFAxyc27GXpf02"
 						class="input input-bordered w-full font-mono"
 						pattern="^[A-Za-z0-9]{22}(\s*,\s*[A-Za-z0-9]{22})*$"
+						title="Each Spotify ID must be exactly 22 alphanumeric characters, separated by commas."
 						required
 					/>
 				</div>
@@ -125,14 +125,15 @@ templ AddSongModal() {
 }
 
 templ AddSongSuccessNotice(songTitle string) {
-	<div id="add-song-feedback" class="mt-2" data-merge-mode="morph">
+	<div id="add-song-feedback" class="mt-2">
 		<div class="alert alert-success">
 			@IconCheck("h-5 w-5")
 			<div class="flex-1">
 				<p class="font-semibold">Song added</p>
 				<p class="text-xs">{ songTitle }</p>
 			</div>
-			<label for="add-song-modal" class="btn btn-success btn-sm">Close</label>
+			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').innerHTML = ''">Add Another</button>
+			<label for="add-song-modal" class="btn btn-ghost btn-sm">Close</label>
 		</div>
 	</div>
 }

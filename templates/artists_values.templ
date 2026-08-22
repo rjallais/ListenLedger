@@ -7,6 +7,7 @@ templ ArtistSignalTextValue(elementID, signal, text string) {
 templ ArtistCollectionControls(artist Artist) {
 	<div class="flex items-center justify-center gap-1">
 		<button
+			type="button"
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionDecAction(artist.ID) }
 			aria-label={ "Decrease collection count for " + artist.Name }
@@ -18,6 +19,7 @@ templ ArtistCollectionControls(artist Artist) {
 		</button>
 		<span class="font-mono min-w-[4rem] text-center">{ artistCollectionText(artist) }</span>
 		<button
+			type="button"
 			class="btn btn-xs btn-ghost btn-square"
 			data-on:click={ artistCollectionIncAction(artist.ID) }
 			aria-label={ "Increase collection count for " + artist.Name }

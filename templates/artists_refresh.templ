@@ -13,6 +13,7 @@ templ ArtistRefreshAction(artistID string) {
 	<div class="flex items-center justify-center gap-1">
 		@FetchStatusDot(artistID)
 		<button
+			type="button"
 			class="btn btn-xs btn-primary"
 			data-on:click={ artistRefreshPostAction(artistID) }
 			data-attr-disabled={ artistFetchStatusSignal(artistID) + " === 'pending' ? '' : null" }

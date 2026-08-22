@@ -63,12 +63,24 @@ func (h *Handler) createScrapeJobRecord(ctx context.Context, requestID, artistID
 }
 
 type queueRetryStats struct {
-	Candidates     int `json:"candidates"`
-	Retried        int `json:"retried"`
-	Duplicate      int `json:"duplicate"`
-	PendingSkipped int `json:"pending_skipped"`
-	PublishFailed  int `json:"publish_failed"`
-	InvalidArtist  int `json:"invalid_artist"`
+	Candidates           int `json:"candidates"`
+	Retried              int `json:"retried"`
+	Duplicate            int `json:"duplicate"`
+	PendingSkipped       int `json:"pending_skipped"`
+	PublishFailed        int `json:"publish_failed"`
+	InvalidArtist        int `json:"invalid_artist"`
+	OrphanPendingReset   int `json:"orphan_pending_reset"`
+	FailedArtistsMarked  int `json:"failed_artists_marked"`
+	OrphanStreamMessages int `json:"orphan_stream_messages"`
+}
+
+type retryJobParams struct {
+	Job                 *core.Record
+	Artist              *core.Record
+	ArtistID            string
+	RequestID           string
+	PreviousFetchStatus string
+	PublishErr          error
 }
 
 func normalizeQueueRetryLimit(limit int) int {
@@ -76,6 +88,128 @@ func normalizeQueueRetryLimit(limit int) int {
 		return 250
 	}
 	return limit
+}
+
+func (h *Handler) reconcileOrphanQueueState(ctx context.Context) (queueRetryStats, error) {
+	var stats queueRetryStats
+	if err := h.resetOrphanPendingArtists(ctx, &stats); err != nil {
+		return stats, err
+	}
+	if err := h.markFailedJobArtists(ctx, &stats); err != nil {
+		return stats, err
+	}
+	if err := h.purgeOrphanScrapeRequests(ctx, &stats); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+func (h *Handler) resetOrphanPendingArtists(ctx context.Context, stats *queueRetryStats) error {
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			"fetch_status = {:pending} AND id NOT IN (SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing}, {:failed}))",
+			dbx.Params{
+				"pending":    "pending",
+				"queued":     "queued",
+				"processing": "processing",
+				"failed":     "failed",
+			},
+		)).
+		Limit(500).
+		All(&records)
+	if err != nil {
+		return fmt.Errorf("query orphan pending artists: %w", err)
+	}
+	if len(records) == 500 {
+		log.Printf("[queue-retry] orphan pending reconciliation hit 500-record cap; remaining artists will be processed on next retry")
+	}
+
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		record.Set("fetch_status", "idle")
+		if err := h.app.SaveWithContext(ctx, record); err != nil {
+			return fmt.Errorf("reset orphan pending artist %s: %w", record.Id, err)
+		}
+		correlation.Clear(record.Id)
+		stats.OrphanPendingReset++
+	}
+
+	return nil
+}
+
+func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetryStats) error {
+	records := make([]*core.Record, 0)
+	err := h.app.RecordQuery("artists").
+		WithContext(ctx).
+		AndWhere(dbx.NewExp(
+			`fetch_status = {:pending}
+			 AND id IN (SELECT artist FROM scrape_jobs WHERE status = {:failed})
+			 AND id NOT IN (
+			   SELECT artist FROM scrape_jobs WHERE status IN ({:queued}, {:processing})
+			 )`,
+			dbx.Params{
+				"pending":    "pending",
+				"failed":     "failed",
+				"queued":     "queued",
+				"processing": "processing",
+			},
+		)).
+		Limit(500).
+		All(&records)
+	if err != nil {
+		return fmt.Errorf("query failed-job pending artists: %w", err)
+	}
+	if len(records) == 500 {
+		log.Printf("[queue-retry] failed-job reconciliation hit 500-record cap; remaining artists will be processed on next retry")
+	}
+
+	for _, record := range records {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		record.Set("fetch_status", "failed")
+		if err := h.app.SaveWithContext(ctx, record); err != nil {
+			return fmt.Errorf("mark failed-job artist %s failed: %w", record.Id, err)
+		}
+		correlation.Clear(record.Id)
+		stats.FailedArtistsMarked++
+	}
+
+	return nil
+}
+
+func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRetryStats) error {
+	streamInfo, consumerAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
+	if h.shouldSkipStreamPurge(streamInfo, consumerAvailable, queueAckPending, queueRedelivered) {
+		return nil
+	}
+
+	jobsQueued, jobsProcessing, _, artistsPending := h.countQueueState(ctx)
+	if h.hasPendingJobs(jobsQueued, jobsProcessing, artistsPending) {
+		return nil
+	}
+
+	stream, err := h.js.Stream(ctx, messaging.ScrapeRequestsStreamName)
+	if err != nil {
+		return fmt.Errorf("load scrape request stream for purge: %w", err)
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeSubject(messaging.SubjectScrapeRequest)); err != nil {
+		return fmt.Errorf("purge orphan scrape requests: %w", err)
+	}
+	stats.OrphanStreamMessages = int(streamInfo.State.Msgs)
+	return nil
+}
+
+func (h *Handler) shouldSkipStreamPurge(streamInfo *jetstream.StreamInfo, consumerAvailable bool, queueAckPending, queueRedelivered uint64) bool {
+	return streamInfo == nil || !consumerAvailable || streamInfo.State.Msgs == 0 || queueAckPending > 0 || queueRedelivered > 0
+}
+
+func (h *Handler) hasPendingJobs(jobsQueued, jobsProcessing, artistsPending int64) bool {
+	return jobsQueued > 0 || jobsProcessing > 0 || artistsPending > 0
 }
 
 func (h *Handler) scrapeJobsByStatus(ctx context.Context, status string, limit int) ([]*core.Record, error) {
@@ -196,88 +330,109 @@ func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) error 
 	return nil
 }
 
-func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, job *core.Record, artist *core.Record, artistID, requestID string) error {
+func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retryJobParams) error {
 	err := h.app.RunInTransaction(func(txApp core.App) error {
-		job.Set("status", "queued")
-		job.Set("queued_at", time.Now())
-		job.Set("error", "")
-		job.Set("started_at", nil)
-		job.Set("finished_at", nil)
-		if saveErr := txApp.SaveWithContext(ctx, job); saveErr != nil {
-			return fmt.Errorf("save queued status for job %s: %w", job.Id, saveErr)
+		params.Job.Set("status", "queued")
+		params.Job.Set("queued_at", time.Now())
+		params.Job.Set("error", "")
+		params.Job.Set("started_at", nil)
+		params.Job.Set("finished_at", nil)
+		if saveErr := txApp.SaveWithContext(ctx, params.Job); saveErr != nil {
+			return fmt.Errorf("save queued status for job %s: %w", params.Job.Id, saveErr)
 		}
 
-		artist.Set("fetch_status", "pending")
-		if saveErr := txApp.SaveWithContext(ctx, artist); saveErr != nil {
-			return fmt.Errorf("mark artist %s pending: %w", artistID, saveErr)
+		params.Artist.Set("fetch_status", "pending")
+		if saveErr := txApp.SaveWithContext(ctx, params.Artist); saveErr != nil {
+			return fmt.Errorf("mark artist %s pending: %w", params.ArtistID, saveErr)
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	correlation.Associate(artistID, requestID)
+	correlation.Associate(params.ArtistID, params.RequestID)
 	return nil
 }
 
-func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int) (queueRetryStats, error) {
+func (h *Handler) processRetryCandidate(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) error {
+	req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, stats)
+	if err != nil {
+		return fmt.Errorf("failed to prepare retry request: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+
+	previousFetchStatus := artist.GetString("fetch_status")
+	params := retryJobParams{
+		Job:                 job,
+		Artist:              artist,
+		ArtistID:            artistID,
+		RequestID:           requestID,
+		PreviousFetchStatus: previousFetchStatus,
+	}
+	if err := h.saveRetryQueuedAndMarkPending(ctx, params); err != nil {
+		return err
+	}
+
+	ack, pubErr := h.publishRetryRequest(ctx, req)
+	if pubErr != nil {
+		params.PublishErr = pubErr
+		return h.handleRetryPublishFailure(params, stats)
+	}
+
+	if ack != nil && ack.Duplicate {
+		return h.handleRetryDuplicate(params, stats)
+	}
+
+	stats.Retried++
+	return nil
+}
+
+func (h *Handler) retryFailedAndQueuedJobs(ctx context.Context, limit int, stats queueRetryStats) (queueRetryStats, error) {
 	limit = normalizeQueueRetryLimit(limit)
 	records, err := h.collectRetryCandidates(ctx, limit)
 	if err != nil {
-		return queueRetryStats{}, err
+		return stats, err
 	}
 
-	stats := queueRetryStats{Candidates: len(records)}
+	stats.Candidates = len(records)
 	seenArtist := make(map[string]struct{}, len(records))
 
 	for _, job := range records {
-		req, artist, artistID, requestID, ok, err := h.prepareRetryRequest(ctx, job, seenArtist, &stats)
-		if err != nil {
-			return stats, fmt.Errorf("failed to prepare retry request: %w", err)
-		}
-		if !ok {
-			continue
-		}
-
-		previousFetchStatus := artist.GetString("fetch_status")
-		if err := h.saveRetryQueuedAndMarkPending(ctx, job, artist, artistID, requestID); err != nil {
+		if err := h.processRetryCandidate(ctx, job, seenArtist, &stats); err != nil {
 			return stats, err
 		}
-
-		ack, pubErr := h.publishRetryRequest(ctx, req)
-		if pubErr != nil {
-			stats.PublishFailed++
-			if err := h.rollbackRetryQueuedState(artist, artistID, previousFetchStatus); err != nil {
-				return stats, err
-			}
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if saveErr := h.saveRetryPublishFailure(cleanupCtx, job, pubErr); saveErr != nil {
-				cleanupCancel()
-				return stats, fmt.Errorf("failed to record publish failure: %w", saveErr)
-			}
-			cleanupCancel()
-			continue
-		}
-
-		if ack != nil && ack.Duplicate {
-			stats.Duplicate++
-			if err := h.rollbackRetryQueuedState(artist, artistID, previousFetchStatus); err != nil {
-				return stats, err
-			}
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if saveErr := h.saveRetryDeduped(cleanupCtx, job); saveErr != nil {
-				cleanupCancel()
-				return stats, fmt.Errorf("failed to record deduped status: %w", saveErr)
-			}
-			cleanupCancel()
-			h.deleteRetryScrapeJob(requestID, artistID)
-			continue
-		}
-
-		stats.Retried++
 	}
 
 	return stats, nil
+}
+
+func (h *Handler) handleRetryPublishFailure(params retryJobParams, stats *queueRetryStats) error {
+	stats.PublishFailed++
+	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
+		return err
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cleanupCancel()
+	if saveErr := h.saveRetryPublishFailure(cleanupCtx, params.Job, params.PublishErr); saveErr != nil {
+		return fmt.Errorf("failed to record publish failure: %w", saveErr)
+	}
+	return nil
+}
+
+func (h *Handler) handleRetryDuplicate(params retryJobParams, stats *queueRetryStats) error {
+	stats.Duplicate++
+	if err := h.rollbackRetryQueuedState(params.Artist, params.ArtistID, params.PreviousFetchStatus); err != nil {
+		return err
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cleanupCancel()
+	if saveErr := h.saveRetryDeduped(cleanupCtx, params.Job); saveErr != nil {
+		return fmt.Errorf("failed to record deduped status: %w", saveErr)
+	}
+	h.deleteRetryScrapeJob(params.RequestID, params.ArtistID)
+	return nil
 }
 
 func (h *Handler) rollbackRetryQueuedState(artist *core.Record, artistID, previousFetchStatus string) error {
@@ -361,7 +516,7 @@ func (h *Handler) countQueueState(ctx context.Context) (int64, int64, int64, int
 			AndWhere(item.exp).
 			Limit(1).
 			Row(item.result); qErr != nil {
-			if isExpectedContextCancellation(ctx, qErr) {
+			if isExpectedContextCancellation(qErr) {
 				break
 			}
 			log.Printf("[queue] Warning: failed to count %s: %v", item.collection, qErr)
@@ -387,6 +542,17 @@ func (h *Handler) applyActiveBatchProgress(artistsPending, jobsProcessing *int64
 	}
 }
 
+func queuePendingFromState(streamInfo *jetstream.StreamInfo, jobsQueued int64) uint64 {
+	queuePending := uint64(0)
+	if streamInfo != nil {
+		queuePending = streamInfo.State.Msgs
+	}
+	if queuePending < uint64(jobsQueued) {
+		queuePending = uint64(jobsQueued)
+	}
+	return queuePending
+}
+
 func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	h.ensureBatchProgressSubscriber()
 
@@ -397,17 +563,7 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	jobsQueued, jobsProcessing, jobsFailed, artistsPending := h.countQueueState(ctx)
 	h.applyActiveBatchProgress(&artistsPending, &jobsProcessing)
 
-	queuePending := uint64(0)
-	if streamInfo != nil {
-		queuePending = streamInfo.State.Msgs
-	}
-
-	if queuePending < uint64(jobsQueued) {
-		queuePending = uint64(jobsQueued)
-	}
-	if queueAckPending < uint64(artistsPending) {
-		queueAckPending = uint64(artistsPending)
-	}
+	queuePending := queuePendingFromState(streamInfo, jobsQueued)
 
 	wantsJSON := wantsJSONResponse(e.Request)
 
@@ -447,37 +603,58 @@ func (h *Handler) handleQueue(e *core.RequestEvent) error {
 	})
 }
 
-func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
-	checker := quota.NewChecker(h.cfg)
-	if !checker.HasAvailableQuota(e.Request.Context()) {
-		return e.JSON(http.StatusTooManyRequests, map[string]string{
-			"error": "No scraping quota available.",
-		})
+func (h *Handler) queueRetryErrorResponse(e *core.RequestEvent, err error, stats queueRetryStats, includeStats bool) error {
+	if wantsJSONResponse(e.Request) {
+		body := map[string]any{
+			"status": "error",
+			"error":  err.Error(),
+		}
+		if includeStats {
+			body["stats"] = stats
+		}
+		return e.JSON(http.StatusInternalServerError, body)
 	}
+	return h.handleQueue(e)
+}
 
+func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	stats, err := h.retryFailedAndQueuedJobs(ctx, 250)
+	stats, err := h.reconcileOrphanQueueState(ctx)
 	if err != nil {
-		log.Printf("[queue-retry] retry loop failed: %v", err)
+		log.Printf("[queue-retry] reconciliation failed: %v", err)
+		return h.queueRetryErrorResponse(e, err, stats, true)
+	}
+
+	checker := quota.NewChecker(h.cfg)
+	if !checker.HasAvailableQuota(ctx) {
 		if wantsJSONResponse(e.Request) {
-			return e.JSON(http.StatusInternalServerError, map[string]any{
-				"status": "error",
-				"error":  err.Error(),
+			return e.JSON(http.StatusTooManyRequests, map[string]any{
+				"error": "No scraping quota available.",
+				"stats": stats,
 			})
 		}
 		return h.handleQueue(e)
 	}
 
+	stats, err = h.retryFailedAndQueuedJobs(ctx, 250, stats)
+	if err != nil {
+		log.Printf("[queue-retry] retry loop failed: %v", err)
+		return h.queueRetryErrorResponse(e, err, stats, false)
+	}
+
 	log.Printf(
-		"[queue-retry] candidates=%d retried=%d duplicate=%d pending_skipped=%d publish_failed=%d invalid_artist=%d",
+		"[queue-retry] candidates=%d retried=%d duplicate=%d pending_skipped=%d publish_failed=%d invalid_artist=%d orphan_pending_reset=%d failed_artists_marked=%d orphan_stream_messages=%d",
 		stats.Candidates,
 		stats.Retried,
 		stats.Duplicate,
 		stats.PendingSkipped,
 		stats.PublishFailed,
 		stats.InvalidArtist,
+		stats.OrphanPendingReset,
+		stats.FailedArtistsMarked,
+		stats.OrphanStreamMessages,
 	)
 
 	if wantsJSONResponse(e.Request) {
@@ -490,8 +667,7 @@ func (h *Handler) handleQueueRetry(e *core.RequestEvent) error {
 	return h.handleQueue(e)
 }
 
-func isExpectedContextCancellation(ctx context.Context, err error) bool {
+func isExpectedContextCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		(ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()))
+		errors.Is(err, context.DeadlineExceeded)
 }
