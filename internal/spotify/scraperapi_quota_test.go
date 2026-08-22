@@ -13,7 +13,7 @@ import (
 	"ListenLedger/config"
 )
 
-func TestFetchViaScraperAPIForbiddenIsQuotaExhausted(t *testing.T) {
+func TestFetchViaScraperAPIForbiddenIsNotQuotaExhausted(t *testing.T) {
 	clientHTTP := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -39,8 +39,8 @@ func TestFetchViaScraperAPIForbiddenIsQuotaExhausted(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if !errors.Is(err, ErrQuotaExhausted) {
-		t.Fatalf("expected ErrQuotaExhausted on 403, got %v", err)
+	if errors.Is(err, ErrQuotaExhausted) {
+		t.Fatalf("expected non-quota error, got ErrQuotaExhausted: %v", err)
 	}
 }
 

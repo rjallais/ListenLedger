@@ -19,7 +19,6 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
 
-	"ListenLedger/config"
 	"ListenLedger/internal/correlation"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/priority"
@@ -38,7 +37,7 @@ const (
 	waitingArtistStatus          = "waiting"
 
 	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests.
-	maxBatchRefreshCount = 200
+	maxBatchRefreshCount = 100
 )
 
 type artistCreateInput struct {
@@ -323,71 +322,41 @@ type artistStatusUpdateParams struct {
 	Artist       templates.Artist
 }
 
-func renderUpdatedArtistStatus(e *core.RequestEvent, cfg *config.Config, params artistStatusUpdateParams) error {
+func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
 	if isWaitingListStatusTransition(params.OldStatus, params.NewStatus) {
-		return renderWaitingListTransition(e.Request.Context(), params, cfg)
-	}
+		sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
 
-	if params.NewStatus == waitingArtistStatus {
-		return renderDatastar(e, templates.WaitingArtistCard(params.Artist),
-			patchOpts(cfg, "#"+templates.ArtistCardID(params.Artist.ID), datastar.WithSelectorID(templates.ArtistCardID(params.Artist.ID)), datastar.WithModeOuter())...)
-	}
-
-	return renderDatastar(e, templates.ArtistRow(params.Artist),
-		patchOpts(cfg, "#"+templates.ArtistRowID(params.Artist.ID), datastar.WithSelectorID(templates.ArtistRowID(params.Artist.ID)), datastar.WithModeOuter())...)
-}
-
-// renderWaitingListTransition patches the DOM to move an artist between the
-// waiting list and a genre tbody (or vice versa) using Datastar SSE.
-func renderWaitingListTransition(ctx context.Context, params artistStatusUpdateParams, cfg *config.Config) error {
-	sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
-
-	if err := removeOldArtistElement(sse, params.Artist.ID, params.OldStatus); err != nil {
-		return err
-	}
-	return prependNewArtistElement(sse, params, cfg)
-}
-
-// removeOldArtistElement emits a Datastar remove patch for the artist's old DOM
-// element, choosing the card or row selector based on the previous status.
-func removeOldArtistElement(sse *datastar.ServerSentEventGenerator, artistID, oldStatus string) error {
-	var removeID string
-	if oldStatus == waitingArtistStatus {
-		removeID = templates.ArtistCardID(artistID)
-	} else {
-		removeID = templates.ArtistRowID(artistID)
-	}
-	if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
-		return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
-	}
-	return nil
-}
-
-// prependNewArtistElement prepends the artist's new DOM element to the correct
-// container: the waiting list when transitioning into it, or the matching genre
-// tbody when transitioning out of it.
-func prependNewArtistElement(sse *datastar.ServerSentEventGenerator, params artistStatusUpdateParams, cfg *config.Config) error {
-	if params.NewStatus == waitingArtistStatus {
-		if err := sse.PatchElementTempl(
-			templates.WaitingArtistCard(params.Artist),
-			patchOpts(cfg, "#artists-waiting", datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend())...,
-		); err != nil {
-			return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
+		// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
+		var removeID string
+		if params.OldStatus == waitingArtistStatus {
+			removeID = templates.ArtistCardID(params.Artist.ID)
+		} else {
+			removeID = templates.ArtistRowID(params.Artist.ID)
 		}
+		if err := sse.PatchElements("", datastar.WithSelectorID(removeID), datastar.WithModeRemove()); err != nil {
+			return fmt.Errorf("renderUpdatedArtistStatus: remove old element %s: %w", removeID, err)
+		}
+
+		// 2. Prepend the new element to its target container cleanly using true Datastar prepend mode
+		if params.NewStatus == waitingArtistStatus {
+			if err := sse.PatchElementTempl(templates.WaitingArtistCard(params.Artist), datastar.WithSelectorID("artists-waiting"), datastar.WithModePrepend()); err != nil {
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend waiting artist %s: %w", params.Artist.ID, err)
+			}
+		} else if params.Artist.GenreGroup == params.CurrentGenre {
+			targetID := templates.ArtistsTBodyID(params.CurrentGenre)
+			if err := sse.PatchElementTempl(templates.ArtistRow(params.Artist), datastar.WithSelectorID(targetID), datastar.WithModePrepend()); err != nil {
+				return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
+			}
+		}
+
 		return nil
 	}
 
-	if params.Artist.GenreGroup != params.CurrentGenre {
-		return nil
+	if params.NewStatus == waitingArtistStatus {
+		return renderDatastar(params.Event, templates.WaitingArtistCard(params.Artist))
 	}
-	targetID := templates.ArtistsTBodyID(params.CurrentGenre)
-	if err := sse.PatchElementTempl(
-		templates.ArtistRow(params.Artist),
-		patchOpts(cfg, "#"+targetID, datastar.WithSelectorID(targetID), datastar.WithModePrepend())...,
-	); err != nil {
-		return fmt.Errorf("renderUpdatedArtistStatus: prepend artist row %s to %s: %w", params.Artist.ID, targetID, err)
-	}
-	return nil
+
+	return renderDatastar(params.Event, templates.ArtistRow(params.Artist))
 }
 
 func rankedArtistTotalSongs(totalCount, offset, index int) int {
@@ -424,37 +393,6 @@ func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre
 		return 0, fmt.Errorf("countArtistsByGenreExcludingWaiting: query artists count failed for genre %s: %w", genre, err)
 	}
 	return int(count), nil
-}
-
-// countArtistsByGenreGroups returns the non-waiting artist count per genre
-// group in a single GROUP BY query, replacing the per-genre COUNT(*) scans
-// that page loads used to issue. Genres with zero non-waiting artists are
-// absent from the map.
-func (h *Handler) countArtistsByGenreGroups(ctx context.Context) (map[string]int, error) {
-	rows, err := h.app.RecordQuery("artists").
-		WithContext(ctx).
-		Select("genre_group", "COUNT(*) AS count").
-		AndWhere(dbx.NewExp("list_status != {:waiting}", dbx.Params{"waiting": waitingArtistStatus})).
-		GroupBy("genre_group").
-		Rows()
-	if err != nil {
-		return nil, fmt.Errorf("countArtistsByGenreGroups: query genre counts: %w", err)
-	}
-	defer rows.Close()
-
-	counts := make(map[string]int)
-	for rows.Next() {
-		var genre string
-		var count int64
-		if err := rows.Scan(&genre, &count); err != nil {
-			return nil, fmt.Errorf("countArtistsByGenreGroups: scan row: %w", err)
-		}
-		counts[genre] = int(count)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("countArtistsByGenreGroups: iterate rows: %w", err)
-	}
-	return counts, nil
 }
 
 func (h *Handler) countWaitingArtists(ctx context.Context) (int, error) {
@@ -604,7 +542,7 @@ func (h *Handler) handleDuplicateAck(record *core.Record, requestID, previousFet
 	}
 }
 
-func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int, error) {
+func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
 	queuedArtistIDs := make([]string, 0, len(jobs))
 	stats := make(map[string]int)
 
@@ -628,7 +566,7 @@ func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.J
 		stats[job.Priority.String()]++
 	}
 
-	return queuedArtistIDs, stats, nil
+	return queuedArtistIDs, stats
 }
 
 func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record) error {
@@ -667,7 +605,10 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 
 func updateArtistCollectionSongs(record *core.Record, delta int) {
 	currentCount := record.GetInt("collection_songs")
-	nextCount := max(currentCount+delta, 0)
+	nextCount := currentCount + delta
+	if nextCount < 0 {
+		nextCount = 0
+	}
 
 	record.Set("collection_songs", nextCount)
 }
@@ -709,63 +650,4 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	}
 
 	return collectionSongs
-}
-
-// jobIDsAndStats extracts artist IDs and priority stats from a job list,
-// limited to the first count entries.
-func jobIDsAndStats(jobs []priority.Job, count int) ([]string, map[string]int) {
-	if count <= 0 || len(jobs) == 0 {
-		return nil, nil
-	}
-	limit := count
-	if limit > len(jobs) {
-		limit = len(jobs)
-	}
-	ids := make([]string, 0, limit)
-	stats := make(map[string]int)
-	for _, job := range jobs[:limit] {
-		ids = append(ids, job.Record.Id)
-		stats[job.Priority.String()]++
-	}
-	return ids, stats
-}
-
-// removeArtistsFromBatchSilent removes artist IDs from the batch's pending set
-// and the global artist-to-batch mapping without emitting any event. Used to
-// clean up artists that were pre-registered in a batch but never actually
-// queued (e.g., duplicate detection or error during enqueue).
-func (h *Handler) removeArtistsFromBatchSilent(batchID string, keepIDs []string) {
-	h.batchMu.Lock()
-	defer h.batchMu.Unlock()
-
-	batch, ok := h.batches[batchID]
-	if !ok {
-		return
-	}
-
-	keep := make(map[string]struct{}, len(keepIDs))
-	for _, id := range keepIDs {
-		keep[id] = struct{}{}
-	}
-
-	for artistID := range batch.Pending {
-		if _, kept := keep[artistID]; !kept {
-			delete(batch.Pending, artistID)
-			delete(h.artistBatch, artistID)
-		}
-	}
-
-	// Align Total with the actually-queued set so the displayed denominator
-	// can never exceed the number of tracked artists. Without this the batch
-	// can complete every queued artist yet stay below Total forever (the
-	// 99/100 stuck case). Total is the union of pending and already-completed
-	// artists; Completed counts only settled ones, so removed (never-settled)
-	// artists drop out of both numerator and denominator.
-	alive := len(batch.Pending) + batch.Completed
-	if batch.Total > alive {
-		batch.Total = alive
-	}
-	// A drained pending set means every tracked artist has settled.
-	batch.Done = batch.Done || len(batch.Pending) == 0
-	batch.UpdatedAt = time.Now()
 }

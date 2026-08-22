@@ -19,24 +19,16 @@ templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort
 templ NotRecentSongsLoadMore(nextOffset int, hasMore bool, playlistSort string) {
 	<div id="load-more-songs-not-recent" class="mt-4 text-center">
 		if hasMore {
-			@notRecentLoadMoreButton(nextOffset, playlistSort)
+			<button
+				class="btn btn-outline btn-sm"
+				data-on:click={ songsNotRecentURL(nextOffset, playlistSort) }
+			>
+				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+			</button>
 		} else {
-			@notRecentAllLoaded()
+			<p class="text-sm text-success">✓ All archived songs loaded</p>
 		}
 	</div>
-}
-
-templ notRecentLoadMoreButton(nextOffset int, playlistSort string) {
-	<button
-		class="btn btn-outline btn-sm"
-		data-on:click={ songsNotRecentURL(nextOffset, playlistSort) }
-	>
-		Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
-	</button>
-}
-
-templ notRecentAllLoaded() {
-	<p class="text-sm text-success">✓ All archived songs loaded</p>
 }
 
 func songsNotRecentURL(offset int, playlistSort string) string {

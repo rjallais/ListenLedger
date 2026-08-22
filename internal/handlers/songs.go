@@ -50,8 +50,14 @@ func songReleaseNameFromRecord(record *core.Record) string {
 }
 
 func songFromRecord(record *core.Record) templates.Song {
-	recentBatchSeq := max(record.GetInt("recent_batch_seq"), 0)
-	recentBatchPos := max(record.GetInt("recent_batch_pos"), 0)
+	recentBatchSeq := record.GetInt("recent_batch_seq")
+	if recentBatchSeq < 0 {
+		recentBatchSeq = 0
+	}
+	recentBatchPos := record.GetInt("recent_batch_pos")
+	if recentBatchPos < 0 {
+		recentBatchPos = 0
+	}
 
 	return templates.Song{
 		ID:          record.Id,
@@ -81,28 +87,11 @@ type songPageData struct {
 }
 
 func parseSongReleaseDate(stored string) (time.Time, bool) {
-	stored = strings.TrimSpace(stored)
-	if stored == "" {
+	t, err := time.Parse("2006-01-02", stored)
+	if err != nil {
 		return time.Time{}, false
 	}
-	t, err := time.Parse("2006-01-02", stored)
-	if err == nil {
-		return t, true
-	}
-
-	for _, layout := range []string{
-		"2 January 2006",
-		"02 January 2006",
-		"January 2, 2006",
-		"Jan 2, 2006",
-		"2006",
-	} {
-		if t, err := time.Parse(layout, stored); err == nil {
-			return t, true
-		}
-	}
-
-	return time.Time{}, false
+	return t, true
 }
 
 func normalizePlaylistSort(raw string) string {
@@ -351,9 +340,7 @@ func (h *Handler) buildSongPageData(ctx context.Context, playlistSort string) (s
 
 	waitingRemoval := make([]templates.Song, 0, len(waitingRemovalEntries))
 	for _, entry := range waitingRemovalEntries {
-		if entry.song.BatchSeq > 0 {
-			waitingRemoval = append(waitingRemoval, entry.song)
-		}
+		waitingRemoval = append(waitingRemoval, entry.song)
 	}
 
 	return songPageData{
@@ -364,7 +351,7 @@ func (h *Handler) buildSongPageData(ctx context.Context, playlistSort string) (s
 	}, nil
 }
 
-func (h *Handler) listNotRecentSongs(ctx context.Context, playlistSort string, offset, limit int) ([]templates.Song, int, error) {
+func (h *Handler) listNotRecentSongs(ctx context.Context, offset, limit int) ([]templates.Song, int, error) {
 	offset = clampOffset(offset)
 	limit = clampPageSize(limit)
 
@@ -374,13 +361,7 @@ func (h *Handler) listNotRecentSongs(ctx context.Context, playlistSort string, o
 	}
 
 	notRecent := filterNotRecentEntries(entries)
-	if normalizePlaylistSort(playlistSort) == playlistSortReleaseAsc {
-		sort.SliceStable(notRecent, func(i, j int) bool {
-			return compareByReleaseDateAsc(notRecent[i], notRecent[j])
-		})
-	} else {
-		sortNotRecentSongEntries(notRecent)
-	}
+	sortNotRecentSongEntries(notRecent)
 
 	page := paginateEntries(notRecent, offset, limit)
 	return page, len(notRecent), nil
@@ -430,18 +411,13 @@ func (h *Handler) nextRecentBatchAssignmentWithApp(ctx context.Context, app core
 		return 0, 0, err
 	}
 
-	window := songsRecentBatchWindow
-	if h.cfg != nil {
-		window = h.cfg.RecentBatchWindow
-	}
-
-	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now, window)
+	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now)
 	return seq, pos, nil
 }
 
-func nextRecentBatchAssignmentFromEntries(entries []songListEntry, now time.Time, window time.Duration) (int, int) {
+func nextRecentBatchAssignmentFromEntries(entries []songListEntry, now time.Time) (int, int) {
 	stats := findMaxBatchStats(entries)
-	return computeNextBatchPosition(stats, now, window)
+	return computeNextBatchPosition(stats, now)
 }
 
 type batchStats struct {
@@ -482,14 +458,14 @@ func accumulateBatchStats(stats batchStats, entry songListEntry) batchStats {
 	return stats
 }
 
-func computeNextBatchPosition(stats batchStats, now time.Time, window time.Duration) (int, int) {
+func computeNextBatchPosition(stats batchStats, now time.Time) (int, int) {
 	if stats.maxSeq == 0 {
 		return 1, songsRecentBatchSize
 	}
 	if stats.count >= songsRecentBatchSize || stats.minPos <= 1 {
 		return stats.maxSeq + 1, songsRecentBatchSize
 	}
-	if !stats.latestAdded.IsZero() && now.Sub(stats.latestAdded) >= window {
+	if !stats.latestAdded.IsZero() && now.Sub(stats.latestAdded) >= songsRecentBatchWindow {
 		return stats.maxSeq + 1, songsRecentBatchSize
 	}
 	nextPos := stats.minPos - 1
@@ -588,7 +564,7 @@ func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
 		pageData.WaitingRemoval,
 		pageData.NotRecentCount,
 		pageData.PlaylistSort,
-	), patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
+	))
 }
 
 func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {
@@ -614,15 +590,13 @@ func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, is
 
 func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
 	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.CurrentPlaylistSection(d.CurrentPlaylist, d.PlaylistSort),
-			patchOpts(h.cfg, "#songs-current-playlist-section", datastar.WithSelectorID("songs-current-playlist-section"), datastar.WithModeOuter())...)
+		return renderDatastar(e, templates.CurrentPlaylistSection(d.CurrentPlaylist, d.PlaylistSort))
 	})
 }
 
 func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {
 	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.SongsSections(d.CurrentPlaylist, d.WaitingRemoval, d.NotRecentCount, d.PlaylistSort),
-			patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
+		return renderDatastar(e, templates.SongsSections(d.CurrentPlaylist, d.WaitingRemoval, d.NotRecentCount, d.PlaylistSort))
 	})
 }
 
@@ -669,7 +643,7 @@ func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 	limit := parseQueryIntParam(e.Request, intParamSpec{Name: "limit", Default: songsDefaultPageSize, Min: 1, Max: songsMaxPageSize})
 
 	ctx := e.Request.Context()
-	songs, totalCount, err := h.listNotRecentSongs(ctx, playlistSort, offset, limit)
+	songs, totalCount, err := h.listNotRecentSongs(ctx, offset, limit)
 	if err != nil {
 		return e.String(http.StatusInternalServerError, "Failed to load songs")
 	}
@@ -681,10 +655,7 @@ func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
 
 	// Append each archived song row inside "#songs-not-recent"
 	for _, song := range songs {
-		if err := sse.PatchElementTempl(
-			templates.SongRow(song, playlistSort),
-			patchOpts(h.cfg, "#songs-not-recent", datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend())...,
-		); err != nil {
+		if err := sse.PatchElementTempl(templates.SongRow(song, playlistSort), datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend()); err != nil {
 			return err
 		}
 	}

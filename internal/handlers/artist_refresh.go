@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
-
-	"ListenLedger/internal/priority"
 )
 
 // handleRefresh triggers a refresh request for an artist.
@@ -60,7 +58,7 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 	}
 
 	if snapshot, ok := h.resumableBatchRefreshSnapshot(e.Request.FormValue("batch_id")); ok {
-		return h.patchBatchRefreshState(e.Request.Context(), e, snapshot)
+		return h.patchBatchRefreshState(e, snapshot)
 	}
 
 	count, err := parseBatchRefreshCount(e.Request)
@@ -105,74 +103,21 @@ func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
 		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
 	}
 
-	// Register the batch progress FIRST, before queueing any NATS messages.
-	// Otherwise workers can pick up messages and fire artist.updated events
-	// (which markBatchArtistDone uses) before artist IDs are registered in
-	// h.artistBatch, causing those updates to be silently dropped.
-	artistIDs, stats := jobIDsAndStats(jobs, count)
-	if len(artistIDs) == 0 {
-		return h.respondEmptyBatch(opCtx, e)
+	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(opCtx, jobs, count)
+	if len(queuedArtistIDs) == 0 {
+		if wantsJSONResponse(e.Request) {
+			return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
+		}
+		return h.patchBatchRefreshState(e, batchProgressSnapshot{
+			ID:        "",
+			Stats:     stats,
+			Total:     0,
+			Completed: 0,
+			Done:      true,
+		})
 	}
 
-	snapshot := h.createBatchProgress(artistIDs, stats)
+	snapshot := h.createBatchProgress(queuedArtistIDs, stats)
 	log.Printf("[batch] Created batch %s with %d queued artist(s)", snapshot.ID, snapshot.Total)
-	return h.finalizeBatchRefresh(opCtx, e, batchFinalizeParams{
-		snapshot:   snapshot,
-		jobs:       jobs,
-		count:      count,
-		artistIDs:  artistIDs,
-	})
-}
-
-// respondEmptyBatch handles the no-artists case for a batch refresh request,
-// returning either a JSON error or an empty done-snapshot depending on the
-// request format.
-func (h *Handler) respondEmptyBatch(ctx context.Context, e *core.RequestEvent) error {
-	if wantsJSONResponse(e.Request) {
-		return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists to refresh"})
-	}
-	return h.patchBatchRefreshState(ctx, e, batchProgressSnapshot{
-		ID:        "",
-		Total:     0,
-		Completed: 0,
-		Done:      true,
-	})
-}
-
-// batchFinalizeParams bundles the inputs needed to queue and reconcile a batch
-// refresh after its progress has been registered.
-type batchFinalizeParams struct {
-	snapshot  batchProgressSnapshot
-	jobs      []priority.Job
-	count     int
-	artistIDs []string
-}
-
-// finalizeBatchRefresh queues the batch jobs, reconciles any artists that were
-// pre-registered but not actually queued (e.g. duplicate detection or enqueue
-// error), and returns the corrected batch snapshot.
-func (h *Handler) finalizeBatchRefresh(ctx context.Context, e *core.RequestEvent, p batchFinalizeParams) error {
-	// Now queue the jobs. artist.updated events from this batch will find
-	// their artist IDs in h.artistBatch because we registered them above.
-	queuedIDs, _, err := h.enqueueBatchRefreshJobs(ctx, p.jobs, p.count)
-	if err != nil {
-		return err
-	}
-
-	// Remove any artist IDs that were pre-registered but not actually queued
-	// (e.g., duplicate detection or enqueue error). This keeps the batch
-	// accurate — skipped artists won't count as "pending forever".
-	if len(queuedIDs) < len(p.artistIDs) {
-		h.removeArtistsFromBatchSilent(p.snapshot.ID, queuedIDs)
-	}
-
-	// Re-read the batch after reconciliation so the returned snapshot
-	// reflects the corrected Total/Done/Completed rather than the stale
-	// pre-enqueue state the front-end received at creation.
-	snapshot := p.snapshot
-	if reconciled, ok := h.getBatchSnapshot(p.snapshot.ID); ok {
-		snapshot = reconciled
-	}
-
-	return h.patchBatchRefreshState(ctx, e, snapshot)
+	return h.patchBatchRefreshState(e, snapshot)
 }

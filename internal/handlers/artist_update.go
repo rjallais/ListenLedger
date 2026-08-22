@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/templates"
 )
@@ -53,7 +52,7 @@ func (h *Handler) handleUpdateListStatus(e *core.RequestEvent) error {
 	}
 	totalSongs := h.dynamicTotalSongs(ctx, record, rankCache)
 
-	return renderUpdatedArtistStatus(e, h.cfg, artistStatusUpdateParams{
+	return renderUpdatedArtistStatus(artistStatusUpdateParams{
 		Event:        e,
 		OldStatus:    oldStatus,
 		NewStatus:    newStatus,
@@ -98,6 +97,5 @@ func (h *Handler) handleUpdateCollectionSongs(e *core.RequestEvent) error {
 	}
 	totalSongs := h.dynamicTotalSongs(ctx, record, rankCache)
 
-	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, totalSongs)),
-		patchOpts(h.cfg, "#"+templates.ArtistRowID(record.Id), datastar.WithSelectorID(templates.ArtistRowID(record.Id)), datastar.WithModeOuter())...)
+	return renderDatastar(e, templates.ArtistRow(artistFromRecord(record, totalSongs)))
 }

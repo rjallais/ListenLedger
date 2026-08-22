@@ -10,7 +10,7 @@ import (
 )
 
 func TestNextRecentBatchAssignmentFromEntriesStartsAtBatchSize(t *testing.T) {
-	seq, pos := nextRecentBatchAssignmentFromEntries(nil, time.Now(), songsRecentBatchWindow)
+	seq, pos := nextRecentBatchAssignmentFromEntries(nil, time.Now())
 	if seq != 1 || pos != songsRecentBatchSize {
 		t.Fatalf("nextRecentBatchAssignmentFromEntries(nil) = (%d, %d), want (1, %d)", seq, pos, songsRecentBatchSize)
 	}
@@ -29,7 +29,10 @@ func TestNextRecentBatchAssignmentFromEntriesCountsDownWithinBatch(t *testing.T)
 		},
 	}
 
-	assertNextRecentBatchAssignment(t, entries, now, 3, 11)
+	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now)
+	if seq != 3 || pos != 11 {
+		t.Fatalf("nextRecentBatchAssignmentFromEntries(countdown batch) = (%d, %d), want (3, 11)", seq, pos)
+	}
 }
 
 func TestNextRecentBatchAssignmentFromEntriesStartsNewBatchAtOne(t *testing.T) {
@@ -45,14 +48,9 @@ func TestNextRecentBatchAssignmentFromEntriesStartsNewBatchAtOne(t *testing.T) {
 		},
 	}
 
-	assertNextRecentBatchAssignment(t, entries, now, 5, 13)
-}
-
-func assertNextRecentBatchAssignment(t *testing.T, entries []songListEntry, now time.Time, wantSeq, wantPos int) {
-	t.Helper()
-	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now, songsRecentBatchWindow)
-	if seq != wantSeq || pos != wantPos {
-		t.Fatalf("nextRecentBatchAssignmentFromEntries = (%d, %d), want (%d, %d)", seq, pos, wantSeq, wantPos)
+	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now)
+	if seq != 5 || pos != 13 {
+		t.Fatalf("nextRecentBatchAssignmentFromEntries(full batch) = (%d, %d), want (5, 13)", seq, pos)
 	}
 }
 
@@ -137,78 +135,5 @@ func TestWaitingRemovalSortingUsesLowestBatchAndPositionFirst(t *testing.T) {
 			waitingRemovalOrdered[2].song.ID,
 			waitingRemovalOrdered[3].song.ID,
 		)
-	}
-}
-
-func TestParseSongReleaseDate(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-		valid    bool
-	}{
-		{"2026-06-14", "2026-06-14", true},
-		{"10 October 1995", "1995-10-10", true},
-		{"18 September 2015", "2015-09-18", true},
-		{"2015", "2015-01-01", true},
-		{"invalid-date", "", false},
-	}
-
-	for _, tc := range tests {
-		assertParsedSongReleaseDate(t, tc.input, tc.expected, tc.valid)
-	}
-
-}
-
-func assertParsedSongReleaseDate(t *testing.T, input, expected string, valid bool) {
-	t.Helper()
-	parsed, ok := parseSongReleaseDate(input)
-	if ok != valid {
-		t.Errorf("parseSongReleaseDate(%q) valid = %v, want %v", input, ok, valid)
-	}
-	if !valid {
-		return
-	}
-	if formatted := parsed.Format("2006-01-02"); formatted != expected {
-		t.Errorf("parseSongReleaseDate(%q) = %s, want %s", input, formatted, expected)
-	}
-}
-
-func TestCompareByReleaseDateAsc(t *testing.T) {
-	now := time.Now()
-	entries := []songListEntry{
-		{
-			song:             templates.Song{ID: "newer"},
-			releaseDate:      time.Date(2015, 9, 18, 0, 0, 0, 0, time.UTC),
-			releaseDateValid: true,
-			createdAt:        now,
-		},
-		{
-			song:             templates.Song{ID: "older"},
-			releaseDate:      time.Date(1995, 10, 10, 0, 0, 0, 0, time.UTC),
-			releaseDateValid: true,
-			createdAt:        now,
-		},
-		{
-			song:             templates.Song{ID: "invalid"},
-			releaseDate:      time.Time{},
-			releaseDateValid: false,
-			createdAt:        now,
-		},
-	}
-
-	// Ascending: older < newer
-	if !compareByReleaseDateAsc(entries[1], entries[0]) {
-		t.Errorf("Expected older to be before newer in ascending sort")
-	}
-	if compareByReleaseDateAsc(entries[0], entries[1]) {
-		t.Errorf("Expected newer to be after older in ascending sort")
-	}
-
-	// Valid should come before invalid
-	if !compareByReleaseDateAsc(entries[0], entries[2]) {
-		t.Errorf("Expected valid to be before invalid in ascending sort")
-	}
-	if compareByReleaseDateAsc(entries[2], entries[0]) {
-		t.Errorf("Expected invalid to be after valid in ascending sort")
 	}
 }

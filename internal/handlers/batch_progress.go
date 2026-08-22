@@ -3,9 +3,7 @@
 package handlers
 
 import (
-	"context"
 	"log"
-	"maps"
 	"strconv"
 	"time"
 
@@ -29,10 +27,6 @@ type batchProgress struct {
 	Total     int
 	Completed int
 	Done      bool
-}
-
-func (b *batchProgress) isDone() bool {
-	return b.Done || len(b.Pending) == 0
 }
 
 type batchProgressSnapshot struct {
@@ -103,13 +97,10 @@ func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
 	delete(batch.Pending, artistID)
 	delete(h.artistBatch, artistID)
 	batch.Completed++
-	// Completion is driven by the pending set, not by Completed >= Total.
-	// Total is set once at creation from candidate IDs and is never resized
-	// upward, so comparing against it fails when some candidates were dropped
-	// before queueing (duplicates/errors). The empty-pending set is the
-	// authoritative signal that every tracked artist has settled, even when
-	// reconciliation has drained Total back to zero.
-	batch.Done = batch.isDone()
+	if batch.Completed >= batch.Total {
+		batch.Completed = batch.Total
+		batch.Done = true
+	}
 	batch.UpdatedAt = time.Now()
 }
 
@@ -125,7 +116,9 @@ func (h *Handler) createBatchProgress(artistIDs []string, stats map[string]int) 
 	}
 
 	snapshotStats := make(map[string]int, len(stats))
-	maps.Copy(snapshotStats, stats)
+	for key, value := range stats {
+		snapshotStats[key] = value
+	}
 
 	batchID := strconv.FormatInt(now.UnixNano(), 36)
 	progress := &batchProgress{
@@ -217,7 +210,7 @@ func (h *Handler) getActiveBatchSnapshot() (batchProgressSnapshot, bool) {
 	var latestTime time.Time
 
 	for _, batch := range h.batches {
-	done := batch.Done || len(batch.Pending) == 0
+		done := batch.Done || (batch.Total > 0 && batch.Completed >= batch.Total)
 		if !done {
 			if batch.UpdatedAt.After(latestTime) {
 				activeBatch = batch
@@ -254,9 +247,11 @@ func (h *Handler) batchSnapshotLocked(batch *batchProgress) batchProgressSnapsho
 	}
 
 	stats := make(map[string]int, len(batch.Stats))
-	maps.Copy(stats, batch.Stats)
+	for key, value := range batch.Stats {
+		stats[key] = value
+	}
 
-	done := batch.isDone()
+	done := batch.Done || (batch.Total > 0 && batch.Completed >= batch.Total)
 
 	return batchProgressSnapshot{
 		ID:        batch.ID,
@@ -267,7 +262,7 @@ func (h *Handler) batchSnapshotLocked(batch *batchProgress) batchProgressSnapsho
 	}
 }
 
-func (h *Handler) patchBatchRefreshState(ctx context.Context, e *core.RequestEvent, snapshot batchProgressSnapshot) error {
+func (h *Handler) patchBatchRefreshState(e *core.RequestEvent, snapshot batchProgressSnapshot) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
 	payload := formatBatchSignal(snapshot.ID, snapshot.Total, snapshot.Completed, snapshot.Done)
 	if err := sse.PatchSignals(payload); err != nil {
@@ -275,6 +270,5 @@ func (h *Handler) patchBatchRefreshState(ctx context.Context, e *core.RequestEve
 	}
 	return sse.PatchElementTempl(
 		templates.BatchRefreshResult(snapshot.ID, snapshot.Total, snapshot.Completed, snapshot.Stats, snapshot.Done),
-		patchOpts(h.cfg, "#batch-refresh-result", datastar.WithSelectorID("batch-refresh-result"), datastar.WithModeOuter())...,
 	)
 }
