@@ -563,7 +563,7 @@ func findArtistBySpotifyID(ctx context.Context, app *pocketbase.PocketBase, coll
 	err := app.RecordQuery(collection.Id).
 		WithContext(ctx).
 		AndWhere(dbx.NewExp("spotify_id = {:spotifyId}", dbx.Params{"spotifyId": spotifyID})).
-		OrderBy("id DESC").
+		OrderBy("created DESC").
 		Limit(1).
 		All(&records)
 	if err != nil {
