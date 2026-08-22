@@ -10,12 +10,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
 )
@@ -52,6 +54,10 @@ func run(ctx context.Context) error {
 		return nil
 	}
 
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		staticDir = "static"
+	}
 	opts := api.BuildOptions{
 		EntryPointsAdvanced: entries,
 		Bundle:              true,
@@ -60,7 +66,7 @@ func run(ctx context.Context) error {
 		MinifyIdentifiers:   !watch,
 		MinifySyntax:        !watch,
 		MinifyWhitespace:    !watch,
-		Outdir:              "static",
+		Outdir:              staticDir,
 		Sourcemap:           api.SourceMapLinked,
 		Target:              api.ESNext,
 		Write:               true,
@@ -73,16 +79,7 @@ func run(ctx context.Context) error {
 				build.OnEnd(func(result *api.BuildResult) (api.OnEndResult, error) {
 					slog.Info("esbuild complete", "errors", len(result.Errors), "warnings", len(result.Warnings))
 					if len(result.Errors) == 0 {
-						// Trigger Northstar-style hot-reload SSE.
-						port := os.Getenv("PORT")
-						if port == "" {
-							port = "8091"
-						}
-						host := os.Getenv("HOST")
-						if host == "" {
-							host = "localhost"
-						}
-						_, _ = http.Get(fmt.Sprintf("http://%s:%s/hotreload", host, port))
+						notifyHotReload(context.Background())
 					}
 					return api.OnEndResult{}, nil
 				})
@@ -133,21 +130,51 @@ func buildCSS(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("CSS generation failed (gotailwind): %w", err)
+	}
+	return nil
 }
 
 func discoverEntries() []api.EntryPoint {
-	// Convention: web/libs/**/index.ts or assets/js/**/*.ts
 	var entries []api.EntryPoint
 	patterns := []string{"web/libs/*/index.ts", "assets/js/*.ts", "assets/js/*.js"}
 	for _, pat := range patterns {
 		matches, _ := filepath.Glob(pat)
 		for _, m := range matches {
+			// web/libs uses directory-based output (libs/<name>), assets/js uses filename
+			output := "libs/" + filepath.Base(filepath.Dir(m))
+			if len(pat) >= 9 && pat[:9] == "assets/js" {
+				output = "libs/" + filepath.Base(m[:len(m)-len(filepath.Ext(m))])
+			}
 			entries = append(entries, api.EntryPoint{
 				InputPath:  m,
-				OutputPath: "libs/" + filepath.Base(filepath.Dir(m)),
+				OutputPath: output,
 			})
 		}
 	}
 	return entries
+}
+
+func notifyHotReload(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8091"
+	}
+	host := os.Getenv("HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%s/hotreload", host, port), nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
