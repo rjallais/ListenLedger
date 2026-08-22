@@ -5,7 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,7 +25,7 @@ func bootstrapNATS(ctx context.Context, dataDir string) (*natsserver.Server, *na
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}
-	slog.Info("embedded NATS started", "url", ns.ClientURL())
+	log.Printf("[nats] embedded NATS started at %s", ns.ClientURL())
 
 	nc, err := nats.Connect(ns.ClientURL())
 	if err != nil {
@@ -129,7 +129,7 @@ func resolveNATSPort(ctx context.Context) (int, error) {
 		if isPortFree(ctx, n) {
 			return n, nil
 		}
-		slog.Warn("NATS_PORT in use, falling back to random port", "port", n)
+		log.Printf("[nats] NATS_PORT %d in use, falling back to random port", n)
 	}
 	return -1, nil
 }

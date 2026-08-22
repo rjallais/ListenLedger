@@ -3,7 +3,7 @@
 package handlers
 
 import (
-	"log/slog"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -63,7 +63,7 @@ func (h *Handler) RegisterRoutes(r *router.Router[*core.RequestEvent]) {
 		setupHotReload(r)
 	}
 
-	slog.Info("routes registered", "hotReload", isHotReloadEnabled())
+	log.Printf("[handlers] routes registered (hotReload=%t)", isHotReloadEnabled())
 }
 
 func isHotReloadEnabled() bool {
@@ -131,6 +131,15 @@ func setupHotReload(r *router.Router[*core.RequestEvent]) {
 				http.Error(e.Response, "forbidden", http.StatusForbidden)
 				return nil
 			}
+		}
+		// Block cross-site browser triggers: a malicious page can make a
+		// visitor's browser GET http://localhost:8091/hotreload (CSRF).
+		// Browsers attach Sec-Fetch-Site on such requests; direct tooling does not.
+		switch e.Request.Header.Get("Sec-Fetch-Site") {
+		case "", "same-origin", "none":
+		default:
+			http.Error(e.Response, "forbidden", http.StatusForbidden)
+			return nil
 		}
 		broadcaster.broadcast()
 		e.Response.WriteHeader(http.StatusOK)

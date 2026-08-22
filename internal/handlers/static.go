@@ -46,7 +46,7 @@ var (
 // encodeStatic reads the file at fullPath once and returns cached brotli+gzip
 // variants for it, recompressing if the file changed on disk.
 func encodeStatic(fullPath string, fi os.FileInfo) (*staticEncoded, error) {
-	mod := fi.ModTime().UTC().Truncate(time.Second)
+	mod := fi.ModTime().UTC()
 
 	staticEncodedMu.Lock()
 	defer staticEncodedMu.Unlock()
@@ -175,7 +175,7 @@ func (h *Handler) handleStatic(e *core.RequestEvent) error {
 
 	// Shared with FileFS: set Last-Modified on every response so conditional
 	// GETs work for both the compressed and raw serving paths.
-	mod := fi.ModTime().UTC().Truncate(time.Second)
+	mod := fi.ModTime().UTC()
 	e.Response.Header().Set("Last-Modified", mod.Format(http.TimeFormat))
 
 	// Small files, unknown encodings and Range requests are served raw through

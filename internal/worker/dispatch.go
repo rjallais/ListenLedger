@@ -32,9 +32,9 @@ func appendProviderSlot(slots []providerSlot, enabled bool, provider spotify.Pro
 
 // providerSlots returns one entry per enabled provider with its concurrency.
 func (w *Worker) providerSlots() []providerSlot {
-	slots := make([]providerSlot, 0, 7)
+	slots := make([]providerSlot, 0, 8)
 	// Mobile SSR is always available — no tokens or config required.
-	slots = appendProviderSlot(slots, true, spotify.ProviderMobileSSR, 16)
+	slots = appendProviderSlot(slots, true, spotify.ProviderMobileSSR, w.cfg.MobileSSRConcurrency)
 	slots = appendProviderSlot(slots, w.cfg.HasLocalHeadless(), spotify.ProviderLocalHeadless, w.cfg.LocalConcurrency)
 	slots = appendProviderSlot(slots, w.cfg.HasBrowserless(), spotify.ProviderBrowserless, w.cfg.BrowserlessConcurrency)
 	slots = appendProviderSlot(slots, w.cfg.HasScrapingAnt(), spotify.ProviderScrapingAnt, w.cfg.MaxConcurrency)

@@ -199,8 +199,10 @@ func (w *Worker) handleRateLimited(ctx context.Context, env msgEnvelope, err err
 	}
 	sleepDur = withJitter(sleepDur, min(2*time.Second, sleepDur/4))
 
-	log.Printf("[worker] Provider %s rate-limited for %s; NAK-ing to other providers, sleeping %s", env.label, env.req.ArtistID, sleepDur.Round(time.Millisecond))
-	if nakErr := env.msg.Nak(); nakErr != nil {
+	log.Printf("[worker] Provider %s rate-limited for %s; delaying redelivery %s", env.label, env.req.ArtistID, sleepDur.Round(time.Millisecond))
+	// Delay the redelivery so sibling goroutines in this pool don't immediately
+	// re-trigger the rate limit and burn MaxDeliver attempts.
+	if nakErr := env.msg.NakWithDelay(sleepDur); nakErr != nil {
 		log.Printf("[worker] Failed to NAK message on rate limit: %v", nakErr)
 	}
 

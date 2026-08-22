@@ -101,6 +101,7 @@ type Config struct {
 	BrowserlessConcurrency int
 	ScraperAPIConcurrency  int
 	LocalConcurrency       int
+	MobileSSRConcurrency   int
 
 	// Browserbase (Stagehand) configuration
 	BrowserbaseAPIKey      string
@@ -165,6 +166,10 @@ func DefaultConfig() *Config {
 		// Disabled by default on WSL since Linux Chrome is typically not installed and Windows Chrome causes popup windows
 		LocalHeadlessEnabled: !chrome.IsWSL(),
 		LocalConcurrency:     4,
+
+		// Mobile SSR is a plain HTTP GET against open.spotify.com; a higher
+		// default keeps the free provider saturated without extra services.
+		MobileSSRConcurrency: 16,
 
 		// Local Browserless (self-hosted) defaults.
 		// Use the open-source Browserless v2 REST content API. This works for
@@ -370,10 +375,14 @@ func (c *Config) loadSharedConfig() {
 	c.loadRecentBatchWindow()
 }
 
-// loadConcurrencySettings reads MAX_CONCURRENCY and BROWSERBASE_CONCURRENCY from env.
+// loadConcurrencySettings reads MAX_CONCURRENCY (shared external providers)
+// and MOBILE_SSR_CONCURRENCY from env.
 func (c *Config) loadConcurrencySettings() {
 	if conc, ok := parsePositiveInt("MAX_CONCURRENCY"); ok {
 		c.MaxConcurrency = conc
+	}
+	if conc, ok := parseNonNegativeInt("MOBILE_SSR_CONCURRENCY"); ok {
+		c.MobileSSRConcurrency = conc
 	}
 }
 

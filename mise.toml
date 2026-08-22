@@ -50,21 +50,15 @@ sources = ["**/*.templ"]
 outputs = ["**/*_templ.go"]
 
 [tasks."build:css"]
-description = "Build Tailwind CSS for production (via embedded esbuild Go binary)"
+description = "Build Tailwind CSS and bundle JS via embedded esbuild (single cmd/build invocation)"
 run = "go run ./cmd/build"
-sources = ["./templates/**/*.{templ,go}", "./input.css", "./daisyui/*.js"]
+sources = ["./templates/**/*.{templ,go}", "./input.css", "./daisyui/*.js", "web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}", "./cmd/build/**/*.go"]
 outputs = ["static/styles.css"]
-
-[tasks."build:bundle"]
-description = "Bundle JS/TS libs via embedded esbuild (no-op if no entrypoints)"
-run = "go run ./cmd/build"
-sources = ["web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}"]
-outputs = ["static/libs/**"]
 
 [tasks.build]
 description = "Build the application for production"
 run = "go build -o bin/ListenLedger ."
-depends = ["build:templ", "build:css", "build:bundle"]
+depends = ["build:templ", "build:css"]
 
 # =============================================================================
 # LIVE TASKS - Used for development with hot-reloading
