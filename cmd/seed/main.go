@@ -603,12 +603,16 @@ func findRecordByTitleAndArtist(ctx context.Context, app *pocketbase.PocketBase,
 	return records[0], nil
 }
 
+// isUniqueConstraintError reports whether err is a unique-constraint violation.
+// PocketBase normalizes unique-index failures to validation_not_unique; raw
+// SQLite surfaces "UNIQUE constraint failed". CHECK and FOREIGN KEY constraint
+// errors are deliberately not treated as duplicates.
 func isUniqueConstraintError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unique") || strings.Contains(msg, "constraint")
+	return strings.Contains(msg, "validation_not_unique") || strings.Contains(msg, "unique constraint failed")
 }
 
 func (cfg sheet2Config) logDryRunArtistUpsert(ctx context.Context, bandName, spotifyID string, listeners int) int {

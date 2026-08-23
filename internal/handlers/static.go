@@ -175,8 +175,14 @@ func (h *Handler) handleStatic(e *core.RequestEvent) error {
 
 	// Shared with FileFS: set Last-Modified on every response so conditional
 	// GETs work for both the compressed and raw serving paths.
+	//
+	// validator is truncated to whole seconds to match http.TimeFormat, which
+	// drops fractional seconds. Comparing If-Modified-Since against the full
+	// precision mod would let a client that echoes the header back receive
+	// 200 OK instead of 304 (fractional part makes mod strictly after t).
 	mod := fi.ModTime().UTC()
-	e.Response.Header().Set("Last-Modified", mod.Format(http.TimeFormat))
+	validator := mod.Truncate(time.Second)
+	e.Response.Header().Set("Last-Modified", validator.Format(http.TimeFormat))
 
 	// Small files, unknown encodings and Range requests are served raw through
 	// the existing FileFS path (stdlib http.ServeContent handles the details).
@@ -205,7 +211,7 @@ func (h *Handler) handleStatic(e *core.RequestEvent) error {
 
 	// Conditional GET support (Last-Modified), mirrors ServeContent behavior.
 	if ims := e.Request.Header.Get("If-Modified-Since"); ims != "" {
-		if t, parseErr := http.ParseTime(ims); parseErr == nil && !mod.After(t) {
+		if t, parseErr := http.ParseTime(ims); parseErr == nil && !validator.After(t) {
 			e.Response.WriteHeader(http.StatusNotModified)
 			return nil
 		}

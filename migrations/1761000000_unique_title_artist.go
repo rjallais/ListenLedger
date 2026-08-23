@@ -60,8 +60,11 @@ func addUniqueTitleArtistIndex(app core.App, collectionName string) error {
 	}
 	idxName := "idx_" + collectionName + "_title_artist_unique"
 	// Drop if exists (idempotent re-run), then add unique.
+	// Partial index: empty title+artist_name pairs are preserved by the dedupe
+	// pass (key == "\x00" skip) and must be excluded here or Save fails on
+	// multiple blank records colliding with the unique constraint.
 	collection.RemoveIndex(idxName)
-	collection.AddIndex(idxName, true, "`title`, `artist_name`", "")
+	collection.AddIndex(idxName, true, "`title`, `artist_name`", "(`title` != '' OR `artist_name` != '')")
 	if err := app.Save(collection); err != nil {
 		return fmt.Errorf("failed to add unique index %s: %w", idxName, err)
 	}

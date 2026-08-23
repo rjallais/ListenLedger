@@ -169,12 +169,20 @@ func notifyHotReload(ctx context.Context) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%s/hotreload", host, port), nil)
 	if err != nil {
+		slog.Warn("create hot-reload request", "error", err)
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		slog.Warn("notify hot reload", "error", err)
 		return
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("close hot-reload response body", "error", closeErr)
+		}
+	}()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		slog.Warn("read hot-reload response", "error", err)
+	}
 }

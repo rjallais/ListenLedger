@@ -274,7 +274,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		semApify:                   make(chan struct{}, 1),
 		semLocalBrowserless:        make(chan struct{}, max(1, cfg.LocalBrowserlessConcurrency)),
 		semBrowserbase:             make(chan struct{}, max(1, cfg.BrowserbaseConcurrency)),
-		semMobileSSR:               make(chan struct{}, 16),
+		semMobileSSR:               make(chan struct{}, max(1, cfg.MobileSSRConcurrency)),
 		useBrowserless:             useBrowserless,
 		useScrapingAnt:             useScrapingAnt,
 		useScraperAPI:              useScraperAPI,
