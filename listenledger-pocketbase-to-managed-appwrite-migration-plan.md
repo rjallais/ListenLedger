@@ -110,7 +110,7 @@ Add auth package:
 ## Appwrite Schema
 Create one database, default ID: `listenledger`.
 
-Prefer a **declarative schema via the Appwrite CLI** (`appwrite init tables` + `appwrite push tables`) committed as `appwrite.json`, over hand-rolled Go in `cmd/appwrite_schema`. The CLI supports columns and indexes inline on table creation and is the documented idempotent path; keep `cmd/appwrite_schema` only as a fallback or remove it.
+Prefer a **declarative schema via the Appwrite CLI** (`appwrite init tables` + `appwrite push tables`) committed as `appwrite.config.json` at the repo root (the CLI's source of truth), over hand-rolled Go in `cmd/appwrite_schema`. The CLI supports columns and indexes inline on table creation and is the documented idempotent path; keep `cmd/appwrite_schema` only as a fallback or remove it.
 
 Practical column-type notes (current TablesDB limits): `varchar` max 16,383 chars and fully indexable only under 768 — all our sizes are fine; `text`/`mediumtext` are prefix-index only (fine for `scrape_jobs.error`); enums exist natively. Columns and indexes can be declared inline in `createTable` / the CLI manifest.
 
@@ -188,8 +188,8 @@ Use Chi middleware:
 Use Appwrite SSR OAuth2 token flow:
 1. `/auth/login/{provider}` validates provider against `APPWRITE_OAUTH_PROVIDERS`.
 2. Generate random `state`, store in `ll_oauth_state` cookie with `HttpOnly`, `Secure`, `SameSite=Lax`, 10-minute max age.
-3. Call `account.CreateOAuth2Token(provider, successURL, failureURL, scopes)` and redirect.
-4. `/auth/callback` verifies `state`, reads `userId` and `secret`, calls `account.CreateSession(userId, secret)`.
+3. Append state to the OAuth success URL (e.g. `successURL?state=<state>`) before calling `account.CreateOAuth2Token(provider, successURL, failureURL, scopes)` and redirect. Forwarding state through successURL is required because `CreateOAuth2Token` does not carry a separate state parameter — the callback later compares it to the cookie.
+4. `/auth/callback` must reject on missing/expired/mismatched `state` before any Appwrite calls: read `state` query param, compare constant-time to the `ll_oauth_state` cookie (and clear the cookie), and return 403 on failure. Only then read `userId`/`secret` and call `account.CreateSession(userId, secret)`; add HTTP tests for each rejection case.
 5. Store session secret in `a_session_<PROJECT_ID>` unless overridden by `APPWRITE_SESSION_COOKIE`.
 6. Middleware creates a per-request Appwrite session client and calls `account.Get`.
 7. Require user email to match `AUTH_ALLOWED_EMAILS` or `AUTH_ALLOWED_DOMAINS`; in production, fail closed if neither is configured.
@@ -213,7 +213,7 @@ Keep provider/NATS config unchanged — the northstar spine's env surface (`LOCA
 1. Add `internal/store` models and interfaces.
 2. Refactor handlers and worker to use `store.Repository` while still backed by PocketBase.
 3. Add Appwrite config and client factory.
-4. Add declarative schema manifest (`appwrite.json` via Appwrite CLI) or `cmd/appwrite_schema` fallback.
+4. Add declarative schema manifest (`appwrite.config.json` via Appwrite CLI) or `cmd/appwrite_schema` fallback.
 5. Add migration command: `cmd/migrate_appwrite`.
    - Reads PocketBase SQLite directly from `pb_data/data.db` (use the migration-day backup, not the live file — see Rollout).
    - Uses **bulk `upsertRows` staged via transactions (`createOperations`)** with original PocketBase IDs as row IDs, chunked to stay under both the bulk rows/request limit and the per-transaction op cap (100 on Free / 1,000 on Pro — with ~19.3k total rows, Pro chunks of 1,000 finish in ~20 commits; Free needs ~200). Bulk + transactions makes the migration idempotent (upsert semantics) and resumable: commit per chunk, checkpoint the last committed ID per table to a progress file, and create a fresh transaction per chunk (staged transactions expire after their TTL — default 5 min).
@@ -262,7 +262,9 @@ Acceptance commands:
    `backups/data_backup_20260808_041237.db`; re-run a fresh
    `sqlite3 pb_data/data.db ".backup 'backups/data_backup_<timestamp>.db'"` on
    migration day and snapshot `pb_data/nats/`).
-2. Create Appwrite project in the chosen region, API key (scopes: `databases.read/write`, `tables.*`, plus `users.read` if listing is ever needed; keep it minimal), database, and OAuth provider configuration (success/failure URLs per environment).
+2. Create Appwrite project in the chosen region. Create two API keys and keep scopes least-privilege:
+   - **Migration key** (short-lived, used for `appwrite push tables` and `cmd/migrate_appwrite`): `tables.read`, `tables.write`, `databases.read`, `databases.write`.
+   - **Runtime key** (long-lived, used by the running Go server via `APPWRITE_API_KEY`): `rows.read`, `rows.write`, `tables.read`, `sessions.write` (for `account.CreateSession` from the OAuth callback), plus `users.read` only if you ever need to list users. Do not use wildcards such as `tables.*` — Appwrite scopes are explicit. Rotate/delete the migration key after first production cutover. Then create database and OAuth provider configuration (success/failure URLs per environment).
 3. Push schema: `appwrite push tables` (or run `cmd/appwrite_schema`).
 4. Run `cmd/migrate_appwrite --dry-run` and review the JSONL output.
 5. Fix reported duplicate/invalid data in the SQLite snapshot.
