@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package spotify
 
 import (
@@ -69,7 +67,7 @@ func TestApifyIntegration_FetchListenerCount(t *testing.T) {
 
 	// The Apify run-sync endpoint needs up to ~90 s for a cold Actor start plus
 	// Spotify JS rendering; give it 120 s total.
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 
 	t.Logf("Fetching monthly listeners for %s (Spotify ID: %s) via Apify...", testArtistName, testSpotifyArtistID)
@@ -251,7 +249,7 @@ func TestApifyIntegration_RawResponse(t *testing.T) {
 	)
 
 	// 150 s Go-side context — wraps the 120 s Actor timeout plus round-trip latency.
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))

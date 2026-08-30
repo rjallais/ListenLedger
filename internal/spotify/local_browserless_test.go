@@ -1,9 +1,6 @@
-//go:build goexperiment.jsonv2
-
 package spotify
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +58,7 @@ func TestBuildLocalBrowserlessRequest(t *testing.T) {
 	cfg.LocalBrowserlessEndpoint = "http://localhost:3001/chromium/bql"
 
 	client := &Client{config: cfg}
-	req, err := client.buildLocalBrowserlessRequest(context.Background(), []byte(`{"url":"https://example.com"}`))
+	req, err := client.buildLocalBrowserlessRequest(t.Context(), []byte(`{"url":"https://example.com"}`))
 	if err != nil {
 		t.Fatalf("buildLocalBrowserlessRequest() error = %v", err)
 	}
@@ -126,7 +123,7 @@ func TestFetchViaLocalBrowserlessParsesHTMLContent(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	got, err := client.fetchViaLocalBrowserless(context.Background(), "artist-1")
+	got, err := client.fetchViaLocalBrowserless(t.Context(), "artist-1")
 
 	// Check handler errors after fetchViaLocalBrowserless returns.
 	close(handlerErrs)
@@ -161,7 +158,7 @@ func TestFetchViaLocalBrowserlessUnauthorizedIsNotQuotaExhausted(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	_, err = client.fetchViaLocalBrowserless(context.Background(), "artist-1")
+	_, err = client.fetchViaLocalBrowserless(t.Context(), "artist-1")
 	if err == nil {
 		t.Fatal("fetchViaLocalBrowserless() error = nil, want unauthorized error")
 	}

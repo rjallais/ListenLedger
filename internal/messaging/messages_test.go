@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package messaging
 
 import "testing"

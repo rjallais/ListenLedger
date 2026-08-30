@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package messaging
 
 import (
@@ -138,7 +136,7 @@ type scrapePublishParams struct {
 	Subject   string
 }
 
- // PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
+// PublishScrapeRequested publishes a scrape request through JetStream with optional de-duplication.
 func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req ScrapeRequested, msgID string) (*jetstream.PubAck, error) {
 	return publishScrapeRequestedToSubject(ctx, scrapePublishParams{
 		JetStream: js,
@@ -148,7 +146,7 @@ func PublishScrapeRequested(ctx context.Context, js jetstream.JetStream, req Scr
 	})
 }
 
- // publishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
+// publishScrapeRequestedToSubject publishes a scrape request to a specific queue subject.
 func publishScrapeRequestedToSubject(ctx context.Context, params scrapePublishParams) (*jetstream.PubAck, error) {
 	data, err := MarshalScrapeRequested(params.Request)
 	if err != nil {

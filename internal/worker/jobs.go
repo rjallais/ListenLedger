@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package worker
 
 import (
@@ -222,8 +220,6 @@ const staleJobSweepTimeout = 20 * time.Second
 // It also updates the associated artist's fetch_status to "failed" so that
 // batch progress tracking can count it as completed.
 func (w *Worker) sweepStaleJobs() {
-	defer w.wg.Done()
-
 	ticker := time.NewTicker(staleJobSweepInterval)
 	defer ticker.Stop()
 

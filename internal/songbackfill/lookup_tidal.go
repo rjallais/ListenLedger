@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package songbackfill
 
 import (
@@ -122,9 +120,9 @@ type tidalSearchResponse struct {
 }
 
 type tidalSearchData struct {
-	ID           string                 `json:"id"`
-	Type         string                 `json:"type"`
-	Attributes   map[string]any         `json:"attributes"`
+	ID            string                   `json:"id"`
+	Type          string                   `json:"type"`
+	Attributes    map[string]any           `json:"attributes"`
 	Relationships tidalSearchRelationships `json:"relationships"`
 }
 
@@ -140,8 +138,8 @@ type tidalRelationshipRef struct {
 }
 
 type tidalSearchItem struct {
-	Type          string             `json:"type"`
-	ID            string             `json:"id"`
+	Type          string              `json:"type"`
+	ID            string              `json:"id"`
 	Attributes    tidalItemAttributes `json:"attributes"`
 	Relationships struct {
 		Artists struct {

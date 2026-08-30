@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package quota provides quota checking for scraping providers.
 package quota
 

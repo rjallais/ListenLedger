@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // apify.go provides Apify Actor-based scraping for Spotify artist listener data.
 // It uses the apify~puppeteer-scraper Actor, which exposes the raw Puppeteer page object
 // in the pageFunction context — required for waitForFunction and evaluate calls.
@@ -338,11 +336,11 @@ func logApifyItemError(artistID string, msgs []string) {
 
 func extractArtistIDFromSpotifyURL(spotifyURL string) string {
 	trimmed := strings.TrimRight(spotifyURL, "/")
-	idx := strings.LastIndex(trimmed, "/")
-	if idx < 0 {
+	_, after, ok := strings.CutLast(trimmed, "/")
+	if !ok {
 		return ""
 	}
-	return trimmed[idx+1:]
+	return after
 }
 
 type apifyEndpointParams struct {

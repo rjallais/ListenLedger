@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package main implements the seed command, which reads CSV files of artists
 // and albums and upserts them into the ListenLedger PocketBase database.
 // Run with --dry-run to preview changes without writing.

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package messaging defines event contracts and serialization for NATS subjects.
 package messaging
 

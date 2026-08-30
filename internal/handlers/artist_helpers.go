@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package handlers provides HTTP request handlers and helper functions for
 // managing artist data and related dashboard workflows.
 package handlers
@@ -37,7 +35,7 @@ const (
 	waitingArtistStatus          = "waiting"
 
 	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests.
-	maxBatchRefreshCount = 100
+	maxBatchRefreshCount = 200
 )
 
 type artistCreateInput struct {
@@ -605,10 +603,7 @@ func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) e
 
 func updateArtistCollectionSongs(record *core.Record, delta int) {
 	currentCount := record.GetInt("collection_songs")
-	nextCount := currentCount + delta
-	if nextCount < 0 {
-		nextCount = 0
-	}
+	nextCount := max(currentCount+delta, 0)
 
 	record.Set("collection_songs", nextCount)
 }

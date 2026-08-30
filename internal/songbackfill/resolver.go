@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package songbackfill provides utilities for resolving and backfilling
 // artist metadata on song records using stored artist data and external
 // track metadata lookups.
@@ -12,10 +10,10 @@ import (
 )
 
 type Resolver struct {
-	index              artistIndex
-	namePrefillLookup  TrackMetadataLookup
-	trackLookup        TrackMetadataLookup
-	minimumConfidence  float64
+	index             artistIndex
+	namePrefillLookup TrackMetadataLookup
+	trackLookup       TrackMetadataLookup
+	minimumConfidence float64
 }
 
 func NewResolver(artists []ArtistInput, opts Options) *Resolver {
@@ -38,12 +36,12 @@ func (r *Resolver) MinimumConfidence() float64 {
 
 func (r *Resolver) Resolve(ctx context.Context, song SongInput) Resolution {
 	resolution := Resolution{
-		SongID:                  song.ID,
-		Title:                   strings.TrimSpace(song.Title),
-		ReleaseDate:             strings.TrimSpace(song.ReleaseDate),
-		OriginalArtistName:      strings.TrimSpace(song.ArtistName),
+		SongID:                   song.ID,
+		Title:                    strings.TrimSpace(song.Title),
+		ReleaseDate:              strings.TrimSpace(song.ReleaseDate),
+		OriginalArtistName:       strings.TrimSpace(song.ArtistName),
 		OriginalArtistSpotifyIDs: strings.TrimSpace(song.ArtistSpotifyIDs),
-		Action:                  ActionSkipUnresolved,
+		Action:                   ActionSkipUnresolved,
 	}
 
 	if resolution.OriginalArtistSpotifyIDs != "" {

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Command backfill_song_artists audits songs with empty artist_spotify_ids and
 // resolves multi-artist credits using MusicBrainz, Deezer, and optionally TIDAL
 // as external sources. By default it performs a dry-run that emits a JSON report
@@ -106,14 +104,14 @@ func main() {
 		log.Fatalf("[backfill_song_artists] failed to write review outputs: %v", err)
 	}
 	reportPayload := report{
-		GeneratedAt:      time.Now().UTC(),
-		ApplyRequested:   *apply,
+		GeneratedAt:       time.Now().UTC(),
+		ApplyRequested:    *apply,
 		MinimumConfidence: *minConfidence,
-		ReportPath:       reportPath,
-		ReviewQueueJSON:  reviewQueueJSONPath,
-		ReviewQueueCSV:   reviewQueueCSVPath,
-		Summary:          summary,
-		Resolutions:      resolutions,
+		ReportPath:        reportPath,
+		ReviewQueueJSON:   reviewQueueJSONPath,
+		ReviewQueueCSV:    reviewQueueCSVPath,
+		Summary:           summary,
+		Resolutions:       resolutions,
 	}
 
 	if err := writeReport(reportPath, reportPayload); err != nil {

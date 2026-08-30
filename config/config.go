@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package config provides configuration management for the ListenLedger application.
 package config
 

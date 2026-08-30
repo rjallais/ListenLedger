@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package spotify provides a client for fetching Spotify artist listener data via multiple providers.
 package spotify
 
@@ -180,8 +178,8 @@ func (e *RateLimitError) Unwrap() error {
 // RetryAfter reports the Retry-After duration from a RateLimitError, if present.
 // It returns the duration and true when err is a *RateLimitError with a positive RetryAfter; otherwise it returns zero and false.
 func RetryAfter(err error) (time.Duration, bool) {
-	var rateLimitErr *RateLimitError
-	if !errors.As(err, &rateLimitErr) {
+	rateLimitErr, ok := errors.AsType[*RateLimitError](err)
+	if !ok {
 		return 0, false
 	}
 	if rateLimitErr.RetryAfter <= 0 {
@@ -235,10 +233,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	// Local Browserless HTTP client. The worker context timeout
 	// (ProviderLocalBrowserless) controls the effective deadline;
 	// this client timeout is just a safety net.
-	localBrowserlessTimeout := min(cfg.HTTPTimeout, 60*time.Second)
-	if localBrowserlessTimeout < 30*time.Second {
-		localBrowserlessTimeout = 30 * time.Second
-	}
+	localBrowserlessTimeout := max(min(cfg.HTTPTimeout, 60*time.Second), 30*time.Second)
 	httpClientLocalBrowserless := &http.Client{
 		Transport: transport,
 		Timeout:   localBrowserlessTimeout,

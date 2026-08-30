@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package songbackfill
 
 import (
@@ -25,7 +23,7 @@ func TestResolverMatchesStoredArtistNames(t *testing.T) {
 		{RecordID: "artist-pedro", Name: "Pedro Capó", SpotifyID: "2EMAnMvWE2eb56ToJVfCWs"},
 	}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-1",
 		Title:      "Tutu",
 		ArtistName: "Camilo, Pedro Capó",
@@ -60,7 +58,7 @@ func TestResolverUsesLooseNormalization(t *testing.T) {
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-3",
 		Title:      "Just Give Me a Reason",
 		ArtistName: "P!nk, …",
@@ -94,7 +92,7 @@ func TestResolverUsesCollapsedNormalizationForHyphenatedNames(t *testing.T) {
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-flat-1",
 		Title:      "Spaceship",
 		ArtistName: "Benny Benassi, ...",
@@ -130,7 +128,7 @@ func TestResolverUsesCollapsedNormalizationForStylizedFeatureNames(t *testing.T)
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-flat-2",
 		Title:      "U and Dat",
 		ArtistName: "E-40, ...",
@@ -152,7 +150,7 @@ func TestResolverTreatsVariousArtistsAsSentinel(t *testing.T) {
 
 	resolver := NewResolver(nil, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-sentinel-1",
 		Title:      "Electric Worry",
 		ArtistName: "Various Artists",
@@ -174,7 +172,7 @@ func TestResolverRejectsAmbiguousTypoMatches(t *testing.T) {
 		{RecordID: "artist-two", Name: "Slacksmith", SpotifyID: "spotify-slacksmith"},
 	}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-typo-3",
 		Title:      "Example",
 		ArtistName: "Clacksmith",
@@ -210,7 +208,7 @@ func TestResolverSkipsAmbiguousExternalCandidates(t *testing.T) {
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-4",
 		Title:      "Nights Like This",
 		ArtistName: "Kehlani, …",
@@ -240,7 +238,7 @@ func TestResolverAllowsStoredArtistLaterInTrailingEllipsisCredits(t *testing.T) 
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-5",
 		Title:      "Maturidade",
 		ArtistName: "AMusik, ...",
@@ -271,7 +269,7 @@ func TestResolverRequiresMultipleArtistsForEllipsis(t *testing.T) {
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-6",
 		Title:      "Dreadbringer",
 		ArtistName: "Aborted, ...",
@@ -297,7 +295,7 @@ func TestResolverPrefillCannotCollapseKnownMultiArtistRow(t *testing.T) {
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-prefill-2",
 		Title:      "Dreadbringer",
 		ArtistName: "Aborted, ...",
@@ -326,7 +324,7 @@ func TestResolverReturnsNameOnlyUpdateForHighConfidenceTidalPrefill(t *testing.T
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-prefill-3",
 		Title:      "Nights Like This",
 		ArtistName: "Kehlani, ...",
@@ -349,14 +347,14 @@ func TestResolverSendsBorderlineTidalPrefillToReview(t *testing.T) {
 	resolver := NewResolver(nil, Options{
 		MinimumConfidence: 0.90,
 		NamePrefillLookup: fakeLookup{candidates: []TrackCandidate{{
-			Source:       "tidal_track",
-			Title:        "Complicated",
-			ArtistNames:  []string{"Dimitri Vegas", "David Guetta", "Kiiara"},
-			Confidence:   0.86,
+			Source:      "tidal_track",
+			Title:       "Complicated",
+			ArtistNames: []string{"Dimitri Vegas", "David Guetta", "Kiiara"},
+			Confidence:  0.86,
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-prefill-4",
 		Title:      "Complicated",
 		ArtistName: "Dimitri Vegas, ...",

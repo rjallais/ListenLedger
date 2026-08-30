@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package songbackfill
 
 import (
@@ -16,9 +14,9 @@ import (
 const defaultDeezerSearchLimit = 5
 
 type DeezerLookup struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	UserAgent  string
+	BaseURL     string
+	HTTPClient  *http.Client
+	UserAgent   string
 	SearchLimit int
 }
 
@@ -136,9 +134,9 @@ type deezerTrackSummary struct {
 }
 
 type deezerTrackDetail struct {
-	Title       string                  `json:"title"`
-	ReleaseDate string                  `json:"release_date"`
-	Artist      deezerArtistContributor `json:"artist"`
+	Title        string                    `json:"title"`
+	ReleaseDate  string                    `json:"release_date"`
+	Artist       deezerArtistContributor   `json:"artist"`
 	Contributors []deezerArtistContributor `json:"contributors"`
 }
 

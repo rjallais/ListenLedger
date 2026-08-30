@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package priority provides priority tier logic for artist batch updates.
 package priority
 

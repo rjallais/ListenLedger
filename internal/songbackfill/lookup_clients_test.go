@@ -1,10 +1,7 @@
-//go:build goexperiment.jsonv2
-
 // Package songbackfill provides utilities to parse and backfill song metadata with artist information.
 package songbackfill
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -48,7 +45,7 @@ func TestMusicBrainzLookupParsesCandidates(t *testing.T) {
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
 	}
 
-	candidates, err := lookup.Lookup(context.Background(), SongInput{
+	candidates, err := lookup.Lookup(t.Context(), SongInput{
 		Title:       "Nights Like This",
 		ReleaseDate: "2019-01-10",
 	}, "Kehlani")
@@ -104,7 +101,7 @@ func TestMusicBrainzLookupRetriesTransient503(t *testing.T) {
 		RetryBaseDelay:     time.Millisecond,
 	}
 
-	candidates, err := lookup.Lookup(context.Background(), SongInput{
+	candidates, err := lookup.Lookup(t.Context(), SongInput{
 		Title:       "Nights Like This",
 		ReleaseDate: "2019-01-10",
 	}, "Kehlani")
@@ -137,7 +134,7 @@ func TestMusicBrainzLookupReturnsRetryCountOnPersistent503(t *testing.T) {
 		RetryBaseDelay:     time.Millisecond,
 	}
 
-	_, err := lookup.Lookup(context.Background(), SongInput{
+	_, err := lookup.Lookup(t.Context(), SongInput{
 		Title:       "Nights Like This",
 		ReleaseDate: "2019-01-10",
 	}, "Kehlani")
@@ -167,7 +164,7 @@ func TestChainTrackLookupFallsBackToDeezer(t *testing.T) {
 		}},
 	}}
 
-	candidates, err := lookup.Lookup(context.Background(), SongInput{
+	candidates, err := lookup.Lookup(t.Context(), SongInput{
 		Title: "Bang My Head",
 	}, "David Guetta")
 	if err != nil {
@@ -255,7 +252,7 @@ func TestTidalLookupParsesTrackArtists(t *testing.T) {
 		AuthToken:   "token-123",
 	}
 
-	candidates, err := lookup.Lookup(context.Background(), SongInput{Title: "Nights Like This", ReleaseDate: "2019-01-10", ArtistName: "Kehlani, ..."}, "Kehlani")
+	candidates, err := lookup.Lookup(t.Context(), SongInput{Title: "Nights Like This", ReleaseDate: "2019-01-10", ArtistName: "Kehlani, ..."}, "Kehlani")
 	if err != nil {
 		t.Fatalf("Lookup() error = %v", err)
 	}
@@ -305,7 +302,7 @@ func TestDeezerLookupParsesContributors(t *testing.T) {
 		HTTPClient: &http.Client{Timeout: 2 * time.Second},
 	}
 
-	candidates, err := lookup.Lookup(context.Background(), SongInput{
+	candidates, err := lookup.Lookup(t.Context(), SongInput{
 		Title:       "Bang My Head",
 		ReleaseDate: "2015-11-06",
 	}, "David Guetta")

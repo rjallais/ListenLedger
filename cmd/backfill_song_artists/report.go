@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package main
 
 import (
@@ -12,14 +10,14 @@ import (
 )
 
 type report struct {
-	GeneratedAt      time.Time                `json:"generated_at"`
-	ApplyRequested   bool                     `json:"apply_requested"`
-	MinimumConfidence float64                 `json:"minimum_confidence"`
-	ReportPath       string                   `json:"report_path,omitempty"`
-	ReviewQueueJSON  string                   `json:"review_queue_json,omitempty"`
-	ReviewQueueCSV   string                   `json:"review_queue_csv,omitempty"`
-	Summary          reportSummary            `json:"summary"`
-	Resolutions      []songbackfill.Resolution `json:"resolutions"`
+	GeneratedAt       time.Time                 `json:"generated_at"`
+	ApplyRequested    bool                      `json:"apply_requested"`
+	MinimumConfidence float64                   `json:"minimum_confidence"`
+	ReportPath        string                    `json:"report_path,omitempty"`
+	ReviewQueueJSON   string                    `json:"review_queue_json,omitempty"`
+	ReviewQueueCSV    string                    `json:"review_queue_csv,omitempty"`
+	Summary           reportSummary             `json:"summary"`
+	Resolutions       []songbackfill.Resolution `json:"resolutions"`
 }
 
 type reportSummary struct {
@@ -57,12 +55,12 @@ func buildSummary(resolutions []songbackfill.Resolution, minimumConfidence float
 			} else {
 				summary.BelowThreshold++
 			}
-	case songbackfill.ActionSkipAmbiguous:
-		summary.SkippedAmbiguous++
-	case songbackfill.ActionSkipLowConfidence:
-		summary.SkippedLowConfidence++
-	case songbackfill.ActionSkipUnresolved:
-		summary.SkippedUnresolved++
+		case songbackfill.ActionSkipAmbiguous:
+			summary.SkippedAmbiguous++
+		case songbackfill.ActionSkipLowConfidence:
+			summary.SkippedLowConfidence++
+		case songbackfill.ActionSkipUnresolved:
+			summary.SkippedUnresolved++
 		}
 	}
 

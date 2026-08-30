@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package worker provides a NATS-based background worker for processing Spotify scrape requests.
 //
 // Architecture: pull-based per-provider goroutine pools.
@@ -340,15 +338,13 @@ func (w *Worker) spawnProviderPools(slots []providerSlot) {
 	if len(slots) == 0 {
 		log.Printf("[worker] No providers configured; starting single fallback worker")
 		g := w.newProviderGroup(spotify.ProviderAny, 1)
-		w.wg.Add(1)
-		go w.providerLoop(g, 0)
+		w.wg.Go(func() { w.providerLoop(g, 0) })
 		return
 	}
 	for _, slot := range slots {
 		g := w.newProviderGroup(slot.provider, slot.concurrency)
-		for i := 0; i < slot.concurrency; i++ {
-			w.wg.Add(1)
-			go w.providerLoop(g, i)
+		for i := range slot.concurrency {
+			w.wg.Go(func() { w.providerLoop(g, i) })
 		}
 		log.Printf("[worker] Started %d goroutine(s) for provider %s", slot.concurrency, providerLabel(slot.provider))
 	}
@@ -359,10 +355,8 @@ func (w *Worker) spawnProviderPools(slots []providerSlot) {
 func (w *Worker) launchBackgroundWorkers() {
 	w.allGroupsDead = make(chan struct{})
 	go w.watchAllGroups()
-	w.wg.Add(1)
-	go w.metricsReporter()
-	w.wg.Add(1)
-	go w.sweepStaleJobs()
+	w.wg.Go(w.metricsReporter)
+	w.wg.Go(w.sweepStaleJobs)
 }
 
 // Stop gracefully drains the NATS consumer and waits for in-flight work.

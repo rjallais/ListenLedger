@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package fetcher provides orchestration for fetching artist listener data with retries and error handling.
 package fetcher
 
@@ -72,7 +70,7 @@ func (s *Service) FetchAll(ctx context.Context, artistIDs []string) (map[string]
 
 	jobs := make(chan string)
 
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		wg.Go(func() {
 			for artistID := range jobs {
 				if ctx.Err() != nil {
@@ -167,7 +165,7 @@ func (s *Service) fetchWithRetry(ctx context.Context, artistID string, provider 
 // up to 250ms of random jitter to avoid synchronized retries.
 func retryBackoffWithJitter(attempt int) time.Duration {
 	base := time.Second
-	for i := 0; i < attempt-1 && i < 5; i++ {
+	for range min(attempt-1, 5) {
 		base *= 2
 	}
 
@@ -199,8 +197,7 @@ func isTimeoutError(err error) bool {
 		return true
 	}
 
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return true
 	}
 

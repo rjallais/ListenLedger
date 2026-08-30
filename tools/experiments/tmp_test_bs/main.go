@@ -1,4 +1,4 @@
-//go:build ignore && goexperiment.jsonv2
+//go:build ignore
 
 // Package main contains a manual Browserless/Spotify pathfinder experiment.
 package main

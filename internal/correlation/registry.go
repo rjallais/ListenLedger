@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package correlation provides request ID tracking for command-event correlation.
 package correlation
 

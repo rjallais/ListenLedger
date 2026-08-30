@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package handlers
 
 import (
@@ -50,14 +48,8 @@ func songReleaseNameFromRecord(record *core.Record) string {
 }
 
 func songFromRecord(record *core.Record) templates.Song {
-	recentBatchSeq := record.GetInt("recent_batch_seq")
-	if recentBatchSeq < 0 {
-		recentBatchSeq = 0
-	}
-	recentBatchPos := record.GetInt("recent_batch_pos")
-	if recentBatchPos < 0 {
-		recentBatchPos = 0
-	}
+	recentBatchSeq := max(record.GetInt("recent_batch_seq"), 0)
+	recentBatchPos := max(record.GetInt("recent_batch_pos"), 0)
 
 	return templates.Song{
 		ID:          record.Id,
