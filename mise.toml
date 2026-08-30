@@ -5,9 +5,6 @@
 go = "1.27.0"
 
 [settings]
-# Use Nushell as the default shell for all inline tasks (cross-platform)
-unix_default_inline_shell_args = "nu -c"
-windows_default_inline_shell_args = "nu -c"
 npm.package_manager = "aube"
 
 [env]
@@ -49,7 +46,7 @@ outputs = ["**/*_templ.go"]
 
 [tasks."build:css"]
 description = "Build Tailwind CSS for production"
-run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' --minify"
+run = "mkdir -p \"$STATIC_DIR\" && go tool gotailwind -i ./input.css -o \"$STATIC_DIR/styles.css\" --minify"
 sources = ["./templates/**/*.{templ,go}", "./input.css"]
 outputs = ["static/styles.css"]
 
@@ -68,7 +65,7 @@ run = "go tool templ generate -watch"
 
 [tasks."live:css"]
 description = "Watch and rebuild CSS on changes"
-run = "mkdir $env.STATIC_DIR; go tool gotailwind -i ./input.css -o $'./($env.STATIC_DIR)/styles.css' -w"
+run = "mkdir -p \"$STATIC_DIR\" && go tool gotailwind -i ./input.css -o \"$STATIC_DIR/styles.css\" -w"
 
 [tasks."live:server"]
 description = "Run the server with Air hot-reloading (configured via .air.toml)"
@@ -120,11 +117,11 @@ run = "podman logs --follow listenledger-browserless"
 
 [tasks.admin]
 description = "Create a superuser account (requires ADMIN_EMAIL and ADMIN_PASSWORD env vars)"
-run = "go run . superuser upsert $env.ADMIN_EMAIL $env.ADMIN_PASSWORD"
+run = "go run . superuser upsert \"$ADMIN_EMAIL\" \"$ADMIN_PASSWORD\""
 
 [tasks.quota]
 description = "Check quota status for scraping providers"
-run = "curl -s http://localhost:8091/api/quota | from json | to yaml"
+run = "curl -s http://localhost:8091/api/quota | jq -r ."
 
 [tasks.clean]
 description = "Clean build artifacts"

@@ -35,7 +35,7 @@ const (
 	waitingArtistStatus          = "waiting"
 
 	// maxBatchRefreshCount caps the user-supplied count in batch refresh requests.
-	maxBatchRefreshCount = 100
+	maxBatchRefreshCount = 200
 )
 
 type artistCreateInput struct {

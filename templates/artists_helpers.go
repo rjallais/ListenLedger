@@ -292,6 +292,7 @@ func batchRefreshCountOptions() []selectOption {
 		{Value: "25", Label: "25 artists"},
 		{Value: "50", Label: "50 artists"},
 		{Value: "100", Label: "100 artists"},
+		{Value: "200", Label: "200 artists"},
 	}
 }
 
