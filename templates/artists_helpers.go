@@ -287,9 +287,10 @@ func artistListStatusOptions() []selectOption {
 
 func batchRefreshCountOptions() []selectOption {
 	return []selectOption{
+		{Value: "2", Label: "2 artists"},
 		{Value: "5", Label: "5 artists"},
 		{Value: "10", Label: "10 artists", Selected: true},
-		{Value: "25", Label: "25 artists"},
+		{Value: "20", Label: "20 artists"},
 		{Value: "50", Label: "50 artists"},
 		{Value: "100", Label: "100 artists"},
 		{Value: "200", Label: "200 artists"},

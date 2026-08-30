@@ -1,8 +1,77 @@
 @import "tailwindcss";
 
+/* daisyUI compiled locally (vendored plugin in ./daisyui/) instead of the
+   2.9 MB CDN full.min.css. Only the 32 themes the theme switcher offers are
+   emitted; components are tree-shaken by Tailwind v4. */
+@plugin "./daisyui/daisyui.js" {
+    themes:
+        night --default,
+        dark, synthwave, halloween, forest, black, luxury, dracula, business, coffee, dim, sunset,
+        light, cupcake, bumblebee, emerald, corporate, retro, cyberpunk, valentine, winter,
+        lofi, pastel, fantasy, wireframe, cmyk, autumn, acid, lemonade, nord, aqua, garden;
+}
+
 /* Custom styles */
 .nav-active {
-  background: oklch(var(--p));
-  color: oklch(var(--pc));
+  background: var(--color-primary);
+  color: var(--color-primary-content);
   border-radius: 0.5rem;
+}
+
+/* --------------------------------------------------------------------------
+   View Transitions API support (Datastar + element-scoped VTs).
+   Datastar sends useViewTransition=true + viewTransitionSelector in SSE
+   events. The browser creates element-scoped view transitions on the element
+   matched by that selector. These rules define the default transition curve
+   and duration, and respect prefers-reduced-motion.
+   -------------------------------------------------------------------------- */
+
+/* Default transition styling for all view-transition groups */
+::view-transition-group(*) {
+  animation-duration: 0.3s;
+  animation-timing-function: ease-out;
+}
+
+/* Respect reduced motion: disable all view-transition animations */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   daisyUI v4 -> v5 compat shims.
+   The app's templates were written against daisyUI v4 classes. These keep the
+   handful of v4 class names that v5 dropped working with v5 styling.
+   -------------------------------------------------------------------------- */
+
+/* v4 form wrapper (v5 moved to .fieldset/.field) */
+.form-control {
+  display: block;
+}
+
+/* v4 label typography helpers (v5 no longer ships .label-text) */
+.label-text {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--color-base-content);
+  opacity: 0.8;
+}
+.label-text-alt {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--color-base-content);
+  opacity: 0.5;
+}
+
+/* v5 inputs/selects are bordered by default; keep the old names as no-ops so
+   markup doesn't have to change. (empty shim removed — v5 borders by default) */
+
+/* v4 .tabs-boxed container look */
+.tabs-boxed {
+  border-radius: var(--radius-field, 0.5rem);
+  background: var(--color-base-100);
+  width: fit-content;
 }

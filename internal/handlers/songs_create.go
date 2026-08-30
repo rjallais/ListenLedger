@@ -14,6 +14,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/internal/correlation"
 	"ListenLedger/internal/messaging"
@@ -196,7 +197,7 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 		pageData.WaitingRemoval,
 		pageData.NotRecentCount,
 		pageData.PlaylistSort,
-	))
+	), patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
 }
 
 func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInput, artists []string) (*core.Record, *songSaveError) {

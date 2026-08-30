@@ -32,7 +32,7 @@ go vet ./...
 go tool templ generate
 
 # Generate Tailwind CSS (after editing input.css)
-go tool gotailwind -i input.css -o static/styles.css
+mise run build:css
 
 # Hot reload development server
 go tool air
@@ -134,7 +134,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 ## Developer Workflows
 - Requires Go 1.27+; `encoding/json/v2` is stable with no build-tag gating.
 - Templ: edit `templates/*.templ`, then run `go tool templ generate` to update `templates/*_templ.go`.
-- Tailwind: edit `input.css`, then run `go tool gotailwind -i input.css -o static/styles.css`.
+- Tailwind: edit `input.css`, then run `mise run build:css` (embedded esbuild via `cmd/build`; also bundles JS).
 - PocketBase data dir is resolved by `internal/appdir.ResolveDataDir()`: default `pb_data/`, override with `PB_DATA_DIR` for the web app, `cmd/seed`, and `cmd/update_listeners`.
 - Web app uses `pb_data/` for SQLite and is created on first run; PocketBase admin UI is at `/_/`.
 

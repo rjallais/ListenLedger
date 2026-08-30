@@ -401,11 +401,13 @@ func extractMonthlyListenersJSON(data map[string]any) (int, bool) {
 	}
 	stats, ok := au["stats"].(map[string]any)
 	if !ok {
-		return 0, true
+		// Missing stats object = incomplete response, not a valid zero
+		return 0, false
 	}
 	val, ok := stats["monthlyListeners"]
 	if !ok || val == nil {
-		return 0, true
+		// Missing or null monthlyListeners = incomplete response, not a valid zero
+		return 0, false
 	}
 
 	switch v := val.(type) {
@@ -414,7 +416,7 @@ func extractMonthlyListenersJSON(data map[string]any) (int, bool) {
 	case int:
 		return v, true
 	}
-	return 0, true
+	return 0, false
 }
 
 func blockedPatterns() []string {

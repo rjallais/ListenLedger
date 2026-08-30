@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -21,7 +23,7 @@ func bootstrapNATS(ctx context.Context, dataDir string) (*natsserver.Server, *na
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}
-	log.Println("[nats] Embedded NATS server started on", ns.ClientURL())
+	log.Printf("[nats] embedded NATS started at %s", ns.ClientURL())
 
 	nc, err := nats.Connect(ns.ClientURL())
 	if err != nil {
@@ -71,9 +73,14 @@ func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server
 		return nil, fmt.Errorf("failed to create NATS store dir: %w", err)
 	}
 
+	port, err := resolveNATSPort(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve embedded NATS port: %w", err)
+	}
+
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",
-		Port:      -1,
+		Port:      port,
 		NoSigs:    true,
 		NoLog:     true,
 		JetStream: true,
@@ -103,4 +110,33 @@ func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server
 		}
 		return ns, nil
 	}
+}
+
+func resolveNATSPort(ctx context.Context) (int, error) {
+	if p, ok := os.LookupEnv("NATS_PORT"); ok {
+		if p == "" {
+			return -1, nil
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0, fmt.Errorf("invalid NATS_PORT %q: %w", p, err)
+		}
+		if n < 1 || n > 65535 {
+			return 0, fmt.Errorf("invalid NATS_PORT %q: must be 1-65535", p)
+		}
+		if isPortFree(ctx, n) {
+			return n, nil
+		}
+		log.Printf("[nats] NATS_PORT %d in use, falling back to random port", n)
+	}
+	return -1, nil
+}
+
+func isPortFree(ctx context.Context, port int) bool {
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }

@@ -13,10 +13,13 @@ import (
 // Helpers
 // --------------------------------------------------------------------------
 
-func testConfig() *config.Config {
+func testConfig(t *testing.T) *config.Config {
+	t.Helper()
+
 	cfg := config.DefaultConfig()
 	// Disable everything by default; individual tests enable what they need.
 	cfg.LocalHeadlessEnabled = false
+	cfg.LocalBrowserlessEnabled = false
 	cfg.BrowserlessToken = ""
 	cfg.ScrapingAntToken = ""
 	cfg.ScraperAPIToken = ""
@@ -29,7 +32,7 @@ func testConfig() *config.Config {
 // --------------------------------------------------------------------------
 
 func TestCheckLocalHeadless_Enabled(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.LocalHeadlessEnabled = true
 	cfg.LocalConcurrency = 4
 
@@ -45,7 +48,7 @@ func TestCheckLocalHeadless_Enabled(t *testing.T) {
 }
 
 func TestCheckLocalHeadless_Disabled(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.LocalHeadlessEnabled = false
 
 	c := NewChecker(cfg)
@@ -61,7 +64,7 @@ func TestCheckLocalHeadless_Disabled(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestCheckBrowserless_Configured(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.BrowserlessToken = "test-token"
 	cfg.BrowserlessEndpoint = "https://example.com"
 
@@ -77,7 +80,7 @@ func TestCheckBrowserless_Configured(t *testing.T) {
 }
 
 func TestCheckBrowserless_NotConfigured(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
 	info := c.CheckBrowserless()
@@ -104,7 +107,7 @@ func TestCheckScrapingAnt_HasCredits(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScrapingAntToken = "test-token"
 	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general" // needed for HasScrapingAnt()
 
@@ -139,7 +142,7 @@ func TestCheckScrapingAnt_NoCredits(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScrapingAntToken = "test-token"
 	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
 
@@ -160,7 +163,7 @@ func TestCheckScrapingAnt_APIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScrapingAntToken = "bad-token"
 	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
 
@@ -177,7 +180,7 @@ func TestCheckScrapingAnt_APIError(t *testing.T) {
 }
 
 func TestCheckScrapingAnt_NotConfigured(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
 	info := c.CheckScrapingAnt(t.Context())
@@ -205,7 +208,7 @@ func TestCheckScraperAPI_HasCredits(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScraperAPIToken = "test-token"
 	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com" // needed for HasScraperAPI()
 
@@ -241,7 +244,7 @@ func TestCheckScraperAPI_LimitReached(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScraperAPIToken = "test-token"
 	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com"
 
@@ -265,7 +268,7 @@ func TestCheckScraperAPI_AccountEndpointNotAvailable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScraperAPIToken = "test-token"
 	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com"
 
@@ -284,7 +287,7 @@ func TestCheckScraperAPI_AuthError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScraperAPIToken = "bad-token"
 	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com"
 
@@ -298,7 +301,7 @@ func TestCheckScraperAPI_AuthError(t *testing.T) {
 }
 
 func TestCheckScraperAPI_NotConfigured(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
 	info := c.CheckScraperAPI(t.Context())
@@ -332,7 +335,7 @@ func TestCheckApify_BudgetAndMemoryAvailable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts" // needed for HasApify()
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -375,7 +378,7 @@ func TestCheckApify_BudgetExhausted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -417,7 +420,7 @@ func TestCheckApify_MemoryLimitReached(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -462,7 +465,7 @@ func TestCheckApify_MemoryPartiallyUsed(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -495,7 +498,7 @@ func TestCheckApify_AuthFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "bad-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -519,7 +522,7 @@ func TestCheckApify_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -540,7 +543,7 @@ func TestCheckApify_MalformedJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -558,7 +561,7 @@ func TestCheckApify_MalformedJSON(t *testing.T) {
 }
 
 func TestCheckApify_NotConfigured(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
 	info := c.CheckApify(t.Context())
@@ -589,7 +592,7 @@ func TestCheckApify_UnlimitedPlan(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -625,7 +628,7 @@ func TestCheckApify_OverspentBudget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "apify~puppeteer-scraper"
@@ -648,7 +651,7 @@ func TestCheckApify_OverspentBudget(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestCheckAll_OnlyConfiguredProviders(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	// Only enable local headless.
 	cfg.LocalHeadlessEnabled = true
 	cfg.LocalConcurrency = 2
@@ -680,7 +683,7 @@ func TestCheckAll_MultipleProviders(t *testing.T) {
 	}))
 	defer srvApify.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.LocalHeadlessEnabled = true
 	cfg.LocalConcurrency = 2
 	cfg.ScrapingAntToken = "test"
@@ -714,17 +717,18 @@ func TestCheckAll_MultipleProviders(t *testing.T) {
 // HasAvailableQuota
 // --------------------------------------------------------------------------
 
-func TestHasAvailableQuota_NoneConfigured(t *testing.T) {
-	cfg := testConfig()
+func TestHasAvailableQuota_MobileSSRAlwaysAvailable(t *testing.T) {
+	// Nothing configured — mobile SSR needs no config and is always available.
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
-	if c.HasAvailableQuota(t.Context()) {
-		t.Fatal("expected no available quota when nothing is configured")
+	if !c.HasAvailableQuota(t.Context()) {
+		t.Fatal("expected available quota via mobile SSR even when nothing is configured")
 	}
 }
 
 func TestHasAvailableQuota_LocalEnabled(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.LocalHeadlessEnabled = true
 	cfg.LocalConcurrency = 1
 
@@ -756,7 +760,7 @@ func TestHasAvailableFrom(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestGetBestProvider_PrefersLocal(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.LocalHeadlessEnabled = true
 	cfg.LocalConcurrency = 1
 	cfg.BrowserlessToken = "test"
@@ -771,8 +775,8 @@ func TestGetBestProvider_PrefersLocal(t *testing.T) {
 }
 
 func TestGetBestProvider_FallsThroughPriority(t *testing.T) {
-	// Only browserless configured → should return browserless.
-	cfg := testConfig()
+	// Only browserless configured → browserless is returned (mobile-ssr excluded from quota priority).
+	cfg := testConfig(t)
 	cfg.BrowserlessToken = "test"
 	cfg.BrowserlessEndpoint = "https://example.com"
 
@@ -784,14 +788,15 @@ func TestGetBestProvider_FallsThroughPriority(t *testing.T) {
 	}
 }
 
-func TestGetBestProvider_EmptyWhenNoneConfigured(t *testing.T) {
-	cfg := testConfig()
+func TestGetBestProvider_MobileSSRWhenNoneConfigured(t *testing.T) {
+	// No paid provider configured → no quota provider selected (mobile-ssr handled by client fallback).
+	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
 	best := c.GetBestProvider(t.Context())
 
 	if best != "" {
-		t.Errorf("GetBestProvider() = %q, want empty string when nothing configured", best)
+		t.Errorf("GetBestProvider() = %q, want empty (no paid provider with quota)", best)
 	}
 }
 
@@ -829,7 +834,7 @@ func TestCheckScrapingAnt_UsesCorrectURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ScrapingAntToken = "my-secret-key"
 	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
 
@@ -858,7 +863,7 @@ func TestCheckApify_UsesLimitsEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.ApifyToken = "test-token"
 	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
 	cfg.ApifyActorID = "test-actor"

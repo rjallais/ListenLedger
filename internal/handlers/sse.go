@@ -48,6 +48,17 @@ func (h *Handler) handleSSE(e *core.RequestEvent) error {
 			return
 		}
 
+		// Drive batch progress from this callback before reading the snapshot.
+		// Two independent NATS subscriptions (batch-tracking + this SSE one)
+		// dispatch the same message concurrently; without this, the SSE reader
+		// can observe stale batch state (e.g. Completed=99) before the
+		// batch-tracking callback applies the final update, and since no
+		// further artist.updated message arrives for the last artist the UI
+		// would stay stuck at 99/100. markBatchArtistDone is idempotent and
+		// mutex-guarded, so calling it here is safe even if the batch-tracker
+		// already processed the message.
+		h.markBatchArtistDone(update.ArtistID, update.FetchStatus)
+
 		// Send artist table updates (listeners, timestamps, status).
 		signals := map[string]any{
 			"artistListeners": map[string]int{

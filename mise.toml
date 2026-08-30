@@ -45,9 +45,9 @@ sources = ["**/*.templ"]
 outputs = ["**/*_templ.go"]
 
 [tasks."build:css"]
-description = "Build Tailwind CSS for production"
-run = "mkdir -p \"$STATIC_DIR\" && go tool gotailwind -i ./input.css -o \"$STATIC_DIR/styles.css\" --minify"
-sources = ["./templates/**/*.{templ,go}", "./input.css"]
+description = "Build Tailwind CSS and bundle JS via embedded esbuild (single cmd/build invocation)"
+run = "go run ./cmd/build"
+sources = ["./templates/**/*.{templ,go}", "./input.css", "./daisyui/*.js", "web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}", "./cmd/build/**/*.go"]
 outputs = ["static/styles.css"]
 
 [tasks.build]
@@ -64,8 +64,8 @@ description = "Watch and regenerate Templ templates"
 run = "go tool templ generate -watch"
 
 [tasks."live:css"]
-description = "Watch and rebuild CSS on changes"
-run = "mkdir -p \"$STATIC_DIR\" && go tool gotailwind -i ./input.css -o \"$STATIC_DIR/styles.css\" -w"
+description = "Watch and rebuild CSS/JS via embedded esbuild"
+run = "go run ./cmd/build --watch"
 
 [tasks."live:server"]
 description = "Run the server with Air hot-reloading (configured via .air.toml)"

@@ -10,6 +10,8 @@ import (
 	"github.com/a-h/templ"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
+
+	"ListenLedger/config"
 )
 
 // sseOpts is used for short-lived SSE responses (batch POST, refresh POST, etc.)
@@ -29,6 +31,36 @@ var sseOpts = []datastar.SSEOption{
 // SSE events from being delivered immediately and causes
 // ERR_INCOMPLETE_CHUNKED_ENCODING on the client.
 var sseStreamOpts []datastar.SSEOption
+
+// patchOpts builds the datastar PatchElement options for a fragment update.
+// It always applies the merge selector/mode, and prepends view-transition
+// options when enabled in config (VIEW_TRANSITIONS defaults to true).
+//
+// viewTransitionSelector is a CSS selector identifying the element being
+// replaced (e.g. "#artist-row-123" or a templ-generated target id). It is only
+// meaningful with element patches, not signal patches.
+func patchOpts(cfg *config.Config, viewTransitionSelector string, merge ...datastar.PatchElementOption) []datastar.PatchElementOption {
+	if !useViewTransitions(cfg) {
+		return merge
+	}
+	out := []datastar.PatchElementOption{
+		datastar.WithUseViewTransitions(true),
+	}
+	if viewTransitionSelector != "" {
+		out = append(out, datastar.WithViewTransitionSelector(viewTransitionSelector))
+	}
+	out = append(out, merge...)
+	return out
+}
+
+// useViewTransitions reports whether view transitions are enabled in config,
+// with a safe default (on) when config is nil.
+func useViewTransitions(cfg *config.Config) bool {
+	if cfg == nil {
+		return true
+	}
+	return cfg.UseViewTransitions
+}
 
 var allowedGenreGroups = map[string]bool{
 	"rock_metal":      true,
@@ -61,7 +93,10 @@ func renderTempl(e *core.RequestEvent, component templ.Component) error {
 
 func renderDatastar(e *core.RequestEvent, c templ.Component, opts ...datastar.PatchElementOption) error {
 	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	return sse.PatchElementTempl(c, opts...)
+	if err := sse.PatchElementTempl(c, opts...); err != nil {
+		return fmt.Errorf("patch element via datastar: %w", err)
+	}
+	return nil
 }
 
 func formatBatchSignal(id string, total, completed int, done bool) []byte {

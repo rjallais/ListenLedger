@@ -113,6 +113,12 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 		results["local"] = c.CheckLocalHeadless()
 	}
 
+	if c.cfg.HasLocalBrowserless() {
+		results["local-browserless"] = c.CheckLocalBrowserless()
+	}
+
+	results["mobile-ssr"] = c.CheckMobileSSR()
+
 	if c.cfg.HasScrapingAnt() {
 		results["scrapingant"] = c.CheckScrapingAnt(ctx)
 	}
@@ -127,6 +133,10 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 
 	if c.cfg.HasApify() {
 		results["apify"] = c.CheckApify(ctx)
+	}
+
+	if c.cfg.HasBrowserbase() {
+		results["browserbase"] = c.CheckBrowserbase()
 	}
 
 	return results
@@ -147,7 +157,32 @@ func (c *Checker) CheckLocalHeadless() Info {
 	return Info{
 		Provider:  "local",
 		Available: true,
-		Error:     fmt.Sprintf("Local headless enabled (concurrency %d); no external quota", c.cfg.LocalConcurrency),
+	}
+}
+
+// CheckLocalBrowserless checks whether self-hosted Browserless scraping is available.
+// Local Browserless has no external quota — it is always available when enabled.
+func (c *Checker) CheckLocalBrowserless() Info {
+	if !c.cfg.HasLocalBrowserless() {
+		return Info{
+			Provider:  "local-browserless",
+			Available: false,
+			Error:     "Local browserless not enabled",
+		}
+	}
+
+	return Info{
+		Provider:  "local-browserless",
+		Available: true,
+	}
+}
+
+// CheckMobileSSR checks whether mobile SSR scraping is available.
+// Mobile SSR is a plain HTTP GET and needs no configuration, so it is always available.
+func (c *Checker) CheckMobileSSR() Info {
+	return Info{
+		Provider:  "mobile-ssr",
+		Available: true,
 	}
 }
 
@@ -457,6 +492,24 @@ func (c *Checker) CheckBrowserless() Info {
 	}
 }
 
+// CheckBrowserbase checks the quota for Browserbase.
+// Browserbase does not have a public usage/quota API.
+func (c *Checker) CheckBrowserbase() Info {
+	if !c.cfg.HasBrowserbase() {
+		return Info{
+			Provider:  "browserbase",
+			Available: false,
+			Error:     "Browserbase not configured",
+		}
+	}
+
+	return Info{
+		Provider:  "browserbase",
+		Available: true,
+		Error:     "Browserbase does not provide a usage API; quota assumed available",
+	}
+}
+
 // HasAvailableQuota returns true if at least one provider has available quota.
 func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
 	quotas := c.CheckAll(ctx)
@@ -474,7 +527,8 @@ func HasAvailableFrom(quotas map[string]Info) bool {
 }
 
 // GetBestProvider returns the provider with the most remaining credits.
-// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// Priority order: Local headless (always free) -> Mobile SSR (always free, no
+// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
 // ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func (c *Checker) GetBestProvider(ctx context.Context) string {
@@ -483,7 +537,8 @@ func (c *Checker) GetBestProvider(ctx context.Context) string {
 }
 
 // GetBestFrom returns the best available provider from a precomputed quota map.
-// Priority order: Local headless (always free) -> ScrapingAnt (if credits remain) ->
+// Priority order: Local headless (always free) -> Mobile SSR (always free, no
+// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
 // ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
 func GetBestFrom(quotas map[string]Info) string {
@@ -495,7 +550,7 @@ func GetBestFrom(quotas map[string]Info) string {
 	return ""
 }
 
-var providerPriority = []string{"local", "scrapingant", "scraperapi", "apify", "browserless"}
+var providerPriority = []string{"local", "local-browserless", "browserbase", "scrapingant", "scraperapi", "apify", "browserless"}
 
 func isProviderReady(name string, q Info) bool {
 	if !q.Available {

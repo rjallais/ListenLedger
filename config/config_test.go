@@ -53,15 +53,15 @@ func TestLoadFromEnvIgnoresInvalidLocalBrowserlessConcurrency(t *testing.T) {
 
 func TestValidateRequiresUsableProviderConfig(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.LocalHeadlessEnabled = false
+	cfg.LocalHeadlessEnabled = true // enables mobile SSR
 	cfg.LocalBrowserlessEnabled = false
 
 	cfg.BrowserlessToken = "token-only"
 	cfg.BrowserlessEndpoint = ""
 
 	err := cfg.Validate()
-	if err == nil {
-		t.Fatalf("Validate() error = nil, want failure when only raw token is set")
+	if err != nil {
+		t.Fatalf("Validate() error = %v, want success (local headless enabled enables mobile SSR)", err)
 	}
 }
 
