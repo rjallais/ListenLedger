@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // scrapingant.go provides ScrapingAnt HTML scraping for Spotify artist
 // listener data via the ScrapingAnt "general" API.
 

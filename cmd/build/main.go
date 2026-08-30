@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package main provides an embedded esbuild bundler for DaisyUI/JS assets.
 // It mirrors Northstar's cmd/web/build/main.go but adapts to ListenLedger's
 // layout: Tailwind CSS is still produced by gotailwind, while JS/TS libs

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package migrations
 
 import (
@@ -64,7 +62,7 @@ func addUniqueTitleArtistIndex(app core.App, collectionName string) error {
 	// pass (key == "\x00" skip) and must be excluded here or Save fails on
 	// multiple blank records colliding with the unique constraint.
 	collection.RemoveIndex(idxName)
-	collection.AddIndex(idxName, true, "`title`, `artist_name`", "(`title` != '' OR `artist_name` != '')")
+	collection.AddIndex(idxName, true, "`title`, `artist_name`", "`title` != '' OR `artist_name` != ''")
 	if err := app.Save(collection); err != nil {
 		return fmt.Errorf("failed to add unique index %s: %w", idxName, err)
 	}

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // browserless_common.go provides Browserless cloud (BQL) and self-hosted
 // Browserless container (Chromium /content) scraping for Spotify artist
 // listener data.

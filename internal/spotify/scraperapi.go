@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // scraperapi.go provides ScraperAPI HTML scraping for Spotify artist
 // listener data, including request-profile fallback and rate-limit cooldown.
 package spotify
