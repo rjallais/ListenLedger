@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package handlers provides HTTP request handlers and helpers for dashboard
 // routes, queue management, and scrape refresh workflows.
 package handlers
@@ -235,10 +233,7 @@ func (h *Handler) collectRetryCandidates(ctx context.Context, limit int) ([]*cor
 		return nil, fmt.Errorf("query failed jobs: %w", err)
 	}
 
-	remaining := limit - len(failedRecords)
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(limit-len(failedRecords), 0)
 
 	queuedRecords, err := h.scrapeJobsByStatus(ctx, "queued", remaining)
 	if err != nil {

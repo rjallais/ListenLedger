@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package chrome provides Chrome executable path resolution across platforms.
 package chrome
 

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package worker
 
 import (
@@ -197,7 +195,6 @@ func (w *Worker) nakDispatchMessage(msg jetstream.Msg, reason string) {
 // pulled from the channel is NAK-ed back to JetStream so other providers (or a
 // future restart) can pick it up.
 func (w *Worker) providerLoop(g *providerGroup, slot int) {
-	defer w.wg.Done()
 	defer g.alive.Done()
 
 	log.Printf("[worker] Provider %s slot %d ready", g.label, slot)

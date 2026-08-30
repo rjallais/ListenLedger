@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package migrations
 
 import (
@@ -34,8 +32,8 @@ func upsertAlbumsCollection(app core.App) error {
 		c.Fields.Add(
 			&core.TextField{Name: "title", Required: true},
 			&core.TextField{Name: "artist_name", Required: true},
-			&core.NumberField{Name: "collection_songs", OnlyInt: true, Min: float64Ptr(0)},
-			&core.NumberField{Name: "total_songs", OnlyInt: true, Min: float64Ptr(0)},
+			&core.NumberField{Name: "collection_songs", OnlyInt: true, Min: new(float64(0))},
+			&core.NumberField{Name: "total_songs", OnlyInt: true, Min: new(float64(0))},
 			&core.SelectField{
 				Name:      "status",
 				Values:    []string{"full", "processed_once", "waiting"},
@@ -64,7 +62,7 @@ func upsertArtistsCollection(app core.App) error {
 			Max:     22,
 			Pattern: "^[A-Za-z0-9]{22}$",
 		},
-		&core.NumberField{Name: "monthly_listeners", OnlyInt: true, Min: float64Ptr(0)},
+		&core.NumberField{Name: "monthly_listeners", OnlyInt: true, Min: new(float64(0))},
 		&core.SelectField{
 			Name:      "genre_group",
 			Values:    []string{"rock_metal", "everything_else"},
@@ -81,8 +79,8 @@ func upsertArtistsCollection(app core.App) error {
 			Values:    []string{"idle", "pending", "failed"},
 			MaxSelect: 1,
 		},
-		&core.NumberField{Name: "collection_songs", OnlyInt: true, Min: float64Ptr(0)},
-		&core.NumberField{Name: "total_songs", OnlyInt: true, Min: float64Ptr(0)},
+		&core.NumberField{Name: "collection_songs", OnlyInt: true, Min: new(float64(0))},
+		&core.NumberField{Name: "total_songs", OnlyInt: true, Min: new(float64(0))},
 	)
 
 	collection.AddIndex("idx_artists_genre_status_listeners", false, "`genre_group`, `list_status`, `monthly_listeners` DESC", "")
@@ -127,14 +125,14 @@ func upsertSongsCollection(app core.App) error {
 			&core.TextField{Name: "artist_name", Required: true},
 			&core.TextField{Name: "album"},
 			&core.TextField{Name: "release_date"},
-			&core.NumberField{Name: "release_year", OnlyInt: true, Min: float64Ptr(0)},
+			&core.NumberField{Name: "release_year", OnlyInt: true, Min: new(float64(0))},
 			&core.TextField{
 				Name:    "spotify_id",
 				Pattern: `^$|^[A-Za-z0-9]{22}$`,
 			},
 			&core.BoolField{Name: "is_recent"},
-			&core.NumberField{Name: "recent_batch_seq", OnlyInt: true, Min: float64Ptr(0)},
-			&core.NumberField{Name: "recent_batch_pos", OnlyInt: true, Min: float64Ptr(0)},
+			&core.NumberField{Name: "recent_batch_seq", OnlyInt: true, Min: new(float64(0))},
+			&core.NumberField{Name: "recent_batch_pos", OnlyInt: true, Min: new(float64(0))},
 		)
 
 		c.AddIndex("idx_songs_is_recent_release_date", false, "`is_recent`, `release_date`", "")

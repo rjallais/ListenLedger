@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package handlers provides HTTP route handlers for the web application.
 package handlers
 

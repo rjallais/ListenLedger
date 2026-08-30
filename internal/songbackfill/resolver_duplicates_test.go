@@ -1,9 +1,6 @@
-//go:build goexperiment.jsonv2
-
 package songbackfill
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -26,7 +23,7 @@ func TestResolverExpandsEllipsisWithLookup(t *testing.T) {
 		}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-2",
 		Title:      "Nights Like This",
 		ArtistName: "Kehlani, …",
@@ -50,7 +47,7 @@ func TestResolverUsesTypoTolerantMatchingForStoredArtistName(t *testing.T) {
 		{RecordID: "artist-dark", Name: "Dark Tranquility", SpotifyID: "0urLpXfBk1k2iXc8mFCX4u"},
 	}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-typo-1",
 		Title:      "Atoma",
 		ArtistName: "Dark Tranquillity",
@@ -77,7 +74,7 @@ func TestResolverUsesAliasOverrideForRenamedArtist(t *testing.T) {
 		RecordID: "artist-softplay", Name: "SOFT PLAY", SpotifyID: "4WbAofIg5SCnV6mt5mHff2",
 	}}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-alias-1",
 		Title:      "The Hunter",
 		ArtistName: "Slaves",
@@ -98,7 +95,7 @@ func TestResolverKeepsNothingNowhereAsSingleArtist(t *testing.T) {
 		RecordID: "artist-nn", Name: "nothing,nowhere.", SpotifyID: "7FngGIEGgN3Iwauw1MvO6P",
 	}}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-single-1",
 		Title:      "hammer",
 		ArtistName: "nothing,nowhere.",
@@ -119,7 +116,7 @@ func TestResolverUsesTypoMatchForAnathemaVariant(t *testing.T) {
 		RecordID: "artist-anathema", Name: "Anathemaa", SpotifyID: "spotify-anathemaa",
 	}}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-typo-anathema",
 		Title:      "One Last Goodbye",
 		ArtistName: "Anathema",
@@ -143,7 +140,7 @@ func TestResolverUsesTypoTolerantMatchingForStoredGroupArtistName(t *testing.T) 
 		{RecordID: "artist-gch", Name: "Gym Class Heroes", SpotifyID: "2CIMQHirSU0MQqyYHq0eOx"},
 	}, Options{MinimumConfidence: 0.90})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-typo-2",
 		Title:      "Cupid’s Chokehold",
 		ArtistName: "Gym Class Heros",
@@ -179,7 +176,7 @@ func TestResolverUsesTidalPrefillThenMatchesSpotifyIDs(t *testing.T) {
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:         "song-prefill-1",
 		Title:      "Nights Like This",
 		ArtistName: "Kehlani, ...",
@@ -218,7 +215,7 @@ func TestResolverReturnsNameOnlyUpdateForHighConfidencePartialMatch(t *testing.T
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:          "song-prefill-partial-1",
 		Title:       "Luxúria",
 		ArtistName:  "Bagua Records, ...",
@@ -258,7 +255,7 @@ func TestResolverReturnsNameOnlyUpdateForPartialMainLookupMatch(t *testing.T) {
 		}}},
 	})
 
-	got := resolver.Resolve(context.Background(), SongInput{
+	got := resolver.Resolve(t.Context(), SongInput{
 		ID:          "song-main-partial-1",
 		Title:       "Luxúria",
 		ArtistName:  "Bagua Records, ...",

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package songbackfill provides track-candidate selection and song backfill helpers.
 package songbackfill
 
@@ -72,22 +70,22 @@ func TestSelectTrackCandidatePrefersFewestArtistsAmongNearTopCandidates(t *testi
 
 	selected, ambiguous, notes, ok := selectTrackCandidate([]TrackCandidate{
 		{
-			Source:       "deezer_track",
-			Title:        "Old Thing Back",
-			ArtistNames:  []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"},
-			Confidence:   0.97,
+			Source:      "deezer_track",
+			Title:       "Old Thing Back",
+			ArtistNames: []string{"Matoma", "The Notorious B.I.G.", "Ja Rule", "Ralph Tresvant"},
+			Confidence:  0.97,
 		},
 		{
-			Source:       "musicbrainz_recording",
-			Title:        "Old Thing Back",
-			ArtistNames:  []string{"Matoma", "The Notorious B.I.G."},
-			Confidence:   0.97,
+			Source:      "musicbrainz_recording",
+			Title:       "Old Thing Back",
+			ArtistNames: []string{"Matoma", "The Notorious B.I.G."},
+			Confidence:  0.97,
 		},
 		{
-			Source:       "tidal_track",
-			Title:        "Old Thing Back",
-			ArtistNames:  []string{"Matoma", "The Notorious B.I.G."},
-			Confidence:   0.96,
+			Source:      "tidal_track",
+			Title:       "Old Thing Back",
+			ArtistNames: []string{"Matoma", "The Notorious B.I.G."},
+			Confidence:  0.96,
 		},
 	})
 	if !ok || ambiguous {

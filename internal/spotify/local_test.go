@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package spotify
 
 import (
@@ -99,7 +97,7 @@ func TestParseLocalHTMLMonthlyListenersArtistUnionWithoutStats(t *testing.T) {
 }
 
 func TestLocalBrowserRetireGraceUsesRemainingDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	grace := localBrowserRetireGrace(ctx, 5*time.Second)

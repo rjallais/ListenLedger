@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package main
 
 import (
@@ -31,10 +29,10 @@ func loadSongs(ctx context.Context, app *pocketbase.PocketBase) ([]songbackfill.
 			continue
 		}
 		songs = append(songs, songbackfill.SongInput{
-			ID:             record.Id,
-			Title:          strings.TrimSpace(record.GetString("title")),
-			ArtistName:     strings.TrimSpace(record.GetString("artist_name")),
-			ReleaseDate:    strings.TrimSpace(record.GetString("release_date")),
+			ID:               record.Id,
+			Title:            strings.TrimSpace(record.GetString("title")),
+			ArtistName:       strings.TrimSpace(record.GetString("artist_name")),
+			ReleaseDate:      strings.TrimSpace(record.GetString("release_date")),
 			ArtistSpotifyIDs: strings.TrimSpace(record.GetString("artist_spotify_ids")),
 		})
 	}

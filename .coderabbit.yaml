@@ -23,8 +23,7 @@ reviews:
   path_instructions:
     - path: "**/*.go"
       instructions: >
-        Go files in this project require the goexperiment.jsonv2 build tag.
-        Verify every .go file starts with `//go:build goexperiment.jsonv2`.
+        Go 1.27 — encoding/json/v2 is stable (no GOEXPERIMENT or build tag needed).
         Imports must be ordered: stdlib, third-party, local (ListenLedger/...),
         separated by blank lines. Errors should be wrapped with fmt.Errorf and %w.
         Context must be the first parameter for I/O functions.

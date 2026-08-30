@@ -1,4 +1,4 @@
-//go:build ignore && goexperiment.jsonv2
+//go:build ignore
 
 // Package main contains a manual local-headless probe kept outside normal builds.
 package main

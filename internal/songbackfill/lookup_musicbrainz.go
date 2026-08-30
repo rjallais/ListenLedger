@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package songbackfill
 
 import (
@@ -17,8 +15,8 @@ import (
 
 const (
 	defaultMusicBrainzMinRequestInterval = 1100 * time.Millisecond
-	defaultMusicBrainzMaxRetries          = 4
-	defaultMusicBrainzRetryBaseDelay      = 2 * time.Second
+	defaultMusicBrainzMaxRetries         = 4
+	defaultMusicBrainzRetryBaseDelay     = 2 * time.Second
 )
 
 type MusicBrainzLookup struct {
@@ -29,7 +27,7 @@ type MusicBrainzLookup struct {
 	MaxRetries         int
 	RetryBaseDelay     time.Duration
 
-	mu          sync.Mutex
+	mu            sync.Mutex
 	nextRequestAt time.Time
 }
 
@@ -219,7 +217,7 @@ func (l *MusicBrainzLookup) retryDelay(resp *http.Response, attempt int) time.Du
 
 func cappedExponentialDelay(base time.Duration, attempt int, maxDelay time.Duration) time.Duration {
 	delay := base
-	for i := 0; i < attempt; i++ {
+	for range attempt {
 		delay *= 2
 		if delay >= maxDelay {
 			return maxDelay
@@ -289,10 +287,10 @@ type musicBrainzRecordingResponse struct {
 }
 
 type musicBrainzRecording struct {
-	Title             string                     `json:"title"`
-	FirstReleaseDate  string                     `json:"first-release-date"`
-	Score             int                        `json:"score"`
-	ArtistCredit      []musicBrainzArtistCredit  `json:"artist-credit"`
+	Title            string                    `json:"title"`
+	FirstReleaseDate string                    `json:"first-release-date"`
+	Score            int                       `json:"score"`
+	ArtistCredit     []musicBrainzArtistCredit `json:"artist-credit"`
 }
 
 type musicBrainzArtistCredit struct {

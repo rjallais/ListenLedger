@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package worker
 
 import (
@@ -61,8 +59,6 @@ func (w *Worker) initMetrics() {
 }
 
 func (w *Worker) metricsReporter() {
-	defer w.wg.Done()
-
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Command update_listeners refreshes artists' Spotify monthly listener counts in PocketBase.
 package main
 
@@ -85,17 +83,15 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(*concurrency)
 
 	log.Printf("Starting %d workers...", *concurrency)
 	workerCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	for i := 0; i < *concurrency; i++ {
-		go func(workerID int) {
-			defer wg.Done()
-			runWorker(workerCtx, app, workerID, chromePath, *headless, jobChan)
-		}(i)
+	for i := range *concurrency {
+		wg.Go(func() {
+			runWorker(workerCtx, app, i, chromePath, *headless, jobChan)
+		})
 	}
 
 	wg.Wait()

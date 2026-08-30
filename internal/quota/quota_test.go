@@ -1,11 +1,8 @@
-//go:build goexperiment.jsonv2
-
 package quota
 
 import (
 	"ListenLedger/config"
 
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -113,7 +110,7 @@ func TestCheckScrapingAnt_HasCredits(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScrapingAntAPIBase = srv.URL
-	info := c.CheckScrapingAnt(context.Background())
+	info := c.CheckScrapingAnt(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected scrapingant to be available, got error=%q", info.Error)
@@ -148,7 +145,7 @@ func TestCheckScrapingAnt_NoCredits(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScrapingAntAPIBase = srv.URL
-	info := c.CheckScrapingAnt(context.Background())
+	info := c.CheckScrapingAnt(t.Context())
 
 	// 5 credits remaining but each request costs ~10 credits → not available.
 	if info.Available {
@@ -169,7 +166,7 @@ func TestCheckScrapingAnt_APIError(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScrapingAntAPIBase = srv.URL
-	info := c.CheckScrapingAnt(context.Background())
+	info := c.CheckScrapingAnt(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected scrapingant to be unavailable on 401")
@@ -183,7 +180,7 @@ func TestCheckScrapingAnt_NotConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	info := c.CheckScrapingAnt(context.Background())
+	info := c.CheckScrapingAnt(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected scrapingant to be unavailable when not configured")
@@ -214,7 +211,7 @@ func TestCheckScraperAPI_HasCredits(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScraperAPIBase = srv.URL
-	info := c.CheckScraperAPI(context.Background())
+	info := c.CheckScraperAPI(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected scraperapi to be available, got error=%q", info.Error)
@@ -250,7 +247,7 @@ func TestCheckScraperAPI_LimitReached(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScraperAPIBase = srv.URL
-	info := c.CheckScraperAPI(context.Background())
+	info := c.CheckScraperAPI(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected scraperapi to be unavailable when limit reached (remaining=%d)", info.RemainingCredit)
@@ -274,7 +271,7 @@ func TestCheckScraperAPI_AccountEndpointNotAvailable(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScraperAPIBase = srv.URL
-	info := c.CheckScraperAPI(context.Background())
+	info := c.CheckScraperAPI(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected scraperapi to fall back to available when /account returns 400, got error=%q", info.Error)
@@ -293,7 +290,7 @@ func TestCheckScraperAPI_AuthError(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScraperAPIBase = srv.URL
-	info := c.CheckScraperAPI(context.Background())
+	info := c.CheckScraperAPI(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected scraperapi to be unavailable on 401")
@@ -304,7 +301,7 @@ func TestCheckScraperAPI_NotConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	info := c.CheckScraperAPI(context.Background())
+	info := c.CheckScraperAPI(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected scraperapi to be unavailable when not configured")
@@ -343,7 +340,7 @@ func TestCheckApify_BudgetAndMemoryAvailable(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected apify to be available, got error=%q", info.Error)
@@ -386,7 +383,7 @@ func TestCheckApify_BudgetExhausted(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable when budget exhausted (remaining=%d)", info.RemainingCredit)
@@ -428,7 +425,7 @@ func TestCheckApify_MemoryLimitReached(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable when memory limit is reached")
@@ -474,7 +471,7 @@ func TestCheckApify_MemoryPartiallyUsed(t *testing.T) {
 	cfg.ApifyMemoryMB = 4096
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected 4 GB run to fit when 4/8 GB in use, got error=%q", info.Error)
@@ -484,7 +481,7 @@ func TestCheckApify_MemoryPartiallyUsed(t *testing.T) {
 	cfg.ApifyMemoryMB = 8192
 	c2 := NewChecker(cfg)
 	c2.ApifyAPIBase = srv.URL
-	info2 := c2.CheckApify(context.Background())
+	info2 := c2.CheckApify(t.Context())
 
 	if info2.Available {
 		t.Fatalf("expected 8 GB run to NOT fit when 4/8 GB already in use")
@@ -505,7 +502,7 @@ func TestCheckApify_AuthFailure(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable on 401")
@@ -529,7 +526,7 @@ func TestCheckApify_ServerError(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable on 500")
@@ -550,7 +547,7 @@ func TestCheckApify_MalformedJSON(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable on malformed JSON")
@@ -564,7 +561,7 @@ func TestCheckApify_NotConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable when not configured")
@@ -600,7 +597,7 @@ func TestCheckApify_UnlimitedPlan(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if !info.Available {
 		t.Fatalf("expected unlimited plan to be available, got error=%q", info.Error)
@@ -636,7 +633,7 @@ func TestCheckApify_OverspentBudget(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	info := c.CheckApify(context.Background())
+	info := c.CheckApify(t.Context())
 
 	if info.Available {
 		t.Fatalf("expected apify to be unavailable when overspent")
@@ -657,7 +654,7 @@ func TestCheckAll_OnlyConfiguredProviders(t *testing.T) {
 	cfg.LocalConcurrency = 2
 
 	c := NewChecker(cfg)
-	results := c.CheckAll(context.Background())
+	results := c.CheckAll(t.Context())
 
 	if _, ok := results["local"]; !ok {
 		t.Error("expected 'local' in CheckAll results when enabled")
@@ -698,7 +695,7 @@ func TestCheckAll_MultipleProviders(t *testing.T) {
 	c := NewChecker(cfg)
 	c.ScrapingAntAPIBase = srvSA.URL
 	c.ApifyAPIBase = srvApify.URL
-	results := c.CheckAll(context.Background())
+	results := c.CheckAll(t.Context())
 
 	expected := []string{"local", "scrapingant", "browserless", "apify"}
 	for _, key := range expected {
@@ -721,7 +718,7 @@ func TestHasAvailableQuota_NoneConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	if c.HasAvailableQuota(context.Background()) {
+	if c.HasAvailableQuota(t.Context()) {
 		t.Fatal("expected no available quota when nothing is configured")
 	}
 }
@@ -732,7 +729,7 @@ func TestHasAvailableQuota_LocalEnabled(t *testing.T) {
 	cfg.LocalConcurrency = 1
 
 	c := NewChecker(cfg)
-	if !c.HasAvailableQuota(context.Background()) {
+	if !c.HasAvailableQuota(t.Context()) {
 		t.Fatal("expected available quota when local headless is enabled")
 	}
 }
@@ -766,7 +763,7 @@ func TestGetBestProvider_PrefersLocal(t *testing.T) {
 	cfg.BrowserlessEndpoint = "https://example.com"
 
 	c := NewChecker(cfg)
-	best := c.GetBestProvider(context.Background())
+	best := c.GetBestProvider(t.Context())
 
 	if best != "local" {
 		t.Errorf("GetBestProvider() = %q, want %q (local should be preferred)", best, "local")
@@ -780,7 +777,7 @@ func TestGetBestProvider_FallsThroughPriority(t *testing.T) {
 	cfg.BrowserlessEndpoint = "https://example.com"
 
 	c := NewChecker(cfg)
-	best := c.GetBestProvider(context.Background())
+	best := c.GetBestProvider(t.Context())
 
 	if best != "browserless" {
 		t.Errorf("GetBestProvider() = %q, want %q", best, "browserless")
@@ -791,7 +788,7 @@ func TestGetBestProvider_EmptyWhenNoneConfigured(t *testing.T) {
 	cfg := testConfig()
 
 	c := NewChecker(cfg)
-	best := c.GetBestProvider(context.Background())
+	best := c.GetBestProvider(t.Context())
 
 	if best != "" {
 		t.Errorf("GetBestProvider() = %q, want empty string when nothing configured", best)
@@ -838,7 +835,7 @@ func TestCheckScrapingAnt_UsesCorrectURL(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ScrapingAntAPIBase = srv.URL
-	_ = c.CheckScrapingAnt(context.Background())
+	_ = c.CheckScrapingAnt(t.Context())
 
 	if gotPath != "/v2/usage" {
 		t.Errorf("request path = %q, want %q", gotPath, "/v2/usage")
@@ -869,7 +866,7 @@ func TestCheckApify_UsesLimitsEndpoint(t *testing.T) {
 
 	c := NewChecker(cfg)
 	c.ApifyAPIBase = srv.URL
-	_ = c.CheckApify(context.Background())
+	_ = c.CheckApify(t.Context())
 
 	if gotPath != "/v2/users/me/limits" {
 		t.Errorf("apify quota check hit %q, want %q", gotPath, "/v2/users/me/limits")

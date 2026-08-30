@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package buildinfo exposes build-time metadata.
 package buildinfo
 

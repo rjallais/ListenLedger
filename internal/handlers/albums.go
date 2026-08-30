@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package handlers
 
 import (
@@ -47,14 +45,11 @@ type albumCreateInput struct {
 
 func (h *Handler) handleStatic(e *core.RequestEvent) error {
 	path := e.Request.PathValue("path")
-func (h *Handler) handleStatic(e *core.RequestEvent) error {
-	path := e.Request.PathValue("path")
 	e.Response.Header().Set("Cache-Control", "public, max-age=3600")
 	if err := e.FileFS(os.DirFS(h.staticDir), path); err != nil {
 		return fmt.Errorf("serve static file %q: %w", path, err)
 	}
 	return nil
-}
 }
 
 func (h *Handler) handleIndex(e *core.RequestEvent) error {

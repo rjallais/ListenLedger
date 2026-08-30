@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package app bootstraps the ListenLedger runtime and lifecycle wiring.
 package app
 

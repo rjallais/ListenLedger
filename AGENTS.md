@@ -10,23 +10,23 @@ Guide for AI agents working in the ListenLedger codebase.
 
 ## Build/Lint/Test Commands
 
-All Go commands require `GOEXPERIMENT=jsonv2` due to `encoding/json/v2` imports.
+Requires Go 1.27+ — `encoding/json/v2` is stable (no `GOEXPERIMENT` needed).
 
 ```bash
 # Build the main application
-GOEXPERIMENT=jsonv2 go build -o ListenLedger .
+go build -o ListenLedger .
 
 # Run all tests
-GOEXPERIMENT=jsonv2 go test ./...
+go test ./...
 
 # Run a single test
-GOEXPERIMENT=jsonv2 go test -v ./internal/messaging -run TestScrapeRequestedRoundTrip
+go test -v ./internal/messaging -run TestScrapeRequestedRoundTrip
 
 # Run tests for a specific package
-GOEXPERIMENT=jsonv2 go test -v ./internal/messaging
+go test -v ./internal/messaging
 
 # Vet code
-GOEXPERIMENT=jsonv2 go vet ./...
+go vet ./...
 
 # Generate templ files (after editing templates/*.templ)
 go tool templ generate
@@ -38,20 +38,17 @@ go tool gotailwind -i input.css -o static/styles.css
 go tool air
 
 # Run standalone utilities
-GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners
-GOEXPERIMENT=jsonv2 go run ./cmd/seed --dry-run
-GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists
-GOEXPERIMENT=jsonv2 go run ./cmd/safebackup
+go run ./cmd/update_listeners
+go run ./cmd/seed --dry-run
+go run ./cmd/backfill_song_artists
+go run ./cmd/safebackup
 ```
 
 ## Code Style Guidelines
 
 ### Build Constraint
-Most hand-authored runtime/test `.go` files start with the jsonv2 build constraint:
-```go
-//go:build goexperiment.jsonv2
-```
-Exceptions exist for the `templates/` package (generated `*_templ.go` files, `types.go`, and `artists_helpers.go`), shared helpers such as `internal/appdir/appdir.go`, and some standalone/experimental utilities.
+No `goexperiment.jsonv2` build tag is needed as of Go 1.27 — `encoding/json/v2` is stable.
+Hand-authored files no longer carry a build constraint; `tools/experiments/*` uses `//go:build ignore`.
 
 ### Import Ordering
 Group imports in this order with blank lines between groups (matches `goimports` convention):
@@ -135,7 +132,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - **Apify pre-flight guard**: Before the Apify provider pool processes a message, `internal/worker` calls `quota.CheckApify()` to verify USD budget and actor memory availability. If the check fails the message is NAK-ed immediately (returned to JetStream for other providers) and the Apify pool shuts down — avoiding a wasted Actor run that would 402.
 
 ## Developer Workflows
-- Build/run requires the jsonv2 experiment (`//go:build goexperiment.jsonv2` across most runtime/test Go files).
+- Requires Go 1.27+; `encoding/json/v2` is stable with no build-tag gating.
 - Templ: edit `templates/*.templ`, then run `go tool templ generate` to update `templates/*_templ.go`.
 - Tailwind: edit `input.css`, then run `go tool gotailwind -i input.css -o static/styles.css`.
 - PocketBase data dir is resolved by `internal/appdir.ResolveDataDir()`: default `pb_data/`, override with `PB_DATA_DIR` for the web app, `cmd/seed`, and `cmd/update_listeners`.
@@ -154,7 +151,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - Song artist backfill queries MusicBrainz and Deezer track metadata (`internal/songbackfill/backfill.go`, `cmd/backfill_song_artists/main.go`).
 
 ## Gotchas
-- Always build/run with `GOEXPERIMENT=jsonv2` or imports of `encoding/json/v2` fail.
+- `encoding/json/v2` is stable in Go 1.27 (no `GOEXPERIMENT` needed).
 - Do not edit `templates/*_templ.go` directly; regenerate from `.templ` sources.
 - `static/styles.css` is generated; regenerate after CSS changes.
 - Local headless scraping uses go-rod and may fall back to downloading/launching Chromium if `LOCAL_CHROME_PATH` is unset; set `LOCAL_HEADLESS_ENABLED=false` to disable it.

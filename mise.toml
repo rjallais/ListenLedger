@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.26.3"
+go = "1.27.0"
 
 [settings]
 # Use Nushell as the default shell for all inline tasks (cross-platform)
@@ -11,8 +11,6 @@ windows_default_inline_shell_args = "nu -c"
 npm.package_manager = "aube"
 
 [env]
-# Go experiment flag for jsonv2 support
-GOEXPERIMENT = "jsonv2"
 # Static files output directory
 STATIC_DIR = "static"
 # Local Air overrides (Linux defaults; update to *.exe when developing on Windows)

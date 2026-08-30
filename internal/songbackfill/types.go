@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package songbackfill resolves missing Spotify artist IDs for songs by matching
 // stored artist names against an artist index and external metadata lookups.
 package songbackfill
@@ -50,19 +48,19 @@ type CandidateSummary struct {
 }
 
 type Resolution struct {
-	SongID                   string            `json:"song_id"`
-	Title                    string            `json:"title"`
-	ReleaseDate              string            `json:"release_date,omitempty"`
-	OriginalArtistName       string            `json:"original_artist_name"`
-	OriginalArtistSpotifyIDs string            `json:"original_artist_spotify_ids,omitempty"`
-	UpdatedArtistName        string            `json:"updated_artist_name,omitempty"`
-	UpdatedArtistSpotifyIDs  string            `json:"updated_artist_spotify_ids,omitempty"`
-	Action                   string            `json:"action"`
-	Strategy                 string            `json:"strategy,omitempty"`
-	Confidence               float64           `json:"confidence"`
-	MatchedArtists           []ArtistMatch     `json:"matched_artists,omitempty"`
+	SongID                   string             `json:"song_id"`
+	Title                    string             `json:"title"`
+	ReleaseDate              string             `json:"release_date,omitempty"`
+	OriginalArtistName       string             `json:"original_artist_name"`
+	OriginalArtistSpotifyIDs string             `json:"original_artist_spotify_ids,omitempty"`
+	UpdatedArtistName        string             `json:"updated_artist_name,omitempty"`
+	UpdatedArtistSpotifyIDs  string             `json:"updated_artist_spotify_ids,omitempty"`
+	Action                   string             `json:"action"`
+	Strategy                 string             `json:"strategy,omitempty"`
+	Confidence               float64            `json:"confidence"`
+	MatchedArtists           []ArtistMatch      `json:"matched_artists,omitempty"`
 	ExternalCandidates       []CandidateSummary `json:"external_candidates,omitempty"`
-	Notes                    []string          `json:"notes,omitempty"`
+	Notes                    []string           `json:"notes,omitempty"`
 }
 
 func (r Resolution) Approved(minimumConfidence float64) bool {

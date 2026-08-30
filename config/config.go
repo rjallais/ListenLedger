@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package config provides configuration management for the ListenLedger application.
 package config
 
@@ -69,13 +67,13 @@ type Config struct {
 	LocalBrowserlessConcurrency int
 
 	// Shared behavior configuration
-	MaxConcurrency       int
-	MaxRetries           int
-	RequestTimeout       time.Duration
-	HTTPTimeout          time.Duration
-	MaxIdleConns         int
-	MaxIdleConnsPerHost  int
-	IdleConnTimeout      time.Duration
+	MaxConcurrency      int
+	MaxRetries          int
+	RequestTimeout      time.Duration
+	HTTPTimeout         time.Duration
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	IdleConnTimeout     time.Duration
 	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
 	LogSuccessfulFetches bool
 

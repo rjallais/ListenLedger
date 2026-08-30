@@ -1,9 +1,6 @@
-//go:build goexperiment.jsonv2
-
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -32,7 +29,7 @@ func TestLatestBackfillReportPathChoosesNewestJSON(t *testing.T) {
 		}
 	}
 
-	got, err := latestBackfillReportPath(context.Background(), dir)
+	got, err := latestBackfillReportPath(t.Context(), dir)
 	if err != nil {
 		t.Fatalf("latestBackfillReportPath() error = %v", err)
 	}
@@ -148,7 +145,7 @@ func TestFetchTidalAccessTokenUsesClientCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	token, err := fetchTidalAccessToken(context.Background(), server.Client(), server.URL, "client-id", "client-secret")
+	token, err := fetchTidalAccessToken(t.Context(), server.Client(), server.URL, "client-id", "client-secret")
 	if err != nil {
 		t.Fatalf("fetchTidalAccessToken() error = %v", err)
 	}

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package quota provides quota checking for scraping providers.
 package quota
 
@@ -305,10 +303,7 @@ func (c *Checker) parseScraperAPIResponse(resp *http.Response) Info {
 		}
 	}
 
-	remaining := acct.RequestLimit - acct.RequestCount
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(acct.RequestLimit-acct.RequestCount, 0)
 
 	available := remaining > 0 || acct.RequestLimit == 0
 
@@ -412,10 +407,7 @@ func classifyApifyAvailability(limitsResp ApifyLimitsResponse, apifyMemoryMB int
 
 	usedCents := int(math.Round(usedUSD * 100))
 	maxCents := int(math.Round(maxUSD * 100))
-	remainingCents := maxCents - usedCents
-	if remainingCents < 0 {
-		remainingCents = 0
-	}
+	remainingCents := max(maxCents-usedCents, 0)
 
 	budgetAvailable := remainingCents > 0 || maxCents == 0
 

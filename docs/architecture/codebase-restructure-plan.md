@@ -87,17 +87,17 @@ tools/
 
 After each refactor phase:
 
-- `GOEXPERIMENT=jsonv2 go build -o ListenLedger .`
-- `GOEXPERIMENT=jsonv2 go test ./...`
-- `GOEXPERIMENT=jsonv2 go vet ./...`
+- `go build -o ListenLedger .`
+- `go test ./...`
+- `go vet ./...`
 
 Additional targeted checks:
 
-- `GOEXPERIMENT=jsonv2 go test ./internal/handlers`
-- `GOEXPERIMENT=jsonv2 go test ./internal/worker`
-- `GOEXPERIMENT=jsonv2 go test ./internal/messaging`
-- `GOEXPERIMENT=jsonv2 go test ./internal/fetcher`
-- `GOEXPERIMENT=jsonv2 go test ./internal/quota`
+- `go test ./internal/handlers`
+- `go test ./internal/worker`
+- `go test ./internal/messaging`
+- `go test ./internal/fetcher`
+- `go test ./internal/quota`
 
 ## Ownership
 

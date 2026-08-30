@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package migrations
 
 import (
@@ -38,7 +36,7 @@ func addSongRecentBatchField(app core.App) error {
 		&core.NumberField{
 			Name:    "recent_batch_seq",
 			OnlyInt: true,
-			Min:     float64PtrLocal(0),
+			Min:     new(float64(0)),
 		},
 	)
 	collection.AddIndex("idx_songs_recent_batch_seq", false, "`is_recent`, `recent_batch_seq`", "")
@@ -107,8 +105,4 @@ func songOrderingTime(record *core.Record) time.Time {
 	}
 
 	return time.Time{}
-}
-
-func float64PtrLocal(value float64) *float64 {
-	return new(value)
 }

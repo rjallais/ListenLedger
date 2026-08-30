@@ -15,9 +15,7 @@ when:
 steps:
   # --[ Format ]--------------------------------------------------------------
   - name: format
-    image: golang:1.26
-    environment:
-      GOEXPERIMENT: jsonv2
+    image: golang:1.27
     commands:
       - go tool templ fmt templates
       - |
@@ -31,24 +29,18 @@ steps:
   # --[ Lint ]----------------------------------------------------------------
   - name: lint
     image: golangci/golangci-lint:v2.10
-    environment:
-      GOEXPERIMENT: jsonv2
     commands:
       - golangci-lint run --timeout 5m ./...
 
   # --[ Build ]---------------------------------------------------------------
   - name: build
-    image: golang:1.26
-    environment:
-      GOEXPERIMENT: jsonv2
+    image: golang:1.27
     commands:
       - go build -o /dev/null .
 
   # --[ Test ]----------------------------------------------------------------
   - name: test
-    image: golang:1.26
-    environment:
-      GOEXPERIMENT: jsonv2
+    image: golang:1.27
     commands:
       - go test ./...
     depends_on: [build]

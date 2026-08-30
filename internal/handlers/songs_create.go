@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package handlers
 
 import (
@@ -186,7 +184,7 @@ func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
 	pageData, buildErr := h.buildSongPageData(ctx, playlistSort)
 	if buildErr != nil {
 		log.Printf("[handleCreateSong] buildSongPageData failed: %v", buildErr)
-		return e.JSON(http.StatusOK, map[string]interface{}{
+		return e.JSON(http.StatusOK, map[string]any{
 			"id":    record.Id,
 			"title": record.GetString("title"),
 		})
@@ -211,10 +209,10 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 
 	txErr := h.app.RunInTransaction(func(txApp core.App) error {
 		if err := h.upsertAlbumForSong(txApp, albumUpsertParams{
-			AlbumName:    input.AlbumName,
+			AlbumName:     input.AlbumName,
 			PrimaryArtist: artists[0],
-			ReleaseType:  input.ReleaseType,
-			TotalSongs:   input.TotalSongsOnAlbum,
+			ReleaseType:   input.ReleaseType,
+			TotalSongs:    input.TotalSongsOnAlbum,
 		}); err != nil {
 			log.Printf("[handleCreateSong] upsertAlbumForSong failed: %v", err)
 			return fmt.Errorf("failed to update album metadata: %w", err)
@@ -417,10 +415,10 @@ func decodeSpotifyArtistName(resp *http.Response) (string, int, error) {
 }
 
 type albumUpsertParams struct {
-	AlbumName    string
+	AlbumName     string
 	PrimaryArtist string
-	ReleaseType  string
-	TotalSongs   int
+	ReleaseType   string
+	TotalSongs    int
 }
 
 func (h *Handler) upsertAlbumForSong(txApp core.App, p albumUpsertParams) error {
@@ -463,10 +461,7 @@ func (h *Handler) createAlbumRecord(txApp core.App, p albumUpsertParams) error {
 		return err
 	}
 
-	newTotal := p.TotalSongs
-	if newTotal < 1 {
-		newTotal = 1
-	}
+	newTotal := max(p.TotalSongs, 1)
 
 	record := core.NewRecord(collection)
 	record.Set("title", p.AlbumName)
@@ -564,10 +559,10 @@ func (h *Handler) findOrCreateArtist(txApp core.App, artistName, artistSpotifyID
 }
 
 type rollbackState struct {
-	Record            *core.Record
+	Record              *core.Record
 	PreviousFetchStatus string
-	RequestID         string
-	ArtistID          string
+	RequestID           string
+	ArtistID            string
 }
 
 func (h *Handler) deleteScrapeJobRecordByRequestID(ctx context.Context, requestID, artistID string) error {

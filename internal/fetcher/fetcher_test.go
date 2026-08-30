@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package fetcher
 
 import (
@@ -49,7 +47,7 @@ func TestFetchWithRetryStopsOnRateLimit(t *testing.T) {
 	}
 
 	svc := NewService(fetcher, cfg)
-	_, err := svc.fetchWithRetry(context.Background(), "artist-1", spotify.ProviderScraperAPI)
+	_, err := svc.fetchWithRetry(t.Context(), "artist-1", spotify.ProviderScraperAPI)
 	if err == nil {
 		t.Fatalf("fetchWithRetry() error = nil, want non-nil")
 	}
@@ -72,7 +70,7 @@ func TestFetchWithRetryStopsOnLocalTimeout(t *testing.T) {
 	}
 
 	svc := NewService(fetcher, cfg)
-	_, err := svc.fetchWithRetry(context.Background(), "artist-1", spotify.ProviderLocalHeadless)
+	_, err := svc.fetchWithRetry(t.Context(), "artist-1", spotify.ProviderLocalHeadless)
 	if err == nil {
 		t.Fatalf("fetchWithRetry() error = nil, want non-nil")
 	}
@@ -97,7 +95,7 @@ func TestFetchWithRetryRetriesTransientErrors(t *testing.T) {
 	}
 
 	svc := NewService(fetcher, cfg)
-	got, err := svc.fetchWithRetry(context.Background(), "artist-1", spotify.ProviderBrowserless)
+	got, err := svc.fetchWithRetry(t.Context(), "artist-1", spotify.ProviderBrowserless)
 	if err != nil {
 		t.Fatalf("fetchWithRetry() error = %v", err)
 	}

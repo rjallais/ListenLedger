@@ -1,9 +1,6 @@
-//go:build goexperiment.jsonv2
-
 package spotify
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -34,7 +31,7 @@ func TestFetchViaScraperAPIForbiddenIsNotQuotaExhausted(t *testing.T) {
 		httpClientScraperAPI: clientHTTP,
 	}
 
-	_, err := client.fetchViaScraperAPI(context.Background(), "artist-1")
+	_, err := client.fetchViaScraperAPI(t.Context(), "artist-1")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -65,7 +62,7 @@ func TestFetchViaScraperAPIQuotaExhaustedOn402(t *testing.T) {
 		httpClientScraperAPI: clientHTTP,
 	}
 
-	_, err := client.fetchViaScraperAPI(context.Background(), "artist-1")
+	_, err := client.fetchViaScraperAPI(t.Context(), "artist-1")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -96,7 +93,7 @@ func TestFetchViaScraperAPIUnauthorizedIsNotQuotaExhausted(t *testing.T) {
 		httpClientScraperAPI: clientHTTP,
 	}
 
-	_, err := client.fetchViaScraperAPI(context.Background(), "artist-1")
+	_, err := client.fetchViaScraperAPI(t.Context(), "artist-1")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

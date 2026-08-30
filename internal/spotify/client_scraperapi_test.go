@@ -1,9 +1,6 @@
-//go:build goexperiment.jsonv2
-
 package spotify
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,7 +65,7 @@ func TestFetchViaScraperAPIFallsBackOnServerError(t *testing.T) {
 		httpClientScraperAPI: clientHTTP,
 	}
 
-	count, err := client.fetchViaScraperAPI(context.Background(), "artist-1")
+	count, err := client.fetchViaScraperAPI(t.Context(), "artist-1")
 	if err != nil {
 		t.Fatalf("fetchViaScraperAPI() error = %v", err)
 	}
@@ -120,7 +117,7 @@ func TestFetchViaScraperAPIUsesDedicatedClient(t *testing.T) {
 		httpClientScraperAPI: clientHTTP,
 	}
 
-	count, err := client.fetchViaScraperAPI(context.Background(), "artist-2")
+	count, err := client.fetchViaScraperAPI(t.Context(), "artist-2")
 	if err != nil {
 		t.Fatalf("fetchViaScraperAPI() error = %v", err)
 	}

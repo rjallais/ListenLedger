@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package spotify provides a client for fetching Spotify artist listener data via multiple providers.
 package spotify
 
@@ -17,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,8 +163,8 @@ func (e *RateLimitError) Unwrap() error {
 // RetryAfter reports the Retry-After duration from a RateLimitError, if present.
 // It returns the duration and true when err is a *RateLimitError with a positive RetryAfter; otherwise it returns zero and false.
 func RetryAfter(err error) (time.Duration, bool) {
-	var rateLimitErr *RateLimitError
-	if !errors.As(err, &rateLimitErr) {
+	rateLimitErr, ok := errors.AsType[*RateLimitError](err)
+	if !ok {
 		return 0, false
 	}
 	if rateLimitErr.RetryAfter <= 0 {
@@ -200,10 +199,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		Timeout:   cfg.HTTPTimeout,
 	}
 
-	scraperAPITimeout := cfg.HTTPTimeout
-	if scraperAPITimeout < 180*time.Second {
-		scraperAPITimeout = 180 * time.Second
-	}
+	scraperAPITimeout := max(cfg.HTTPTimeout, 180*time.Second)
 	httpClientScraperAPI := &http.Client{
 		Transport: transport,
 		Timeout:   scraperAPITimeout,
@@ -222,13 +218,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	// Local Browserless HTTP client. The worker context timeout
 	// (ProviderLocalBrowserless) controls the effective deadline;
 	// this client timeout is just a safety net.
-	localBrowserlessTimeout := cfg.HTTPTimeout
-	if localBrowserlessTimeout > 60*time.Second {
-		localBrowserlessTimeout = 60 * time.Second
-	}
-	if localBrowserlessTimeout < 30*time.Second {
-		localBrowserlessTimeout = 30 * time.Second
-	}
+	localBrowserlessTimeout := max(min(cfg.HTTPTimeout, 60*time.Second), 30*time.Second)
 	httpClientLocalBrowserless := &http.Client{
 		Transport: transport,
 		Timeout:   localBrowserlessTimeout,
@@ -575,10 +565,8 @@ func (c *Client) fetchViaLocalBrowserless(ctx context.Context, artistID string) 
 }
 
 func checkProviderHTTPStatus(resp *http.Response, provider string, quotaCodes ...int) error {
-	for _, code := range quotaCodes {
-		if resp.StatusCode == code {
-			return fmt.Errorf("%s billing/quota failure (status %d): %w", provider, resp.StatusCode, ErrQuotaExhausted)
-		}
+	if slices.Contains(quotaCodes, resp.StatusCode) {
+		return fmt.Errorf("%s billing/quota failure (status %d): %w", provider, resp.StatusCode, ErrQuotaExhausted)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:

@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // local_browser.go manages the local browser lifecycle (startup, shutdown, and retry)
 // for headless Spotify scraping via go-rod.
 package spotify
@@ -25,10 +23,10 @@ type localBrowser struct {
 	launcher *launcher.Launcher
 	mu       sync.Mutex
 
-	closed        bool
-	retired       bool
-	activePages   int
-	retireWait    chan struct{}
+	closed          bool
+	retired         bool
+	activePages     int
+	retireWait      chan struct{}
 	retireCloseOnce sync.Once
 }
 

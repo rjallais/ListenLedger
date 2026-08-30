@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package migrations
 
 import (
@@ -36,7 +34,7 @@ func addSongRecentBatchPosField(app core.App) error {
 		&core.NumberField{
 			Name:    "recent_batch_pos",
 			OnlyInt: true,
-			Min:     float64PtrLocalBatchPos(0),
+			Min:     new(float64(0)),
 		},
 	)
 	collection.AddIndex("idx_songs_recent_batch_pos", false, "`is_recent`, `recent_batch_seq`, `recent_batch_pos`", "")
@@ -97,10 +95,7 @@ func backfillSongRecentBatchPos(app core.App) error {
 		})
 
 		for idx, entry := range entries {
-			targetPos := idx + 1
-			if targetPos > songsBatchSize {
-				targetPos = songsBatchSize
-			}
+			targetPos := min(idx+1, songsBatchSize)
 
 			if entry.record.GetInt("recent_batch_pos") == targetPos && entry.record.GetInt("recent_batch_seq") == seq {
 				continue
@@ -115,8 +110,4 @@ func backfillSongRecentBatchPos(app core.App) error {
 	}
 
 	return nil
-}
-
-func float64PtrLocalBatchPos(value float64) *float64 {
-	return new(value)
 }

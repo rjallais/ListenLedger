@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 // Package songbackfill provides utilities to parse and backfill song metadata with artist information.
 package songbackfill
 
@@ -176,8 +174,8 @@ func firstArtistFragment(parts []string, raw string) string {
 	if len(parts) > 0 {
 		return parts[0]
 	}
-	if idx := strings.Index(raw, ","); idx >= 0 {
-		return strings.TrimSpace(raw[:idx])
+	if before, _, ok := strings.Cut(raw, ","); ok {
+		return strings.TrimSpace(before)
 	}
 	return strings.TrimSpace(strings.ReplaceAll(raw, "...", ""))
 }

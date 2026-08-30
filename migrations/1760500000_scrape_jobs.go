@@ -1,5 +1,3 @@
-//go:build goexperiment.jsonv2
-
 package migrations
 
 import (
@@ -33,7 +31,7 @@ func upsertScrapeJobsCollection(app core.App) error {
 		&core.TextField{Name: "request_id", Required: true},
 		&core.RelationField{Name: "artist", CollectionId: artists.Id, MaxSelect: 1, Required: true},
 		&core.SelectField{Name: "status", Values: []string{"queued", "processing", "succeeded", "failed"}, MaxSelect: 1},
-		&core.NumberField{Name: "attempts", OnlyInt: true, Min: float64Ptr(0)},
+		&core.NumberField{Name: "attempts", OnlyInt: true, Min: new(float64(0))},
 		&core.TextField{Name: "error"},
 		&core.DateField{Name: "queued_at"},
 		&core.DateField{Name: "started_at"},
