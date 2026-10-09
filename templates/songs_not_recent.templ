@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"github.com/starfederation/datastar-go/datastar"
 )
 
 // NotRecentSongRows appends not-recent songs and updates pagination controls.
@@ -21,9 +23,13 @@ templ NotRecentSongsLoadMore(nextOffset int, hasMore bool, playlistSort string) 
 		if hasMore {
 			<button
 				class="btn btn-outline btn-sm"
+				data-indicator:_loading_more
+				data-attr:disabled="$_loading_more"
+				data-on-intersect__once={ songsNotRecentURL(nextOffset, playlistSort) }
 				data-on:click={ songsNotRecentURL(nextOffset, playlistSort) }
 			>
-				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+				<span data-show="$_loading_more" class="loading loading-spinner loading-xs" style="display: none"></span>
+				<span>Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)</span>
 			</button>
 		} else {
 			<p class="text-sm text-success">✓ All archived songs loaded</p>
@@ -37,5 +43,5 @@ func songsNotRecentURL(offset int, playlistSort string) string {
 		"limit":         []string{"50"},
 		"playlist_sort": []string{playlistSort},
 	}
-	return fmt.Sprintf("@get('/api/songs/not-recent?%s')", query.Encode())
+	return datastar.GetSSE("/api/songs/not-recent?%s", query.Encode())
 }
