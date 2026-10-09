@@ -29,7 +29,7 @@ func TestScrapeStreamDedupAndDurability(t *testing.T) {
 	}
 
 	req := NewScrapeRequested("artist-1", "spotify-1", "Artist Name", "req-1")
-	msgID := ScrapeRequestMsgID(req.ArtistID)
+	msgID := ScrapeRequestMsgID(req.RequestID)
 
 	ack1, err := PublishScrapeRequested(ctx, js, req, msgID)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestScrapeWorkerConsumerFetchAfterRestart(t *testing.T) {
 	}
 
 	req := NewScrapeRequested("artist-1", "spotify-1", "Artist Name", "req-1")
-	if _, err := PublishScrapeRequested(ctx, js, req, ScrapeRequestMsgID(req.ArtistID)); err != nil {
+	if _, err := PublishScrapeRequested(ctx, js, req, ScrapeRequestMsgID(req.RequestID)); err != nil {
 		t.Fatalf("PublishScrapeRequested() error = %v", err)
 	}
 
@@ -274,6 +274,71 @@ func TestEventsStreamDurability(t *testing.T) {
 	}
 	if info.State.Msgs != 1 {
 		t.Fatalf("events stream message count = %d, want 1", info.State.Msgs)
+	}
+}
+
+func TestDomainEventsStreamDurability(t *testing.T) {
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	ns := startTestNATSServer(t, storeDir)
+	nc := connectTestNATS(t, ns.ClientURL())
+
+	js, err := NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream() error = %v", err)
+	}
+	if err := EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream() error = %v", err)
+	}
+
+	subject := SubjectDomainEvent("artist", "ar_123", "ArtistCreated")
+	ack1, err := PublishDomainEvent(ctx, js, subject, "evt-1", []byte(`{"id":"evt-1"}`))
+	if err != nil {
+		t.Fatalf("PublishDomainEvent(first) error = %v", err)
+	}
+	if ack1 == nil || ack1.Duplicate {
+		t.Fatal("first domain publish should not be duplicate")
+	}
+
+	// Same event ID redelivered (projection retry) must dedup via MsgID.
+	ack2, err := PublishDomainEvent(ctx, js, subject, "evt-1", []byte(`{"id":"evt-1"}`))
+	if err != nil {
+		t.Fatalf("PublishDomainEvent(second) error = %v", err)
+	}
+	if ack2 == nil || !ack2.Duplicate {
+		t.Fatal("second domain publish should be marked duplicate")
+	}
+
+	nc.Close()
+	ns.Shutdown()
+
+	ns2 := startTestNATSServer(t, storeDir)
+	nc2 := connectTestNATS(t, ns2.ClientURL())
+	defer func() {
+		nc2.Close()
+		ns2.Shutdown()
+	}()
+
+	js2, err := NewJetStream(nc2)
+	if err != nil {
+		t.Fatalf("NewJetStream(restart) error = %v", err)
+	}
+	stream, err := js2.Stream(ctx, DomainEventsStreamName)
+	if err != nil {
+		t.Fatalf("js2.Stream() error = %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream.Info() error = %v", err)
+	}
+	if info.State.Msgs != 1 {
+		t.Fatalf("domain events stream message count = %d, want 1", info.State.Msgs)
+	}
+	if info.Config.MaxAge != DomainEventsRetention {
+		t.Fatalf("domain events MaxAge = %s, want %s", info.Config.MaxAge, DomainEventsRetention)
 	}
 }
 
