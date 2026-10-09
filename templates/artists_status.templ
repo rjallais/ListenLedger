@@ -28,34 +28,3 @@ templ ListStatusDropdown(artistID, currentStatus string) {
 		<option value="waiting" selected?={ currentStatus == "waiting" }>Move to Queue</option>
 	</select>
 }
-
-templ ListStatusOption(option artistStatusOption) {
-	{{
-		ind := "_updating_" + option.ArtistID
-		indSignal := "$" + ind
-		notIndSignal := "!$" + ind
-	}}
-	<li class={ option.ItemClass }>
-		<button
-			class={ option.ButtonClass }
-			data-indicator={ ind }
-			data-attr:disabled={ indSignal }
-			data-on:click={ option.Action }
-		>
-			<span data-show={ indSignal } class="loading loading-spinner loading-xs" style="display: none"></span>
-			<span data-show={ notIndSignal } class={ option.DotClass }></span>
-			{ option.Label }
-		</button>
-	</li>
-}
-
-templ ArtistBadge(props artistBadgeProps) {
-	<span class={ props.Classes }>
-		if props.ShowIcon {
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={ props.IconPath }></path>
-			</svg>
-		}
-		{ props.Label }
-	</span>
-}

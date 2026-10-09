@@ -150,7 +150,6 @@ func main() {
 					}
 					evts := agg.UncommittedEvents()
 					for _, evt := range evts {
-						migratedEvents++
 						_ = evtStmt.Reset()
 						evtStmt.BindText(1, evt.ID)
 						evtStmt.BindText(2, evt.StreamID)
@@ -160,7 +159,10 @@ func main() {
 						evtStmt.BindText(6, string(evt.Payload))
 						evtStmt.BindText(7, string(evt.Metadata))
 						evtStmt.BindText(8, evt.CreatedAt.Format(time.RFC3339Nano))
-						_, _ = evtStmt.Step()
+						if _, err := evtStmt.Step(); err != nil {
+							return fmt.Errorf("seeding event %s: %w", evt.ID, err)
+						}
+						migratedEvents++
 					}
 				}
 			}

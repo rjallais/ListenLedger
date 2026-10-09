@@ -8,22 +8,6 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 )
 
-type artistStatusOption struct {
-	ArtistID    string
-	Label       string
-	DotClass    string
-	ButtonClass string
-	ItemClass   string
-	Action      string
-}
-
-type artistBadgeProps struct {
-	Classes  string
-	Label    string
-	IconPath string
-	ShowIcon bool
-}
-
 type paginationNavButton struct {
 	Label    string
 	Href     string
@@ -134,93 +118,6 @@ func artistCollectionText(artist Artist) string {
 		return fmt.Sprintf("%d/%d", artist.CollectionSongs, artist.TotalSongs)
 	}
 	return intString(artist.CollectionSongs)
-}
-
-func listStatusOptions(artistID, currentStatus string) []artistStatusOption {
-	return []artistStatusOption{
-		{
-			ArtistID:    artistID,
-			Label:       "Included",
-			DotClass:    "badge badge-success badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "included"),
-			Action:      artistStatusPostAction(artistID, "included"),
-		},
-		{
-			ArtistID:    artistID,
-			Label:       "Recently Added",
-			DotClass:    "badge badge-info badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "recently_added"),
-			Action:      artistStatusPostAction(artistID, "recently_added"),
-		},
-		{
-			ArtistID:    artistID,
-			Label:       "Not Added",
-			DotClass:    "badge badge-ghost badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "not_added"),
-			Action:      artistStatusPostAction(artistID, "not_added"),
-		},
-		{
-			ArtistID:    artistID,
-			Label:       "Move to Queue",
-			DotClass:    "badge badge-warning badge-xs",
-			ButtonClass: statusOptionButtonClass(true, currentStatus == StatusWaiting),
-			ItemClass:   "border-t border-base-300 mt-1 pt-1",
-			Action:      artistStatusPostAction(artistID, StatusWaiting),
-		},
-	}
-}
-
-func statusOptionButtonClass(warning, active bool) string {
-	className := "text-left"
-	if warning {
-		className += " text-warning"
-	}
-	if active {
-		className += " active"
-	}
-	return className
-}
-
-func artistStatusPostAction(artistID, status string) string {
-	return datastar.PostSSE("/api/artists/%s/status/%s", url.PathEscape(artistID), url.PathEscape(status))
-}
-
-func listStatusBadgeProps(status string) artistBadgeProps {
-	switch status {
-	case "included":
-		return artistBadgeProps{
-			Classes:  "badge badge-success badge-sm gap-1",
-			Label:    "included",
-			IconPath: "M5 13l4 4L19 7",
-			ShowIcon: true,
-		}
-	case "recently_added":
-		return artistBadgeProps{
-			Classes:  "badge badge-info badge-sm gap-1",
-			Label:    "recently added",
-			IconPath: "M12 6v6m0 0v6m0-6h6m-6 0H6",
-			ShowIcon: true,
-		}
-	case "not_added":
-		return artistBadgeProps{
-			Classes:  "badge badge-ghost badge-sm gap-1",
-			Label:    "not added",
-			IconPath: "M6 18L18 6M6 6l12 12",
-			ShowIcon: true,
-		}
-	case StatusWaiting:
-		return artistBadgeProps{
-			Classes:  "badge badge-warning badge-sm gap-1",
-			Label:    "queued",
-			IconPath: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
-			ShowIcon: true,
-		}
-	default:
-		return artistBadgeProps{
-			Classes: "badge badge-ghost badge-sm",
-			Label:   "unknown",
-		}
-	}
 }
 
 func paginationURL(genre string, page int) string {
