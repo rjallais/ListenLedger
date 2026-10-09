@@ -1,6 +1,7 @@
-// local_browser.go manages the local browser lifecycle (startup, shutdown, and retry)
-// for headless Spotify scraping via go-rod.
 package spotify
+
+// Local browser lifecycle management (startup, shutdown, and retry)
+// for headless Spotify scraping via go-rod.
 
 import (
 	"context"
@@ -182,6 +183,9 @@ func newLocalBrowser(ctx context.Context, cfg *config.Config) (*localBrowser, er
 		return nil, fmt.Errorf("local headless: failed to launch browser: %w", err)
 	}
 
+	// The browser is owned by the returned localBrowser (closed via Close);
+	// error paths below close any partially initialized browser explicitly.
+	// noinspection GoResourceLeak
 	browser := rod.New().Context(startCtx).ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
 		l.Kill()

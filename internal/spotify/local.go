@@ -1,5 +1,6 @@
-// local.go provides local headless scraping via go-rod.
 package spotify
+
+// Local headless scraping via go-rod.
 
 import (
 	"context"
@@ -17,7 +18,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-var localHTMLReadyPattern = regexp.MustCompile(`(?i)"artistUnion"\s*:|"monthlyListeners"\s*:\s*(?:\d+|null)|\b0\s*monthly listeners\b|[\d,\.]+\s*[mMkK]?\s*monthly listeners`)
+var localHTMLReadyPattern = regexp.MustCompile(`(?i)"artistUnion"\s*:|"monthlyListeners"\s*:\s*(?:\d+|null)|\b0\s*monthly listeners\b|[\d,.]+\s*[mMkK]?\s*monthly listeners`)
 
 const localCleanupTimeout = 5 * time.Second
 
