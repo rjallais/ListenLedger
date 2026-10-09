@@ -144,26 +144,27 @@ func main() {
 
 				// Seed Event Store stream
 				agg, err := artist.NewArtist(id, name, spotifyID, genreGroup, listStatus)
-				if err == nil {
-					if listeners > 0 {
-						_ = agg.RecordMonthlyListeners(listeners, "migration:pb", 0)
+				if err != nil {
+					return fmt.Errorf("seeding artist stream %s: %w", id, err)
+				}
+				if listeners > 0 {
+					_ = agg.RecordMonthlyListeners(listeners, "migration:pb", 0)
+				}
+				evts := agg.UncommittedEvents()
+				for _, evt := range evts {
+					_ = evtStmt.Reset()
+					evtStmt.BindText(1, evt.ID)
+					evtStmt.BindText(2, evt.StreamID)
+					evtStmt.BindText(3, evt.StreamType)
+					evtStmt.BindInt64(4, evt.Version)
+					evtStmt.BindText(5, evt.EventType)
+					evtStmt.BindText(6, string(evt.Payload))
+					evtStmt.BindText(7, string(evt.Metadata))
+					evtStmt.BindText(8, evt.CreatedAt.Format(time.RFC3339Nano))
+					if _, err := evtStmt.Step(); err != nil {
+						return fmt.Errorf("seeding event %s: %w", evt.ID, err)
 					}
-					evts := agg.UncommittedEvents()
-					for _, evt := range evts {
-						_ = evtStmt.Reset()
-						evtStmt.BindText(1, evt.ID)
-						evtStmt.BindText(2, evt.StreamID)
-						evtStmt.BindText(3, evt.StreamType)
-						evtStmt.BindInt64(4, evt.Version)
-						evtStmt.BindText(5, evt.EventType)
-						evtStmt.BindText(6, string(evt.Payload))
-						evtStmt.BindText(7, string(evt.Metadata))
-						evtStmt.BindText(8, evt.CreatedAt.Format(time.RFC3339Nano))
-						if _, err := evtStmt.Step(); err != nil {
-							return fmt.Errorf("seeding event %s: %w", evt.ID, err)
-						}
-						migratedEvents++
-					}
+					migratedEvents++
 				}
 			}
 		}

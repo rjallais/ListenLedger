@@ -268,8 +268,8 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 	if err != nil {
 		log.Printf("  [Err] %s: %v", rec.GetString("name"), err)
 		rec.Set("fetch_status", "failed")
-		if err := app.SaveWithContext(ctx, rec); err != nil {
-			log.Printf("  [DB Err] Failed to save error status for %s: %v", rec.GetString("name"), err)
+		if saveErr := app.SaveWithContext(ctx, rec); saveErr != nil {
+			log.Printf("  [DB Err] Failed to save error status for %s: %v", rec.GetString("name"), saveErr)
 			return
 		}
 		if elog != nil {

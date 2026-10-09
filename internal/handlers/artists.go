@@ -30,7 +30,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddArtistErrorNotice(err.Error()))
+		_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice(err.Error()))
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddArtistErrorNotice("failed to check for existing artist"))
+			_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice("failed to check for existing artist"))
 			return
 		}
 	} else if h.app != nil {
@@ -75,7 +75,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddArtistErrorNotice("failed to check for existing artist"))
+			_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice("failed to check for existing artist"))
 			return
 		}
 		if len(existingRecords) > 0 {
@@ -89,7 +89,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddArtistErrorNotice(msg))
+		_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice(msg))
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddArtistErrorNotice("failed to save artist"))
+			_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice("failed to save artist"))
 			return
 		}
 		record = core.NewRecord(collection)
@@ -123,7 +123,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddArtistErrorNotice("failed to save artist"))
+			_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice("failed to save artist"))
 			return
 		}
 		artistID = record.Id
@@ -147,7 +147,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddArtistErrorNotice(msg))
+		_ = patchFeedbackNotice(sse, templates.AddArtistErrorNotice(msg))
 	}
 
 	if h.artistRepo != nil {
@@ -249,7 +249,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Morph/replace the feedback notice in the modal
-	_ = sse.PatchElementTempl(templates.AddArtistSuccessNotice(createdArtist.Name))
+	_ = patchFeedbackNotice(sse, templates.AddArtistSuccessNotice(createdArtist.Name))
 
 	// 3. Reset form cleanly via morphing
 	_ = sse.PatchElementTempl(templates.AddArtistForm(input.genreGroup))

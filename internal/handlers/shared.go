@@ -175,6 +175,14 @@ func RenderDatastarWithConfig(w http.ResponseWriter, r *http.Request, cfg *confi
 	return nil
 }
 
+// patchFeedbackNotice resets the form-feedback visibility signal before
+// patching a modal notice: a previous Dismiss/Add-Another sets
+// _feedbackVisible false, and the fresh notice must show even then.
+func patchFeedbackNotice(sse *datastar.ServerSentEventGenerator, c templ.Component) error {
+	_ = sse.PatchSignals([]byte(`{"_feedbackVisible": true}`))
+	return sse.PatchElementTempl(c)
+}
+
 // writeJSON writes a JSON response with status code and sets Content-Type.
 func writeJSON(w http.ResponseWriter, status int, data any) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

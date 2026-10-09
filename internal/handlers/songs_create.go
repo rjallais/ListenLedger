@@ -177,7 +177,7 @@ func (h *Handler) HandleCreateSong(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddSongErrorNotice(errMsg))
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(errMsg))
 		return
 	}
 
@@ -194,7 +194,7 @@ func (h *Handler) HandleCreateSong(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddSongErrorNotice(errMsg))
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(errMsg))
 		return
 	}
 
@@ -205,7 +205,7 @@ func (h *Handler) HandleCreateSong(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddSongErrorNotice(saveErr.Error()))
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(saveErr.Error()))
 		return
 	}
 
@@ -249,7 +249,7 @@ func (h *Handler) HandleCreateSong(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Patch success feedback notice into the modal
-	if err := sse.PatchElementTempl(templates.AddSongSuccessNotice(record.song.GetString("title"))); err != nil {
+	if err := patchFeedbackNotice(sse, templates.AddSongSuccessNotice(record.song.GetString("title"))); err != nil {
 		log.Printf("[handleCreateSong] patch song feedback failed: %v", err)
 		return
 	}

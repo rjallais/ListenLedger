@@ -37,7 +37,7 @@ func ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapshot
 		}
 		ctx = templ.ClearChildren(ctx)
 		spark := ComputeSparkline(snapshots, 380, 80)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"artist-history-drawer-container\"><dialog id=\"artist-history-dialog\" class=\"drawer-dialog\" open aria-label=\"Artist listener history\" data-on:keydown=\"if (evt.key === 'Escape') @get('/api/artists/history/close')\"><div class=\"drawer-backdrop\" data-on:click=\"@get('/api/artists/history/close')\"></div><div class=\"drawer-content p-6 flex flex-col gap-6\"><!-- Header --><div class=\"flex items-start justify-between\"><div><div class=\"flex items-center gap-2 mb-1\"><h2 class=\"text-xl font-bold tracking-tight\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"artist-history-drawer-container\"><dialog id=\"artist-history-dialog\" class=\"drawer-dialog\" aria-label=\"Artist listener history\" data-init=\"el.showModal()\" data-on:cancel__prevent=\"@get('/api/artists/history/close')\"><div class=\"drawer-backdrop\" data-on:click=\"@get('/api/artists/history/close')\"></div><div class=\"drawer-content p-6 flex flex-col gap-6\"><!-- Header --><div class=\"flex items-start justify-between\"><div><div class=\"flex items-center gap-2 mb-1\"><h2 class=\"text-xl font-bold tracking-tight\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

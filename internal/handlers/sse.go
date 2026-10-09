@@ -145,10 +145,14 @@ func (h *Handler) patchArtistElement(ctx context.Context, patch ssePatcher, logg
 	if h.db != nil {
 		total, rank, rankErr := h.rankArtistPosition(dbCtx, genre, record.GetInt("monthly_listeners"), artistID)
 		if rankErr != nil {
-			logger.Debug("[sse] Failed to rank artist for patch", "artist_id", artistID, "error", rankErr)
-			return
+			// Rank is display-only (ArtistRow/Card do not render TotalSongs):
+			// never drop the patch, fall back to the full-scan path.
+			logger.Debug("[sse] Failed to rank artist for patch, falling back", "artist_id", artistID, "error", rankErr)
+			rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
+			totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)
+		} else {
+			totalSongs = rankedArtistTotalSongs(total, 0, rank-1)
 		}
-		totalSongs = rankedArtistTotalSongs(total, 0, rank-1)
 	} else {
 		rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
 		totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)

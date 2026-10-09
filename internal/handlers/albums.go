@@ -454,7 +454,7 @@ func writeAlbumCreateError(w http.ResponseWriter, r *http.Request, msg string) {
 		return
 	}
 	sse := datastar.NewSSE(w, r, sseOpts...)
-	_ = sse.PatchElementTempl(templates.AddAlbumErrorNotice(msg))
+	_ = patchFeedbackNotice(sse, templates.AddAlbumErrorNotice(msg))
 }
 
 // deleteOrphanAlbumRecord removes the already-created PocketBase album row when
@@ -478,7 +478,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sse := datastar.NewSSE(w, r, sseOpts...)
-		_ = sse.PatchElementTempl(templates.AddAlbumErrorNotice(err.Error()))
+		_ = patchFeedbackNotice(sse, templates.AddAlbumErrorNotice(err.Error()))
 		return
 	}
 
@@ -493,7 +493,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddAlbumErrorNotice("failed to save album"))
+			_ = patchFeedbackNotice(sse, templates.AddAlbumErrorNotice("failed to save album"))
 			return
 		}
 		record = core.NewRecord(collection)
@@ -509,7 +509,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddAlbumErrorNotice("failed to save album"))
+			_ = patchFeedbackNotice(sse, templates.AddAlbumErrorNotice("failed to save album"))
 			return
 		}
 		albumID = record.Id
@@ -562,7 +562,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			sse := datastar.NewSSE(w, r, sseOpts...)
-			_ = sse.PatchElementTempl(templates.AddAlbumErrorNotice("failed to save album"))
+			_ = patchFeedbackNotice(sse, templates.AddAlbumErrorNotice("failed to save album"))
 			return
 		}
 
@@ -604,7 +604,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Morph/replace the feedback notice in the modal
-	_ = sse.PatchElementTempl(templates.AddAlbumSuccessNotice(albumView.Title))
+	_ = patchFeedbackNotice(sse, templates.AddAlbumSuccessNotice(albumView.Title))
 
 	// 3. Reset form cleanly via morphing
 	_ = sse.PatchElementTempl(templates.AddAlbumForm())
