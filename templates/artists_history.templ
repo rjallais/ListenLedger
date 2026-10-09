@@ -15,9 +15,9 @@ templ ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapsho
 			class="drawer-dialog"
 			aria-label="Artist listener history"
 			data-init="el.showModal()"
-			data-on:cancel__prevent="@get('/api/artists/history/close')"
+			data-on:cancel__prevent="el.close(); @get('/api/artists/history/close')"
 		>
-			<div class="drawer-backdrop" data-on:click="@get('/api/artists/history/close')"></div>
+			<div class="drawer-backdrop" data-on:click="el.closest('dialog').close(); @get('/api/artists/history/close')"></div>
 			<div class="drawer-content p-6 flex flex-col gap-6">
 				<!-- Header -->
 				<div class="flex items-start justify-between">
@@ -45,7 +45,7 @@ templ ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapsho
 					<button
 						type="button"
 						class="btn btn-sm btn-circle btn-ghost"
-						data-on:click="@get('/api/artists/history/close')"
+						data-on:click="el.closest('dialog').close(); @get('/api/artists/history/close')"
 						aria-label="Close drawer"
 					>
 						✕
@@ -138,7 +138,7 @@ templ ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapsho
 					<button
 						type="button"
 						class="btn btn-sm btn-ghost"
-						data-on:click="@get('/api/artists/history/close')"
+						data-on:click="el.closest('dialog').close(); @get('/api/artists/history/close')"
 					>
 						Close
 					</button>

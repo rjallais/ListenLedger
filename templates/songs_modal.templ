@@ -22,8 +22,8 @@ templ AddSongModal() {
 templ AddSongForm() {
 	<form
 		id="add-song-form"
-		data-indicator:_loading
-		data-on:submit__prevent="!$_loading && @post('/api/songs', {contentType: 'form'})"
+		data-indicator:_add_song_loading
+		data-on:submit__prevent="!$_add_song_loading && @post('/api/songs', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
 			<label class="label" for="song-name">
@@ -126,8 +126,8 @@ templ AddSongForm() {
 templ AddSongModalActions() {
 	<div slot="footer" class="flex justify-end gap-2">
 		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
-		<button type="submit" form="add-song-form" class="btn btn-primary" data-attr:disabled="$_loading">
-			<span data-show="$_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
+		<button type="submit" form="add-song-form" class="btn btn-primary" data-attr:disabled="$_add_song_loading">
+			<span data-show="$_add_song_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
 			Add Song
 		</button>
 	</div>

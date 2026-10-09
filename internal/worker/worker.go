@@ -175,6 +175,9 @@ type Worker struct {
 type Option func(*Worker)
 
 // WithDatabase configures the worker with SQLite database, event store, and projection.
+// It must be applied after New assigns nc/js: the projection reads w.nc and
+// w.js at option time, so constructing a Worker any other way leaves it with
+// nil connections that silently publish nothing.
 func WithDatabase(db *toolbeltdb.Database) Option {
 	return func(w *Worker) {
 		w.db = db

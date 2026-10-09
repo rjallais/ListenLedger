@@ -227,8 +227,8 @@ templ AddAlbumModal() {
 templ AddAlbumForm() {
 	<form
 		id="add-album-form"
-		data-indicator:_loading
-		data-on:submit__prevent="!$_loading && @post('/api/albums', {contentType: 'form'})"
+		data-indicator:_add_album_loading
+		data-on:submit__prevent="!$_add_album_loading && @post('/api/albums', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
 			<label class="label" for="album-title">
@@ -302,8 +302,8 @@ templ AddAlbumForm() {
 templ AddAlbumModalActions() {
 	<div slot="footer" class="flex justify-end gap-2">
 		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
-		<button type="submit" form="add-album-form" class="btn btn-primary" data-attr:disabled="$_loading">
-			<span data-show="$_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
+		<button type="submit" form="add-album-form" class="btn btn-primary" data-attr:disabled="$_add_album_loading">
+			<span data-show="$_add_album_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
 			Add Album
 		</button>
 	</div>

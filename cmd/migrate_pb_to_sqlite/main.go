@@ -148,7 +148,17 @@ func main() {
 					return fmt.Errorf("seeding artist stream %s: %w", id, err)
 				}
 				if listeners > 0 {
-					_ = agg.RecordMonthlyListeners(listeners, "migration:pb", 0)
+					if err := agg.RecordMonthlyListeners(listeners, "migration:pb", 0); err != nil {
+						return fmt.Errorf("seeding listeners %s: %w", id, err)
+					}
+				}
+				// The row above keeps the source fetch_status: without a
+				// matching fact the stream replays to the default and audit
+				// flags the artist as diverged.
+				if fetchStatus != "idle" {
+					if err := agg.SetFetchStatus(fetchStatus, "migration:pb"); err != nil {
+						return fmt.Errorf("seeding fetch status %s: %w", id, err)
+					}
 				}
 				evts := agg.UncommittedEvents()
 				for _, evt := range evts {

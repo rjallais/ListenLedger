@@ -15,6 +15,11 @@ func TestAssetURL(t *testing.T) {
 		t.Fatalf("failed to write test file: %v", err)
 	}
 
+	prevDir := os.Getenv("STATIC_DIR")
+	if prevDir == "" {
+		prevDir = "static"
+	}
+	t.Cleanup(func() { SetAssetDir(prevDir) })
 	SetAssetDir(tempDir)
 
 	url := AssetURL("styles.css")

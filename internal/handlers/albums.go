@@ -460,11 +460,11 @@ func writeAlbumCreateError(w http.ResponseWriter, r *http.Request, msg string) {
 // deleteOrphanAlbumRecord removes the already-created PocketBase album row when
 // the event-store write fails, mirroring the SQLite-branch rollback. Best-effort:
 // a failed delete only logs, since the request already failed.
-func deleteOrphanAlbumRecord(h *Handler, record *core.Record) {
+func deleteOrphanAlbumRecord(ctx context.Context, h *Handler, record *core.Record) {
 	if h == nil || h.app == nil || record == nil {
 		return
 	}
-	if delErr := h.app.Delete(record); delErr != nil {
+	if delErr := h.app.DeleteWithContext(ctx, record); delErr != nil {
 		log.Printf("[albums] handleCreateAlbum rollback Delete error: %v", delErr)
 	}
 }
@@ -520,14 +520,14 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 		agg, aggErr := album.NewAlbum(albumID, input.title, input.artistName, input.statusDB, int64(input.collectionSongs), int64(input.totalSongs))
 		if aggErr != nil {
 			log.Printf("[albums] NewAlbum %s error: %v", albumID, aggErr)
-			deleteOrphanAlbumRecord(h, record)
+			deleteOrphanAlbumRecord(r.Context(), h, record)
 			writeAlbumCreateError(w, r, "failed to save album")
 			return
 		}
 		events, saveErr := h.albumRepo.Save(r.Context(), agg)
 		if saveErr != nil {
 			log.Printf("[albums] albumRepo.Save error for %s: %v", albumID, saveErr)
-			deleteOrphanAlbumRecord(h, record)
+			deleteOrphanAlbumRecord(r.Context(), h, record)
 			writeAlbumCreateError(w, r, "failed to save album")
 			return
 		}
@@ -552,11 +552,7 @@ func (h *Handler) HandleCreateAlbum(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			log.Printf("[albums] handleCreateAlbum WriteTX error: %v", err)
-			if record != nil && h.app != nil {
-				if delErr := h.app.Delete(record); delErr != nil {
-					log.Printf("[albums] handleCreateAlbum rollback Delete error: %v", delErr)
-				}
-			}
+			deleteOrphanAlbumRecord(r.Context(), h, record)
 			if wantsJSONResponse(r) {
 				writeError(w, http.StatusInternalServerError, "failed to save album")
 				return

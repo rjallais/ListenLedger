@@ -45,21 +45,12 @@ func drainClientConn(ctx context.Context, conn *nats.Conn) error {
 	if conn == nil || conn.IsClosed() {
 		return nil
 	}
-	flushDone := make(chan struct{})
-	go func() {
-		_ = conn.Flush()
-		close(flushDone)
-	}()
-	select {
-	case <-flushDone:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 
-	// Poll IsClosed instead of SetClosedHandler: installing a handler would
-	// overwrite any handler set earlier, and the wait below observes the
-	// same state without racing handler configuration on a live Conn.
+	// Drain flushes by itself; no separate Flush call is needed. Close the
+	// connection on every early return: with MaxReconnects(-1) an abandoned
+	// conn would otherwise redial the stopped server forever.
 	if err := conn.Drain(); err != nil {
+		conn.Close()
 		return fmt.Errorf("drain NATS client connection: %w", err)
 	}
 	t := time.NewTicker(10 * time.Millisecond)
@@ -67,6 +58,7 @@ func drainClientConn(ctx context.Context, conn *nats.Conn) error {
 	for !conn.IsClosed() {
 		select {
 		case <-ctx.Done():
+			conn.Close()
 			return ctx.Err()
 		case <-t.C:
 		}
@@ -218,6 +210,9 @@ func startEmbeddedNATS(ctx context.Context, storeDir string, cfg *config.Config)
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
 		return nil, fmt.Errorf("create embedded NATS server (store_dir=%s): %w", opts.StoreDir, err)
+	}
+	if !opts.NoLog {
+		ns.ConfigureLogger()
 	}
 
 	go ns.Start()

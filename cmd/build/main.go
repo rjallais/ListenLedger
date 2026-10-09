@@ -95,11 +95,29 @@ func run(ctx context.Context) error {
 		}
 
 		slog.Info("watching JS and CSS...")
-		<-ctx.Done()
-		if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("esbuild watch interrupted: %w", err)
+		// esbuild only watches JS entrypoints: poll input.css so edits
+		// rebuild styles.css without a restart (plain copy, no Tailwind step).
+		cssTick := time.NewTicker(1 * time.Second)
+		defer cssTick.Stop()
+		cssLast := cssModTime()
+		for {
+			select {
+			case <-ctx.Done():
+				if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+					return fmt.Errorf("esbuild watch interrupted: %w", err)
+				}
+				return nil
+			case <-cssTick.C:
+				if mod := cssModTime(); mod.After(cssLast) {
+					cssLast = mod
+					if err := buildCSS(); err != nil {
+						slog.Error("CSS rebuild failed", "error", err)
+					} else {
+						notifyHotReload(context.Background())
+					}
+				}
+			}
 		}
-		return nil
 	}
 
 	slog.Info("bundling JS entrypoints", "count", len(entries))
@@ -111,6 +129,14 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("esbuild failed with %d errors", len(result.Errors))
 	}
 	return nil
+}
+
+func cssModTime() time.Time {
+	fi, err := os.Stat("input.css")
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }
 
 func buildCSS() error {

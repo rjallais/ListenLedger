@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
@@ -197,6 +198,9 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 	// are idempotent, so a failure here leaves no fact behind and a retry is
 	// clean. (Appending the event first would record a fact that a retry
 	// would duplicate when this save fails.)
+	// pbRecord is captured for the seed branch below so a second read is
+	// not needed (and cannot observe different data mid-flight).
+	var pbRecord *core.Record
 	if w.app != nil {
 		record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
 			q.WithContext(ctx)
@@ -218,6 +222,7 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 		if err := w.app.Save(record); err != nil {
 			return fmt.Errorf("save listeners for artist %s: %w", artistID, err)
 		}
+		pbRecord = record
 	}
 
 	// 2. Event store & projection
@@ -235,21 +240,13 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 				spotifyID := ""
 				genreGroup := "everything_else"
 				listStatus := "included"
-				if w.app != nil {
-					rec, recErr := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
-						q.WithContext(ctx)
-						return nil
-					})
-					if recErr != nil {
-						return fmt.Errorf("load artist %s for aggregate seed: %w", artistID, recErr)
-					}
-					if rec == nil {
-						return fmt.Errorf("seed artist aggregate %s: PocketBase row missing", artistID)
-					}
-					name = rec.GetString("name")
-					spotifyID = rec.GetString("spotify_id")
-					genreGroup = rec.GetString("genre_group")
-					listStatus = rec.GetString("list_status")
+				if pbRecord != nil {
+					name = pbRecord.GetString("name")
+					spotifyID = pbRecord.GetString("spotify_id")
+					genreGroup = pbRecord.GetString("genre_group")
+					listStatus = pbRecord.GetString("list_status")
+				} else if w.app != nil {
+					return fmt.Errorf("seed artist aggregate %s: PocketBase row missing", artistID)
 				}
 				agg, err = artist.NewArtist(artistID, name, spotifyID, genreGroup, listStatus)
 				if err != nil {
@@ -263,6 +260,27 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 		var corr eventsourcing.Correlation
 		if len(requestIDs) > 0 {
 			corr.RequestID = requestIDs[0]
+		}
+		// Idempotency per request: a redelivery after a post-append failure
+		// (PB already saved above, so the save below is a no-op repeat)
+		// must not append a second listener fact with the same RequestID —
+		// that would forge a delta-0 history snapshot on replay.
+		if corr.RequestID != "" && w.jobStore != nil {
+			if committed, err := w.jobStore.Load(ctx, artistID); err == nil {
+				for _, evt := range committed {
+					if evt.EventType != artist.EventTypeArtistMonthlyListenersScraped {
+						continue
+					}
+					meta, err := eventsourcing.DecodeMetadata(evt.Metadata)
+					if err != nil || meta == nil {
+						continue
+					}
+					if eventsourcing.RequestIDFromMetadata(meta) == corr.RequestID {
+						log.Printf("[worker] listener event for artist %s request %s already recorded, skipping duplicate", artistID, corr.RequestID)
+						return nil
+					}
+				}
+			}
 		}
 		if err := agg.RecordMonthlyListeners(int64(listeners), provider, durationMs, corr); err != nil {
 			return fmt.Errorf("record monthly listeners for %s: %w", artistID, err)

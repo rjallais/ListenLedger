@@ -142,22 +142,33 @@ func Run(ctx context.Context) error {
 			// shutdown budget, and close SQLite last so no goroutine can
 			// observe a closed database or publish during the drain.
 			cancelBG()
+			// The worker wait and the NATS drain get separate budgets: a
+			// single shared context would leave the drain already expired
+			// after a slow worker shutdown, skipping the drain entirely.
+			bgWaitCtx, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
 			bgDone := make(chan struct{})
 			go func() {
 				bgWG.Wait()
 				close(bgDone)
 			}()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 			select {
 			case <-bgDone:
-			case <-shutdownCtx.Done():
+			case <-bgWaitCtx.Done():
 				app.Logger().Warn("[app] background workers did not stop in time")
 			}
-			if err := embeddedNATS.Close(shutdownCtx); err != nil {
+			cancelWait()
+			natsCtx, cancelNATS := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelNATS()
+			if err := embeddedNATS.Close(natsCtx); err != nil {
 				app.Logger().Warn("[nats] embedded NATS shutdown error", "err", err)
 			}
-			_ = sqliteDB.Close()
+			// Only close SQLite once no worker can still use it; on timeout
+			// the process exit releases the handle instead.
+			select {
+			case <-bgDone:
+				_ = sqliteDB.Close()
+			default:
+			}
 			app.Logger().Info("[nats] Embedded NATS server stopped")
 			return te.Next()
 		})

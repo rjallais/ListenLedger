@@ -51,9 +51,12 @@ func (h *Handler) queueArtistRefreshWithType(ctx context.Context, record *core.R
 	// duplicate at the domain level — not just the transport level (JetStream
 	// 30s dedup, 5min correlation TTL, neither of which survives restarts).
 	// Fail-open: without the event store, transport dedup still guards.
+	// Streamless artists (pre-event-log rows with no stream yet) fall back
+	// to the PocketBase row state: MsgIDs are per-request now, so transport
+	// dedup no longer blocks repeats for them.
 	if duplicate, err := h.isArtistRefreshPending(ctx, record.Id); err != nil {
 		log.Printf("[queueArtistRefresh] aggregate check failed for artist %s, proceeding: %v", record.Id, err)
-	} else if duplicate {
+	} else if duplicate || record.GetString("fetch_status") == "pending" {
 		log.Printf("[handlers] Refresh already pending for artist %s (aggregate state)", record.Id)
 		return "", true, nil
 	}
