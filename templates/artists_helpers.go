@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"github.com/starfederation/datastar-go/datastar"
 )
 
 type artistStatusOption struct {
+	ArtistID    string
 	Label       string
 	DotClass    string
 	ButtonClass string
@@ -59,6 +62,37 @@ func artistsTBodyID(genre string) string {
 	return "artists-tbody-" + genre
 }
 
+// RanksTickSignal returns the Datastar signal name bumped when total_songs
+// ranks are recalculated for genre. Table wrappers watch it via data-effect
+// to refetch their visible page slice exactly once per recalc.
+func RanksTickSignal(genre string) string {
+	switch genre {
+	case "rock_metal":
+		return "ranksTickRockMetal"
+	case "everything_else":
+		return "ranksTickEverythingElse"
+	default:
+		sanitized := make([]rune, 0, len(genre))
+		upperNext := true
+		for _, r := range genre {
+			switch {
+			case r >= 'a' && r <= 'z':
+				if upperNext {
+					r -= 'a' - 'A'
+				}
+				upperNext = false
+				sanitized = append(sanitized, r)
+			case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				upperNext = false
+				sanitized = append(sanitized, r)
+			default:
+				upperNext = true
+			}
+		}
+		return "ranksTick" + string(sanitized)
+	}
+}
+
 func artistRowID(artistID string) string {
 	return "artist-" + artistID
 }
@@ -84,15 +118,15 @@ func artistCardUpdatedElementID(artistID string) string {
 }
 
 func artistCollectionDecAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/dec')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/artists/%s/collection/dec", url.PathEscape(artistID))
 }
 
 func artistCollectionIncAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/inc')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/artists/%s/collection/inc", url.PathEscape(artistID))
 }
 
 func artistRefreshPostAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/refresh/%s')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/refresh/%s", url.PathEscape(artistID))
 }
 
 func artistCollectionText(artist Artist) string {
@@ -105,24 +139,28 @@ func artistCollectionText(artist Artist) string {
 func listStatusOptions(artistID, currentStatus string) []artistStatusOption {
 	return []artistStatusOption{
 		{
+			ArtistID:    artistID,
 			Label:       "Included",
 			DotClass:    "badge badge-success badge-xs",
 			ButtonClass: statusOptionButtonClass(false, currentStatus == "included"),
 			Action:      artistStatusPostAction(artistID, "included"),
 		},
 		{
+			ArtistID:    artistID,
 			Label:       "Recently Added",
 			DotClass:    "badge badge-info badge-xs",
 			ButtonClass: statusOptionButtonClass(false, currentStatus == "recently_added"),
 			Action:      artistStatusPostAction(artistID, "recently_added"),
 		},
 		{
+			ArtistID:    artistID,
 			Label:       "Not Added",
 			DotClass:    "badge badge-ghost badge-xs",
 			ButtonClass: statusOptionButtonClass(false, currentStatus == "not_added"),
 			Action:      artistStatusPostAction(artistID, "not_added"),
 		},
 		{
+			ArtistID:    artistID,
 			Label:       "Move to Queue",
 			DotClass:    "badge badge-warning badge-xs",
 			ButtonClass: statusOptionButtonClass(true, currentStatus == StatusWaiting),
@@ -144,7 +182,7 @@ func statusOptionButtonClass(warning, active bool) string {
 }
 
 func artistStatusPostAction(artistID, status string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/status/%s')", url.PathEscape(artistID), url.PathEscape(status))
+	return datastar.PostSSE("/api/artists/%s/status/%s", url.PathEscape(artistID), url.PathEscape(status))
 }
 
 func listStatusBadgeProps(status string) artistBadgeProps {
@@ -182,17 +220,6 @@ func listStatusBadgeProps(status string) artistBadgeProps {
 			Classes: "badge badge-ghost badge-sm",
 			Label:   "unknown",
 		}
-	}
-}
-
-func fetchStatusBadgeProps(status string) artistBadgeProps {
-	switch status {
-	case "pending":
-		return artistBadgeProps{Classes: "badge badge-warning", Label: "pending"}
-	case "failed":
-		return artistBadgeProps{Classes: "badge badge-error", Label: "failed"}
-	default:
-		return artistBadgeProps{Classes: "badge badge-ghost", Label: "idle"}
 	}
 }
 
@@ -262,7 +289,7 @@ func artistQueueTitle(count int) string {
 }
 
 func artistQueueLoadMoreAction(nextOffset int) string {
-	return fmt.Sprintf("@get('/api/artists/waiting?offset=%d&limit=1')", nextOffset)
+	return datastar.GetSSE("/api/artists/waiting?offset=%d&limit=1", nextOffset)
 }
 
 func artistQueueLoadMoreLabel(nextOffset int) string {
@@ -303,39 +330,15 @@ func batchQueuedSummary(queued int) string {
 
 func batchPriorityStats(stats map[string]int) []batchPriorityStat {
 	return []batchPriorityStat{
-		{Label: "P0 (queued)", Count: intString(stats["P0_Queued"])},
-		{Label: "P1-P2 (recent)", Count: intString(stats["P1_RockRecent"] + stats["P2_OtherRecent"])},
-		{Label: "P3-P4 (not added)", Count: intString(stats["P3_RockNotAdded"] + stats["P4_OtherNotAdded"])},
-		{Label: "P5-P6 (included)", Count: intString(stats["P5_RockIncluded"] + stats["P6_OtherIncluded"])},
+		{Label: "P0 (queued)", Count: intString(stats["P0Queued"])},
+		{Label: "P1-P2 (recent)", Count: intString(stats["P1RockRecent"] + stats["P2OtherRecent"])},
+		{Label: "P3-P4 (not added)", Count: intString(stats["P3RockNotAdded"] + stats["P4OtherNotAdded"])},
+		{Label: "P5-P6 (included)", Count: intString(stats["P5RockIncluded"] + stats["P6OtherIncluded"])},
 	}
 }
 
 func batchIDText(batchID string) string {
 	return "Batch ID: " + batchID
-}
-
-func artistSignalsJSON(artist Artist) string {
-	return fmt.Sprintf(
-		`{"artistListeners":{%q:%d},"artistUpdated":{%q:%q},"artistFetchStatus":{%q:%q}}`,
-		artist.ID,
-		artist.MonthlyListeners,
-		artist.ID,
-		artist.LastUpdated,
-		artist.ID,
-		artist.FetchStatus,
-	)
-}
-
-func artistListenerSignal(artistID string) string {
-	return fmt.Sprintf("($artistListeners[%q] ?? 0).toLocaleString('en-US')", artistID)
-}
-
-func artistUpdatedSignal(artistID string) string {
-	return fmt.Sprintf("$artistUpdated[%q]", artistID)
-}
-
-func artistFetchStatusSignal(artistID string) string {
-	return fmt.Sprintf("$artistFetchStatus[%q]", artistID)
 }
 
 func ArtistRowID(artistID string) string {
@@ -348,4 +351,8 @@ func ArtistCardID(artistID string) string {
 
 func ArtistsTBodyID(genre string) string {
 	return artistsTBodyID(genre)
+}
+
+func artistHistoryDrawerAction(artistID string) string {
+	return datastar.GetSSE("/api/artists/%s/history/drawer", url.PathEscape(artistID))
 }
