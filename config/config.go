@@ -29,57 +29,48 @@ func LogLevel() slog.Level {
 
 // Config holds application configuration
 type Config struct {
-	ScrapeBackOff []time.Duration
-
 	// Static assets configuration
 	StaticDir string
-
 	// Browserless configuration
 	BrowserlessToken    string
 	BrowserlessEndpoint string
-
 	// ScrapingAnt configuration
 	ScrapingAntToken    string
 	ScrapingAntEndpoint string
-
 	// ScraperAPI configuration
 	ScraperAPIToken           string
 	ScraperAPIEndpoint        string
 	ScraperAPIWaitForSelector string
-
 	// Apify configuration
 	ApifyToken    string
 	ApifyEndpoint string
 	ApifyActorID  string
-
+	// Local headless (go-rod) configuration
+	LocalChromePath string
+	// Browserbase (Stagehand) configuration
+	BrowserbaseAPIKey        string
+	LocalBrowserlessEndpoint string
+	LocalBrowserlessToken    string
+	// NATS embedded server & JetStream configuration
+	NATSStoreDir  string
+	ScrapeBackOff []time.Duration
 	// ApifyMemoryMB is the RAM (in MB) allocated per Actor run.
 	// Spotify is a JS-heavy SPA; empirically each concurrent Chrome tab peaks at
 	// ~360 MB, but the Crawlee v3 autoscaler limits actual concurrency to ~3–7
 	// tabs regardless of this setting. The allocation primarily governs CPU: Apify
 	// provisions ~1 vCPU per 4096 MB, so 8192 MB → 2 vCPUs.
 	ApifyMemoryMB int
-
 	// ApifyMaxConcurrency is the maximum number of browser pages the Actor
 	// opens simultaneously within a single run.
 	// Note: apify~puppeteer-scraper does not expose minConcurrency; the Crawlee
 	// autoscaler always ramps from desiredConcurrency=1 at ~5%/10s, reaching a
 	// stable level of ~3–7 concurrent tabs on an 8 GB Actor.
 	ApifyMaxConcurrency int
-
 	// ApifyBatchSize is the number of artist URLs sent in one Actor run.
 	// Setting it equal to ApifyMaxConcurrency means all URLs in a batch are
 	// processed concurrently (one "wave"), which is the most efficient option.
-	ApifyBatchSize int
-
-	// Local headless (go-rod) configuration
-	LocalChromePath string
-
-	// Local Browserless (self-hosted OCI container) configuration
-	LocalBrowserlessEnabled     bool
-	LocalBrowserlessEndpoint    string
-	LocalBrowserlessToken       string
+	ApifyBatchSize              int
 	LocalBrowserlessConcurrency int
-
 	// Shared behavior configuration
 	MaxConcurrency      int
 	MaxRetries          int
@@ -88,28 +79,32 @@ type Config struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
-	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
-	LogSuccessfulFetches bool
-
 	// JetStream scrape worker tuning
 	ScrapeMaxDeliver         int
 	ScrapeAckWait            time.Duration
 	ScrapeInProgressInterval time.Duration
-
-	BrowserlessConcurrency int
-	ScraperAPIConcurrency  int
-	LocalConcurrency       int
-	MobileSSRConcurrency   int
-
-	// Browserbase (Stagehand) configuration
-	BrowserbaseAPIKey      string
-	BrowserbaseConcurrency int
-
+	BrowserlessConcurrency   int
+	ScraperAPIConcurrency    int
+	LocalConcurrency         int
+	MobileSSRConcurrency     int
+	BrowserbaseConcurrency   int
+	RecentBatchWindow        time.Duration
+	// ScrapeJobRetention bounds the scrape_jobs history: succeeded jobs older
+	// than this are purged by the worker's hourly maintenance sweep.
+	// Unbounded growth (20k+ rows observed) slows every queue-stats poll and
+	// orphan reconciliation scan. The events table is never purged — set
+	// SCRAPE_JOB_RETENTION=0 to keep rows forever (full audit mode).
+	ScrapeJobRetention time.Duration
+	NATSMaxMemoryStore int64
+	NATSMaxFileStore   int64
+	// Local Browserless (self-hosted OCI container) configuration
+	LocalBrowserlessEnabled bool
+	// LogSuccessfulFetches enables per-request success logging in the Spotify client.
+	LogSuccessfulFetches  bool
 	LocalHeadlessEnabled  bool
 	LocalIgnoreCertErrors bool
-
-	RecentBatchWindow time.Duration
-
+	NATSLogging           bool
+	NATSDebug             bool
 	// UseViewTransitions enables the View Transitions API for Datastar SSE fragment
 	// patches (read-my-writes UI updates animate instead of snapping). Enabled by
 	// default; set VIEW_TRANSITIONS=false to disable. Fragments should be audited
@@ -209,6 +204,16 @@ func DefaultConfig() *Config {
 
 		RecentBatchWindow: 13 * 24 * time.Hour,
 
+		// Succeeded scrape jobs older than this are purged hourly.
+		ScrapeJobRetention: 7 * 24 * time.Hour,
+
+		// NATS embedded server defaults
+		NATSStoreDir:       "",
+		NATSMaxMemoryStore: 64 * 1024 * 1024,  // 64 MB
+		NATSMaxFileStore:   512 * 1024 * 1024, // 512 MB
+		NATSLogging:        false,
+		NATSDebug:          false,
+
 		// View Transitions on by default; opt out via VIEW_TRANSITIONS=false.
 		UseViewTransitions: true,
 	}
@@ -233,6 +238,7 @@ func (c *Config) LoadFromEnv() error {
 	}
 	c.loadSharedConfig()
 	c.loadJetStreamConfig()
+	c.loadNATSConfig()
 	c.loadViewTransitionsConfig()
 
 	return nil
@@ -371,6 +377,7 @@ func (c *Config) loadSharedConfig() {
 		c.LogSuccessfulFetches = logVal
 	}
 	c.loadRecentBatchWindow()
+	c.loadScrapeJobRetention()
 }
 
 // loadConcurrencySettings reads MAX_CONCURRENCY (shared external providers)
@@ -379,7 +386,7 @@ func (c *Config) loadConcurrencySettings() {
 	if conc, ok := parsePositiveInt("MAX_CONCURRENCY"); ok {
 		c.MaxConcurrency = conc
 	}
-	if conc, ok := parseNonNegativeInt("MOBILE_SSR_CONCURRENCY"); ok {
+	if conc, ok := parsePositiveInt("MOBILE_SSR_CONCURRENCY"); ok {
 		c.MobileSSRConcurrency = conc
 	}
 }
@@ -387,9 +394,11 @@ func (c *Config) loadConcurrencySettings() {
 // loadRecentBatchWindow reads MINIMUM_RELEASE_AGE (falling back to
 // RECENT_BATCH_WINDOW) and logs a warning on invalid values.
 func (c *Config) loadRecentBatchWindow() {
-	ageStr := os.Getenv("MINIMUM_RELEASE_AGE")
+	envKey := "MINIMUM_RELEASE_AGE"
+	ageStr := os.Getenv(envKey)
 	if ageStr == "" {
-		ageStr = os.Getenv("RECENT_BATCH_WINDOW")
+		envKey = "RECENT_BATCH_WINDOW"
+		ageStr = os.Getenv(envKey)
 	}
 	if ageStr == "" {
 		return
@@ -397,22 +406,49 @@ func (c *Config) loadRecentBatchWindow() {
 	if d, ok := parseNonNegDuration(ageStr); ok {
 		c.RecentBatchWindow = d
 	} else {
-		slog.Warn("invalid MINIMUM_RELEASE_AGE/RECENT_BATCH_WINDOW", "value", ageStr)
+		slog.Warn("invalid duration for "+envKey, "env", envKey, "value", ageStr)
 	}
 }
 
-// parseNonNegativeInt returns a non-negative int parsed from the named env var.
-func parseNonNegativeInt(name string) (int, bool) {
+// loadScrapeJobRetention reads SCRAPE_JOB_RETENTION (e.g. "168h") and logs a
+// warning on invalid values, keeping the default.
+func (c *Config) loadScrapeJobRetention() {
+	raw := os.Getenv("SCRAPE_JOB_RETENTION")
+	if raw == "" {
+		return
+	}
+	if d, ok := parseNonNegDuration(raw); ok {
+		c.ScrapeJobRetention = d
+	} else {
+		slog.Warn("invalid duration for SCRAPE_JOB_RETENTION", "env", "SCRAPE_JOB_RETENTION", "value", raw)
+	}
+}
+
+// parseIntEnv reads the named env variable and returns its integer value if present
+// and >= minValue, along with a boolean indicating success.
+// Invalid or out-of-range values are logged with a warning and ignored.
+func parseIntEnv(name string, minValue int) (int, bool) {
 	val := os.Getenv(name)
 	if val == "" {
 		return 0, false
 	}
 	n, err := strconv.Atoi(val)
-	if err != nil || n < 0 {
+	if err != nil || n < minValue {
 		slog.Warn("invalid config value, using default", "key", name, "value", val)
 		return 0, false
 	}
 	return n, true
+}
+
+// parseNonNegativeInt returns a non-negative int parsed from the named env var.
+func parseNonNegativeInt(name string) (int, bool) {
+	return parseIntEnv(name, 0)
+}
+
+// parsePositiveInt reads the named env variable and returns its integer value
+// if present and positive (>= 1), along with a boolean indicating success.
+func parsePositiveInt(name string) (int, bool) {
+	return parseIntEnv(name, 1)
 }
 
 // parseBoolEnv returns a bool parsed from the named env var.
@@ -467,22 +503,6 @@ func (c *Config) loadViewTransitionsConfig() {
 	}
 }
 
-// parsePositiveInt reads the named env variable and returns its integer value
-// if present and positive, along with a boolean indicating success.
-// Invalid or non-positive values are logged and ignored.
-func parsePositiveInt(envKey string) (int, bool) {
-	s := os.Getenv(envKey)
-	if s == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		slog.Warn("invalid config value, using default", "key", envKey, "value", s)
-		return 0, false
-	}
-	return n, true
-}
-
 func parseDurationList(raw string) []time.Duration {
 	parts := strings.Split(raw, ",")
 	out := make([]time.Duration, 0, len(parts))
@@ -535,11 +555,17 @@ func (c *Config) HasApify() bool {
 	return c.ApifyToken != "" && c.ApifyEndpoint != "" && c.ApifyActorID != ""
 }
 
+// IsDevEnvironment reports whether the environment is development or dev.
+func IsDevEnvironment() bool {
+	env := os.Getenv("ENV")
+	return env == "development" || env == "dev"
+}
+
 // HasMobileSSR returns true if mobile SSR scraping is enabled.
 // Mobile SSR is a plain HTTP GET with an iOS Safari user-agent — it needs no
 // tokens, API keys, or a local browser binary — so it is always available and
 // acts as the final fallback provider.
-func (c *Config) HasMobileSSR() bool {
+func (*Config) HasMobileSSR() bool {
 	return true
 }
 
@@ -612,4 +638,38 @@ func validateLocalBrowserlessConcurrency(c *Config) error {
 		return errors.New("local browserless concurrency must be positive")
 	}
 	return nil
+}
+
+// loadNATSConfig reads embedded NATS server options from env.
+func (c *Config) loadNATSConfig() {
+	if dir := os.Getenv("NATS_STORE_DIR"); dir != "" {
+		c.NATSStoreDir = dir
+	}
+	if mem, ok := parseInt64Env("NATS_MAX_MEMORY_STORE"); ok {
+		c.NATSMaxMemoryStore = mem
+	}
+	if store, ok := parseInt64Env("NATS_MAX_FILE_STORE"); ok {
+		c.NATSMaxFileStore = store
+	}
+	if logging, ok := parseBoolEnv("NATS_LOG"); ok {
+		c.NATSLogging = logging
+	}
+	if debug, ok := parseBoolEnv("NATS_DEBUG"); ok {
+		c.NATSDebug = debug
+	}
+}
+
+// parseInt64Env returns an int64 parsed from the named env var.
+// Accepts positive values or -1 (unlimited sentinel).
+func parseInt64Env(name string) (int64, bool) {
+	val := strings.TrimSpace(os.Getenv(name))
+	if val == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(val, 10, 64)
+	if err != nil || (n <= 0 && n != -1) {
+		slog.Warn("invalid config value, using default", "key", name, "value", val)
+		return 0, false
+	}
+	return n, true
 }
