@@ -20,6 +20,27 @@ const (
 	SubjectScrapeDLQ = "scrape.dlq"
 	// SubjectArtistUpdated is the fanout subject for artist update notifications.
 	SubjectArtistUpdated = "artist.updated"
+	// SubjectQueueUpdated is the fanout subject for queue and job stats notifications.
+	SubjectQueueUpdated = "queue.updated"
+	// SubjectRanksUpdated is the fanout subject prefix for total_songs rank
+	// recalculation completions. Published per genre as
+	// "ranks.updated.<genre_group>" (ephemeral core NATS, like queue.updated:
+	// a UI hint, fully derivable from the DB). Lets each client refresh its
+	// visible page slice exactly once per recalc instead of fanning out one
+	// artist.updated event per rewritten row.
+	SubjectRanksUpdated = "ranks.updated"
+	// SubjectRanksUpdatedWildcard matches per-genre rank notifications.
+	SubjectRanksUpdatedWildcard = "ranks.updated.*"
+
+	// SubjectDomainEventsPrefix is the durable JetStream prefix for domain events.
+	// Per the Datastar YouTube canon (Beta 3 CQRS, Immutability & Event Sourcing):
+	// commands are short POSTs returning 204, the append-only log is the source
+	// of truth, and SQLite projections are rebuildable perfect indexes.
+	// Ephemeral UI hints (artist.updated, queue.updated, ranks.updated.*) stay
+	// on core NATS; everything under domain.events.> is durable in JetStream.
+	SubjectDomainEventsPrefix = "domain.events"
+	// SubjectDomainEventsWildcard matches all durable domain events.
+	SubjectDomainEventsWildcard = "domain.events.>"
 )
 
 const (
@@ -44,6 +65,25 @@ const (
 	// get the monthly listeners count from the initial HTML response.
 	ScrapeProviderMobileSSR = "mobile-ssr"
 )
+
+// SupportedMessageVersions is the set of NATS payload schemas this binary
+// reads. Unknown versions fail fast (never silently misread): ship the
+// reader before the writer when introducing v2.
+func SupportedMessageVersions() map[string]struct{} {
+	return map[string]struct{}{SchemaVersionV1: {}}
+}
+
+// checkMessageVersion defaults empty to v1 (pre-versioning rows) and rejects
+// unknown versions.
+func checkMessageVersion(version, payload string) (string, error) {
+	if version == "" {
+		return SchemaVersionV1, nil
+	}
+	if _, ok := SupportedMessageVersions()[version]; !ok {
+		return "", fmt.Errorf("unsupported %s version %q", payload, version)
+	}
+	return version, nil
+}
 
 // ScrapeRequested is the durable queue payload for a listener refresh job.
 type ScrapeRequested struct {
@@ -120,6 +160,45 @@ func ScrapeProviderFromSubject(subject string) string {
 	return NormalizeScrapeProvider(strings.TrimPrefix(subject, prefix))
 }
 
+// SubjectRanksUpdatedForGenre returns the rank notification subject for a
+// genre group (e.g. "ranks.updated.rock_metal"). An empty genre falls back
+// to the unqualified subject, which matches no wildcard subscriber
+// (ranks.updated.* requires a genre token) — callers must not publish blank
+// genres unless the drop is intended.
+func SubjectRanksUpdatedForGenre(genre string) string {
+	genre = strings.TrimSpace(genre)
+	if genre == "" {
+		return SubjectRanksUpdated
+	}
+	return SubjectRanksUpdated + "." + genre
+}
+
+// SubjectDomainEvent returns the durable domain-event subject for an
+// aggregate event, e.g. "domain.events.artist.<artistID>.ArtistCreated".
+// Dots in IDs are sanitized since NATS treats dots as token separators.
+func SubjectDomainEvent(streamType, streamID, eventType string) string {
+	sanitize := func(s string) string {
+		s = strings.TrimSpace(s)
+		s = strings.ReplaceAll(s, ".", "_")
+		s = strings.ReplaceAll(s, " ", "_")
+		if s == "" {
+			return "-"
+		}
+		return s
+	}
+	return SubjectDomainEventsPrefix + "." + sanitize(streamType) + "." + sanitize(streamID) + "." + sanitize(eventType)
+}
+
+// RanksGenreFromSubject decodes the genre group from a ranks.updated subject,
+// returning "" for the unqualified subject or unrelated subjects.
+func RanksGenreFromSubject(subject string) string {
+	prefix := SubjectRanksUpdated + "."
+	if !strings.HasPrefix(subject, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(subject, prefix))
+}
+
 // MarshalScrapeRequested serializes a scrape request payload.
 func MarshalScrapeRequested(req ScrapeRequested) ([]byte, error) {
 	if req.Version == "" {
@@ -134,9 +213,11 @@ func UnmarshalScrapeRequested(data []byte) (ScrapeRequested, error) {
 	if err := json.Unmarshal(data, &req); err != nil {
 		return ScrapeRequested{}, err
 	}
-	if req.Version == "" {
-		req.Version = SchemaVersionV1
+	version, err := checkMessageVersion(req.Version, "scrape.request")
+	if err != nil {
+		return ScrapeRequested{}, err
 	}
+	req.Version = version
 	if req.ArtistID == "" {
 		return ScrapeRequested{}, fmt.Errorf("missing artist_id")
 	}
@@ -173,9 +254,11 @@ func UnmarshalArtistUpdated(data []byte) (ArtistUpdated, error) {
 	if err := json.Unmarshal(data, &update); err != nil {
 		return ArtistUpdated{}, err
 	}
-	if update.Version == "" {
-		update.Version = SchemaVersionV1
+	version, err := checkMessageVersion(update.Version, "artist.updated")
+	if err != nil {
+		return ArtistUpdated{}, err
 	}
+	update.Version = version
 	if update.FetchStatus == "" {
 		update.FetchStatus = "idle"
 	}
