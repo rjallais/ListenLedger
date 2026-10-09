@@ -1,0 +1,148 @@
+package templates
+
+import (
+	"fmt"
+
+	"ListenLedger/internal/projections"
+)
+
+// ArtistHistoryDrawer renders a slide-over drawer displaying temporal listener trends and audit logs.
+templ ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapshot) {
+	{{ spark := ComputeSparkline(snapshots, 380, 80) }}
+	<div id="artist-history-drawer-container">
+		<dialog id="artist-history-dialog" class="drawer-dialog" open>
+			<div class="drawer-backdrop" data-on:click="@get('/api/artists/history/close')"></div>
+			<div class="drawer-content p-6 flex flex-col gap-6">
+				<!-- Header -->
+				<div class="flex items-start justify-between">
+					<div>
+						<div class="flex items-center gap-2 mb-1">
+							<h2 class="text-xl font-bold tracking-tight">{ artist.Name }</h2>
+							if artist.SpotifyID != "" {
+								<a
+									href={ templ.SafeURL("https://open.spotify.com/artist/" + artist.SpotifyID) }
+									target="_blank"
+									rel="noopener noreferrer"
+									class="badge badge-outline badge-xs text-xs gap-1 hover:bg-accent"
+									title="Open on Spotify"
+								>
+									<span>Spotify</span>
+									<span>↗</span>
+								</a>
+							}
+						</div>
+						<div class="flex items-baseline gap-2">
+							<span class="text-2xl font-mono font-bold">{ FormatNumber(artist.MonthlyListeners) }</span>
+							<span class="text-xs text-muted-foreground uppercase font-semibold tracking-wider">Monthly Listeners</span>
+						</div>
+					</div>
+					<button
+						type="button"
+						class="btn btn-sm btn-circle btn-ghost"
+						data-on:click="@get('/api/artists/history/close')"
+						aria-label="Close drawer"
+					>
+						✕
+					</button>
+				</div>
+				<!-- Trend Sparkline -->
+				if len(snapshots) > 1 {
+					<div class="op-card p-4 flex flex-col gap-2">
+						<div class="flex items-center justify-between text-xs font-medium">
+							<span class="text-muted-foreground">Historical Trajectory ({ fmt.Sprintf("%d scrapes", len(snapshots)) })</span>
+							if spark.Delta > 0 {
+								<span class="op-badge op-badge-success text-xs">▲ { FormatDelta(spark.Delta) } ({ fmt.Sprintf("+%.1f%%", spark.PctChange) })</span>
+							} else if spark.Delta < 0 {
+								<span class="op-badge op-badge-destructive text-xs">▼ { FormatDelta(spark.Delta) } ({ fmt.Sprintf("%.1f%%", spark.PctChange) })</span>
+							} else {
+								<span class="op-badge op-badge-outline text-xs">0 delta</span>
+							}
+						</div>
+						<svg class="sparkline-svg" viewBox="0 0 380 80">
+							<defs>
+								<linearGradient id="sparkline-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+									<stop offset="0%" stop-color="#10b981" stop-opacity="0.35"></stop>
+									<stop offset="100%" stop-color="#10b981" stop-opacity="0.0"></stop>
+								</linearGradient>
+							</defs>
+							<polygon points={ spark.AreaPoints } class="sparkline-area"></polygon>
+							<path d={ spark.PathD } class="sparkline-path"></path>
+							for _, pt := range spark.Points {
+								<circle cx={ fmt.Sprintf("%.1f", pt.CX) } cy={ fmt.Sprintf("%.1f", pt.CY) } r="3" class="sparkline-dot">
+									<title>{ pt.Date }: { FormatNumber(int(pt.Listeners)) }</title>
+								</circle>
+							}
+						</svg>
+						<div class="flex items-center justify-between text-[11px] text-muted-foreground font-mono mt-1">
+							<span>Min: { FormatNumber(int(spark.MinVal)) }</span>
+							<span>Max: { FormatNumber(int(spark.MaxVal)) }</span>
+						</div>
+					</div>
+				}
+				<!-- History Table -->
+				<div class="flex-1 flex flex-col min-h-0">
+					<h3 class="text-sm font-semibold mb-3 flex items-center justify-between">
+						<span>Scrape Audit Log</span>
+						<span class="badge badge-outline badge-xs font-mono">{ fmt.Sprintf("%d records", len(snapshots)) }</span>
+					</h3>
+					if len(snapshots) == 0 {
+						<div class="op-card p-6 text-center text-sm text-muted-foreground">
+							No historical scrapes recorded for this artist yet.
+						</div>
+					} else {
+						<div class="overflow-x-auto border border-border rounded-lg flex-1 max-h-[22rem]">
+							<table class="table table-zebra w-full text-xs">
+								<thead>
+									<tr>
+										<th>Scraped At</th>
+										<th class="text-right">Listeners</th>
+										<th class="text-right">Delta</th>
+										<th class="text-center">Provider</th>
+										<th class="text-right">Latency</th>
+									</tr>
+								</thead>
+								<tbody>
+									for _, s := range snapshots {
+										<tr>
+											<td class="font-mono">{ FormatHistoryTimestamp(s.ScrapedAt) }</td>
+											<td class="text-right font-mono font-semibold">{ FormatNumber(int(s.MonthlyListeners)) }</td>
+											<td class="text-right font-mono">
+												if s.Delta > 0 {
+													<span class="text-emerald-500 font-medium">+{ FormatNumber(int(s.Delta)) }</span>
+												} else if s.Delta < 0 {
+													<span class="text-red-500 font-medium">-{ FormatNumber(int(-s.Delta)) }</span>
+												} else {
+													<span class="text-muted-foreground">0</span>
+												}
+											</td>
+											<td class="text-center">
+												<span class="badge badge-outline badge-xs font-mono">{ s.Provider }</span>
+											</td>
+											<td class="text-right font-mono text-muted-foreground">{ fmt.Sprintf("%dms", s.DurationMs) }</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					}
+				</div>
+				<!-- Footer Action -->
+				<div class="modal-action mt-auto pt-4 border-t border-border flex justify-between items-center">
+					<span class="text-xs text-muted-foreground font-mono">ID: { artist.ID }</span>
+					<button
+						type="button"
+						class="btn btn-sm btn-ghost"
+						data-on:click="@get('/api/artists/history/close')"
+					>
+						Close
+					</button>
+				</div>
+			</div>
+		</dialog>
+	</div>
+}
+
+// EmptyHistoryDrawer renders an empty container to dismiss the drawer.
+templ EmptyHistoryDrawer() {
+	<div id="artist-history-drawer-container"></div>
+}
