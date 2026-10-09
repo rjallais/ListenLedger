@@ -1,29 +1,36 @@
 package templates
 
 // AddArtistModal renders the modal for adding a new artist.
+//
+// Declarative open state: triggers set $_add_artist_open; sb-modal reflects
+// the open attribute through its bool prop and resets the signal on sb-close
+// (button, backdrop, or Escape). The backend can drive it via patch-signals.
 templ AddArtistModal(currentGenre string) {
-	<input type="checkbox" id="add-artist-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle" role="dialog" aria-modal="true" aria-labelledby="add-artist-title">
-		<div class="modal-box">
-			<div class="flex items-center justify-between mb-4">
-				<h2 id="add-artist-title" class="font-bold text-lg">Add New Artist</h2>
-				<label for="add-artist-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
-			</div>
-			<form
-				id="add-artist-form"
-				data-on:submit="evt.preventDefault(); @post('/api/artists', {contentType: 'form'})"
-			>
-				@AddArtistNameField()
-				@AddArtistSpotifyIDField()
-				@AddArtistGenreField(currentGenre)
-				@AddArtistStatusField()
-				@AddArtistOptionalFields()
-				@AddArtistModalActions()
-			</form>
-			<div id="add-artist-feedback" class="mt-2"></div>
-		</div>
-		<label class="modal-backdrop" for="add-artist-modal">Close</label>
-	</div>
+	<sb-modal
+		data-signals="{_add_artist_open: false}"
+		data-attr:open="$_add_artist_open"
+		data-on:sb-close="$_add_artist_open = false"
+		heading="Add New Artist"
+	>
+		@AddArtistForm(currentGenre)
+		<div id="add-artist-feedback" class="mt-2"></div>
+		@AddArtistModalActions()
+	</sb-modal>
+}
+
+// AddArtistForm renders the form for adding a new artist.
+templ AddArtistForm(currentGenre string) {
+	<form
+		id="add-artist-form"
+		data-indicator:_add_artist_loading
+		data-on:submit__prevent="@post('/api/artists', {contentType: 'form'})"
+	>
+		@AddArtistNameField()
+		@AddArtistSpotifyIDField()
+		@AddArtistGenreField(currentGenre)
+		@AddArtistStatusField()
+		@AddArtistOptionalFields()
+	</form>
 }
 
 templ AddArtistNameField() {
@@ -122,10 +129,11 @@ templ AddArtistOptionalFields() {
 }
 
 templ AddArtistModalActions() {
-	<div class="modal-action">
-		<label for="add-artist-modal" class="btn btn-ghost">Cancel</label>
-		<button type="submit" class="btn btn-primary gap-2">
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+	<div slot="footer" class="flex justify-end gap-2">
+		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
+		<button type="submit" form="add-artist-form" class="btn btn-primary gap-2" data-attr:disabled="$_add_artist_loading">
+			<span data-show="$_add_artist_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
+			<svg data-show="!$_add_artist_loading" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
 			</svg>
 			Add Artist
@@ -138,7 +146,7 @@ templ SelectOption(option selectOption) {
 }
 
 templ AddArtistSuccessNotice(artistName string) {
-	<div id="add-artist-feedback" class="mt-2">
+	<div id="add-artist-feedback" class="mt-2" data-signals="{ _feedbackVisible: true }" data-show="$_feedbackVisible">
 		<div class="alert alert-success">
 			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
@@ -147,7 +155,21 @@ templ AddArtistSuccessNotice(artistName string) {
 				<p class="font-semibold">Artist added</p>
 				<p class="text-xs">{ artistName }</p>
 			</div>
-			<label for="add-artist-modal" class="btn btn-success btn-sm">Close</label>
+			<button type="reset" form="add-artist-form" class="btn btn-success btn-sm" data-on:click="$_feedbackVisible = false">Add Another</button>
+			<button type="button" class="btn btn-ghost btn-sm" data-sb-close>Close</button>
+		</div>
+	</div>
+}
+
+templ AddArtistErrorNotice(errMsg string) {
+	<div id="add-artist-feedback" class="mt-2" data-signals="{ _feedbackVisible: true }" data-show="$_feedbackVisible">
+		<div class="alert alert-error">
+			<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+			<div class="flex-1">
+				<p class="font-semibold">Failed to add artist</p>
+				<p class="text-xs">{ errMsg }</p>
+			</div>
+			<button type="button" class="btn btn-ghost btn-sm" data-on:click="$_feedbackVisible = false">Dismiss</button>
 		</div>
 	</div>
 }
