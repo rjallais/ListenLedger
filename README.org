@@ -61,11 +61,11 @@ Data is stored in =pb_data/= at the repo root by default; override with =PB_DATA
 
 * Build and Run
 #+begin_src sh
-GOEXPERIMENT=jsonv2 go run .
+go run .
 
 # or build
-GOEXPERIMENT=jsonv2 go build -o ListenLedger .
-GOEXPERIMENT=jsonv2 ./ListenLedger
+go build -o ListenLedger .
+./ListenLedger
 #+end_src
 
 The web UI is served on port 8091 (http://127.0.0.1:8091). Admin UI: =/_/=.
@@ -78,14 +78,14 @@ mise run run
 
 * Development
 - Templ: =go tool templ generate=
-- Tailwind: =go tool gotailwind -i input.css -o static/styles.css=
+- CSS: =mise run build:css= (or =go run ./cmd/build=)
 - Data lives in =pb_data/=. Backups can be made via =cmd/safebackup=.
 
 * CLI Utilities
 - =cmd/update_listeners=: bulk refresh using go-rod with priority ordering.
   Example:
 #+begin_src sh
-GOEXPERIMENT=jsonv2 go run ./cmd/update_listeners --concurrency 5 --headless=true --limit 0
+go run ./cmd/update_listeners --concurrency 5 --headless=true --limit 0
 #+end_src
 - =cmd/safebackup=: VACUUM INTO backup for SQLite.
 #+begin_src sh
@@ -99,17 +99,17 @@ go run ./cmd/safebackup --db pb_data/data.db --out backups
   When =--tidal-client-id= and =--tidal-client-secret= are set but no =--tidal-token= is given, the tool automatically obtains a bearer token via the OAuth client-credentials flow. TIDAL prefill works alongside MusicBrainz and Deezer in both dry-runs and =--apply= runs; other flags (=--limit=, =--apply=, =--min-confidence=) and output paths (=backfill_reports/=) are unchanged.
   Example:
 #+begin_src sh
-GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --limit 25
+go run ./cmd/backfill_song_artists --limit 25
 cp -a pb_data /tmp/listenledger-pb-data-copy
-GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --data-dir /tmp/listenledger-pb-data-copy --limit 25
-GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --apply
+go run ./cmd/backfill_song_artists --data-dir /tmp/listenledger-pb-data-copy --limit 25
+go run ./cmd/backfill_song_artists --apply
 # With TIDAL prefill:
-TIDAL_CLIENT_ID=xxx TIDAL_CLIENT_SECRET=yyy GOEXPERIMENT=jsonv2 go run ./cmd/backfill_song_artists --limit 25
+TIDAL_CLIENT_ID=xxx TIDAL_CLIENT_SECRET=yyy go run ./cmd/backfill_song_artists --limit 25
 #+end_src
   Review the JSON audit report in =<data-dir>/backfill_reports/= and run =cmd/safebackup= before using =--apply=. Dry-runs now also emit a JSON + CSV review queue for the remaining manual cases in the same =backfill_reports/= directory. If the web app is running, stop it first or dry-run against a copied =pb_data/= directory. MusicBrainz lookups are paced and retried automatically for transient 429/5xx failures, and Deezer is used as a secondary source for collaborator discovery, so full dry-runs are slower but more reliable.
 
 * Troubleshooting
-- =encoding/json/v2= errors: ensure =GOEXPERIMENT=jsonv2=.
+- =encoding/json/v2= is stable in Go 1.27; no experiment flag is required.
 - Provider 401/403/429: verify tokens and quotas.
 - Local headless errors: set =LOCAL_CHROME_PATH= or disable with =LOCAL_HEADLESS_ENABLED=false=.
 
