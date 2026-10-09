@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
 	"mime"
 	"net/http"
@@ -14,185 +13,240 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/benbjohnson/hashfs"
+	"github.com/klauspost/compress/gzip"
 	"github.com/pocketbase/pocketbase/core"
 )
 
 const (
-	// staticCacheControl matches the previous Cache-Control on static files.
-	staticCacheControl = "public, max-age=3600"
-	// staticBrotliLevel mirrors the brotli level used for SSE responses
-	// (see sseOpts in shared.go) so both channels compress consistently.
-	staticBrotliLevel = 5
-	// staticMinCompressSize avoids paying compression overhead (CPU + gzip/brotli
-	// framing) for files too small to benefit.
-	staticMinCompressSize = 1024
+	// staticCacheControl instructs browsers and proxies to cache static files
+	// with revalidation. CSS/JS carry cache-busters or change on restart;
+	// conditional requests (ETag/Last-Modified) return 304 without payload.
+	staticCacheControl = "public, max-age=86400, stale-while-revalidate=604800"
+
+	// staticMinCompressSize: files smaller than 512 B are not worth compressing
+	// (headers and compression dictionary overhead exceed savings).
+	staticMinCompressSize = 512
 )
 
-// staticEncoded caches the compressed variants of a static file, keyed by path.
-// Rebuilt lazily when the file's modification time changes.
+// staticEncoded holds the pre-compressed byte variants of a static file.
 type staticEncoded struct {
-	mod    time.Time
-	brotli []byte
-	gzip   []byte
+	modTime time.Time
+	size    int64
+	brotli  []byte
+	gzip    []byte
 }
 
 var (
-	staticEncodedMu    sync.Mutex
-	staticEncodedCache = map[string]*staticEncoded{}
+	staticCacheMu sync.RWMutex
+	staticCache   = make(map[string]*staticEncoded)
 )
 
-// encodeStatic reads the file at fullPath once and returns cached brotli+gzip
-// variants for it, recompressing if the file changed on disk.
+// encodeStatic returns cached or newly compressed variants for fullPath.
+// Cache is invalidated when modTime or size differs from the cached entry.
 func encodeStatic(fullPath string, fi os.FileInfo) (*staticEncoded, error) {
-	mod := fi.ModTime().UTC()
+	staticCacheMu.RLock()
+	cached, ok := staticCache[fullPath]
+	staticCacheMu.RUnlock()
 
-	staticEncodedMu.Lock()
-	defer staticEncodedMu.Unlock()
-
-	if enc, ok := staticEncodedCache[fullPath]; ok && enc.mod.Equal(mod) {
-		return enc, nil
+	if ok && cached.modTime.Equal(fi.ModTime()) && cached.size == fi.Size() {
+		return cached, nil
 	}
 
 	raw, err := os.ReadFile(fullPath)
 	if err != nil {
-		return nil, fmt.Errorf("read static file %q: %w", fullPath, err)
+		return nil, fmt.Errorf("read static file: %w", err)
 	}
 
-	enc := &staticEncoded{mod: mod}
-
-	if len(raw) >= staticMinCompressSize {
-		var brBuf bytes.Buffer
-		bw := brotli.NewWriterLevel(&brBuf, staticBrotliLevel)
-		if _, err := bw.Write(raw); err != nil {
-			return nil, fmt.Errorf("brotli compress %q: %w", fullPath, err)
-		}
-		if err := bw.Close(); err != nil {
-			return nil, fmt.Errorf("brotli close %q: %w", fullPath, err)
-		}
-		enc.brotli = brBuf.Bytes()
-
-		var gzBuf bytes.Buffer
-		gz := gzip.NewWriter(&gzBuf)
-		if _, err := gz.Write(raw); err != nil {
-			return nil, fmt.Errorf("gzip compress %q: %w", fullPath, err)
-		}
-		if err := gz.Close(); err != nil {
-			return nil, fmt.Errorf("gzip close %q: %w", fullPath, err)
-		}
-		enc.gzip = gzBuf.Bytes()
+	var brBuf bytes.Buffer
+	// Quality 5 is the optimal trade-off: 90%+ of max brotli compression at
+	// near-gzip speed, safe to run dynamically without hurting CPU.
+	brWriter := brotli.NewWriterLevel(&brBuf, 5)
+	defer func() { _ = brWriter.Close() }()
+	if _, err := brWriter.Write(raw); err != nil {
+		return nil, fmt.Errorf("brotli compress %s: %w", fullPath, err)
+	}
+	if err := brWriter.Close(); err != nil {
+		return nil, fmt.Errorf("brotli close %s: %w", fullPath, err)
 	}
 
-	staticEncodedCache[fullPath] = enc
-	return enc, nil
+	var gzBuf bytes.Buffer
+	gzWriter, err := gzip.NewWriterLevel(&gzBuf, gzip.DefaultCompression)
+	if err != nil {
+		return nil, fmt.Errorf("gzip writer %s: %w", fullPath, err)
+	}
+	defer func() { _ = gzWriter.Close() }()
+	if _, err := gzWriter.Write(raw); err != nil {
+		return nil, fmt.Errorf("gzip compress %s: %w", fullPath, err)
+	}
+	if err := gzWriter.Close(); err != nil {
+		return nil, fmt.Errorf("gzip close %s: %w", fullPath, err)
+	}
+
+	entry := &staticEncoded{
+		modTime: fi.ModTime(),
+		size:    fi.Size(),
+		brotli:  brBuf.Bytes(),
+		gzip:    gzBuf.Bytes(),
+	}
+
+	staticCacheMu.Lock()
+	staticCache[fullPath] = entry
+	staticCacheMu.Unlock()
+
+	return entry, nil
 }
 
-// negotiateEncoding picks brotli, then gzip, from the client's Accept-Encoding
-// header, respecting q-values. It returns "" to serve the raw file.
+// negotiateEncoding parses Accept-Encoding and returns "br" (priority 1),
+// "gzip" (priority 2), or "" if neither is accepted or accepted with q=0.
 func negotiateEncoding(r *http.Request) string {
-	header := r.Header.Get("Accept-Encoding")
-	if header == "" {
+	ae := r.Header.Get("Accept-Encoding")
+	if ae == "" {
 		return ""
 	}
 
-	// br is preferred over gzip when both are offered at equal quality
-	// (that is what the datastar-go SDK does with WithClientPriority)
-	priority := map[string]int{"br": 2, "gzip": 1}
+	type qval struct {
+		enc string
+		q   float64
+	}
+	var parsed []qval
+	var refused map[string]bool
 
-	var best string
-	bestQ := 0.0
-
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(ae, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-
-		name := part
+		var enc string
 		q := 1.0
-		if i := strings.Index(part, ";"); i >= 0 {
-			name = part[:i]
-			// parse q-value (only if it matches the standard ";q=0.x" form)
-			for _, param := range strings.Split(part[i+1:], ";") {
-				param = strings.TrimSpace(param)
-				if rest, ok := strings.CutPrefix(param, "q="); ok {
-					if parsed, err := strconv.ParseFloat(rest, 64); err == nil {
-						q = parsed
-					}
+		if semi := strings.IndexByte(part, ';'); semi >= 0 {
+			enc = strings.TrimSpace(part[:semi])
+			params := strings.TrimSpace(part[semi+1:])
+			if strings.HasPrefix(params, "q=") {
+				if parsedQ, err := strconv.ParseFloat(params[2:], 64); err == nil {
+					q = parsedQ
 				}
 			}
+		} else {
+			enc = part
 		}
-
-		p, ok := priority[strings.TrimSpace(name)]
-		if !ok || q <= 0 {
-			continue
-		}
-
-		if q > bestQ || (q == bestQ && p > priority[best]) {
-			best, bestQ = strings.TrimSpace(name), q
+		if q > 0 {
+			parsed = append(parsed, qval{enc: enc, q: q})
+		} else {
+			if refused == nil {
+				refused = make(map[string]bool)
+			}
+			refused[enc] = true
 		}
 	}
 
+	// First pass: find highest-q match among supported encodings.
+	// When q values are equal (e.g. "gzip, deflate, br"), give priority to br.
+	best := ""
+	bestQ := -1.0
+	for _, p := range parsed {
+		if refused[p.enc] {
+			continue
+		}
+		switch p.enc {
+		case "br":
+			if p.q >= bestQ {
+				best = "br"
+				bestQ = p.q
+			}
+		case "gzip":
+			// br has higher priority on tie
+			if p.q > bestQ || (p.q == bestQ && best != "br") {
+				best = "gzip"
+				bestQ = p.q
+			}
+		case "*":
+			if best == "" && p.q > 0 {
+				if !refused["br"] {
+					best = "br"
+					bestQ = p.q
+				} else if !refused["gzip"] {
+					best = "gzip"
+					bestQ = p.q
+				}
+			}
+		}
+	}
 	return best
 }
 
-// handleStatic serves files from h.staticDir with binary-level compression:
+// HandleStatic serves files from h.staticDir with binary-level compression:
 // brotli for clients that accept it, gzip as the common fallback, and the raw
 // file otherwise (including Range/conditional requests).
-func (h *Handler) handleStatic(e *core.RequestEvent) error {
-	name := strings.TrimPrefix(e.Request.PathValue("path"), "/")
+// If the filename contains a valid content hash (generated via hashfs), it serves
+// with immutable caching headers (Cache-Control: public, max-age=31536000, immutable)
+// and handles fast ETag/If-None-Match revalidation.
+func (h *Handler) HandleStatic(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(getRouteParam(r, "path"), "/")
 	if name == "" ||
 		strings.Contains(name, "..") ||
 		strings.HasPrefix(name, "\\") ||
 		filepath.IsAbs(name) {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "static file not found"})
+		writeError(w, http.StatusNotFound, "static file not found")
+		return
+	}
+
+	baseName, hash := hashfs.ParseName(name)
+	isHashed := hash != ""
+	if isHashed {
+		name = baseName
 	}
 
 	fullPath := filepath.Join(h.staticDir, filepath.FromSlash(name))
 
 	// Make sure the resolved path cannot escape the static directory even with
-	// odd inputs (we already rejected ".."; this additionally resolves symlinks
-	// so a link inside static/ cannot point outside of it).
+	// odd inputs.
 	resolved, err := filepath.Abs(fullPath)
 	if err != nil {
-		return fmt.Errorf("resolve static path %q: %w", fullPath, err)
+		http.Error(w, fmt.Sprintf("resolve static path %q: %v", fullPath, err), http.StatusInternalServerError)
+		return
 	}
 	if !pathWithinDir(resolved, h.staticDirAbs) {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "static file not found"})
+		writeError(w, http.StatusNotFound, "static file not found")
+		return
 	}
 
 	fi, err := os.Stat(resolved)
-	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "static file not found"})
-	}
-	if fi.IsDir() {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "static file not found"})
+	if err != nil || fi.IsDir() {
+		writeError(w, http.StatusNotFound, "static file not found")
+		return
 	}
 
-	e.Response.Header().Set("Cache-Control", staticCacheControl)
-	e.Response.Header().Add("Vary", "Accept-Encoding")
+	w.Header().Add("Vary", "Accept-Encoding")
+	if isHashed {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("ETag", `"`+hash+`"`)
+		if inm := r.Header.Get("If-None-Match"); inm != "" {
+			trimmed := strings.Trim(inm, `"`)
+			if trimmed == hash || strings.HasPrefix(trimmed, hash+"-") {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+	} else {
+		w.Header().Set("Cache-Control", staticCacheControl)
+	}
 
-	// Shared with FileFS: set Last-Modified on every response so conditional
-	// GETs work for both the compressed and raw serving paths.
-	//
-	// validator is truncated to whole seconds to match http.TimeFormat, which
-	// drops fractional seconds. Comparing If-Modified-Since against the full
-	// precision mod would let a client that echoes the header back receive
-	// 200 OK instead of 304 (fractional part makes mod strictly after t).
 	mod := fi.ModTime().UTC()
 	validator := mod.Truncate(time.Second)
-	e.Response.Header().Set("Last-Modified", validator.Format(http.TimeFormat))
+	w.Header().Set("Last-Modified", validator.Format(http.TimeFormat))
 
-	// Small files, unknown encodings and Range requests are served raw through
-	// the existing FileFS path (stdlib http.ServeContent handles the details).
-	enc := negotiateEncoding(e.Request)
+	enc := negotiateEncoding(r)
 	if enc == "" || fi.Size() < staticMinCompressSize ||
-		e.Request.Header.Get("Range") != "" {
-		return h.serveRawStatic(e, name)
+		r.Header.Get("Range") != "" {
+		h.serveRawStaticHTTP(w, r, name)
+		return
 	}
 
 	encoded, err := encodeStatic(resolved, fi)
 	if err != nil {
-		return err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	var body []byte
@@ -203,15 +257,14 @@ func (h *Handler) handleStatic(e *core.RequestEvent) error {
 		body = encoded.gzip
 	}
 	if body == nil {
-		// file is inside the min-size threshold for a variant; serve raw
-		return h.serveRawStatic(e, name)
+		h.serveRawStaticHTTP(w, r, name)
+		return
 	}
 
-	// Conditional GET support (Last-Modified), mirrors ServeContent behavior.
-	if ims := e.Request.Header.Get("If-Modified-Since"); ims != "" {
+	if ims := r.Header.Get("If-Modified-Since"); ims != "" {
 		if t, parseErr := http.ParseTime(ims); parseErr == nil && !validator.After(t) {
-			e.Response.WriteHeader(http.StatusNotModified)
-			return nil
+			w.WriteHeader(http.StatusNotModified)
+			return
 		}
 	}
 
@@ -220,19 +273,27 @@ func (h *Handler) handleStatic(e *core.RequestEvent) error {
 		ct = "application/octet-stream"
 	}
 
-	e.Response.Header().Set("Content-Type", ct)
-	e.Response.Header().Set("Content-Encoding", enc)
-	e.Response.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	e.Response.WriteHeader(http.StatusOK)
-
-	if _, err := e.Response.Write(body); err != nil {
-		return fmt.Errorf("write static file %q: %w", name, err)
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Encoding", enc)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if isHashed {
+		w.Header().Set("ETag", fmt.Sprintf(`"%s-%s"`, hash, enc))
 	}
+	w.WriteHeader(http.StatusOK)
+
+	_, _ = w.Write(body)
+}
+
+func (h *Handler) handleStatic(e *core.RequestEvent) error {
+	h.HandleStatic(e.Response, e.Request)
 	return nil
 }
 
+func (h *Handler) serveRawStaticHTTP(w http.ResponseWriter, r *http.Request, name string) {
+	http.ServeFileFS(w, r, os.DirFS(h.staticDir), name)
+}
+
 func (h *Handler) serveRawStatic(e *core.RequestEvent, name string) error {
-	// FileFS handles Last-Modified, Content-Type and If-Modified-Since.
 	return e.FileFS(os.DirFS(h.staticDir), name)
 }
 
@@ -251,8 +312,5 @@ func pathWithinDir(resolved, dirAbs string) bool {
 	if err != nil {
 		return false
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return false
-	}
-	return true
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
