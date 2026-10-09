@@ -68,6 +68,7 @@ This master document synthesizes all previous planning and architectural evaluat
 │   │   ├── jobs.go                # DB scrape_job lifecycle tracking
 │   │   ├── artist_updates.go      # Artist listener DB updates & event publish
 │   │   └── metrics.go             # Worker throughput metrics
+│   ├── fetcher/                   # Retry layer with per-request timeouts & backoff
 │   ├── spotify/                   # Scraping provider implementations
 │   ├── messaging/                 # JetStream stream definitions & schemas
 │   ├── quota/                     # Multi-provider quota checkers & preflight
@@ -104,7 +105,7 @@ The application embeds NATS Server v2.14.4 with persistent JetStream storage:
 - [x] Fix multi-format release date sorting in songs page.
 - [x] Research and synthesize The Tao of Datastar, Northstar, and Toolbelt.
 - [x] Unify all previous `.md` plan files into this single master document.
-- [x] Remove obsolete plan files (`implementation-plan.md`, `listenledger-pocketbase-to-managed-appwrite-migration-plan.md`, `free-container-hosting-research.md`).
+- [x] Remove obsolete plan files (`implementation-plan.md`, `listenledger-pocketbase-to-managed-appwrite-migration-plan.md`).
 - [x] Delete obsolete legacy templates and server wrappers (`internal/server/`, legacy HTML stubs).
 
 ### Phase 2: Tao of Datastar & Frontend Alignment (Completed)

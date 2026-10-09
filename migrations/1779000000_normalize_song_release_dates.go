@@ -42,8 +42,16 @@ func normalizeAllSongReleaseDates(app core.App) error {
 			continue
 		}
 
-		// Already in YYYY-MM-DD format? Skip.
+		// Already in YYYY-MM-DD format? Persist the trimmed form if the
+		// stored value differs (e.g. " 2024-05-10 "), then skip.
 		if _, err := time.Parse("2006-01-02", raw); err == nil {
+			if raw != r.GetString("release_date") {
+				r.Set("release_date", raw)
+				if err := app.Save(r); err != nil {
+					return fmt.Errorf("failed to update song %s: %w", r.Id, err)
+				}
+				converted++
+			}
 			continue
 		}
 

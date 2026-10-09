@@ -19,14 +19,19 @@ func init() {
 		}
 		return nil
 	}, func(app core.App) error {
-		for _, name := range []string{"albums", "songs"} {
+		names := []string{"albums", "songs"}
+		collections := make([]*core.Collection, 0, len(names))
+		for _, name := range names {
 			collection, err := app.FindCollectionByNameOrId(name)
 			if err != nil {
 				return fmt.Errorf("%s collection not found during rollback: %w", name, err)
 			}
-			collection.RemoveIndex("idx_" + name + "_title_artist_unique")
+			collections = append(collections, collection)
+		}
+		for i, collection := range collections {
+			collection.RemoveIndex("idx_" + names[i] + "_title_artist_unique")
 			if err := app.Save(collection); err != nil {
-				return fmt.Errorf("failed to remove unique index for %s: %w", name, err)
+				return fmt.Errorf("failed to remove unique index for %s: %w", names[i], err)
 			}
 		}
 		return nil

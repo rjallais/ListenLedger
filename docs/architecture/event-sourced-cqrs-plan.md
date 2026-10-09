@@ -66,13 +66,13 @@ Envelope (RON for domain events): `event_id, aggregate_type, aggregate_id, seq, 
 ### Phase 1 — `ledger.db` instant writes + outbox relay
 * `internal/ledger/ledger.go`: open `LEDGER_DB_PATH` (default `<dataDir>/ledger.db`), apply `toolbelt/db` pragmas, `MigrationsFromFS` for `events(outbox: id, event_rowid, subject, published_at)`, `idempotency(request_id PK, response)`, `snapshots`, `projection_checkpoints`.
 * Rewrite `queueArtistRefresh` (`handlers/artist_helpers.go:471`), `HandleQueueRetry` (`handlers/queue.go`), CRUD `POST`s: validate -> one Tx -> `202`. Delete manual rollback helpers.
-* `internal/app/outbox.go`: claim-unpublished -> `js.Publish(MsgID=request_id)` -> mark published. Crash-safe. Flag-gated `ES_ENABLED=false` default.
+* `internal/app/outbox.go`: claim-unpublished -> `js.Publish(MsgID=event_id)` -> mark published (event_id per event avoids dedup collisions across events sharing a request; request_id stays the command-idempotency key). Crash-safe. Flag-gated `ES_ENABLED=false` default.
 * `cmd/safebackup`: include `ledger.db` (`VACUUM INTO`).
 
 ### Phase 2 — Worker as saga (keep tuning)
 * `worker/processing.go:processRequest`: replace `app.Save(artist/job)` with event appends. Keep `fetchTimeout` table, `ErrQuotaExhausted/ErrRateLimited` NAK paths, Apify preflight, `retryDelay` BackOff, `inProgressLoop` heartbeats, `dispatch.go` channel + `watchAllGroups` drain.
 * `worker/jobs.go` mutations -> `Scrape*` events; `sweepStaleJobs` -> emits `ScrapeFailed{stale_timeout}`; `artist_updates.go` recalc -> saga emitting `ArtistTotalSongsRecalculated`; delete `correlation/`.
-* DLQ: `Term` + `ScrapeDeadLettered` with metadata (keep `dlq.go` format).
+* DLQ: `ScrapeDeadLettered` (durable fact on the job stream) supplements the `SCRAPE_DLQ` message (operational envelope, keep `dlq.go` format). Order: publish DLQ -> `Term` the source message -> mark failed + record events. DLQ-publish failure NAKs for redelivery (recovery behavior preserved).
 
 ### Phase 3 — Projectors (dual-write window)
 * `internal/projection/sqlite/`: idempotent `INSERT ... ON CONFLICT(event_id) DO NOTHING` into `artist_view (materialized total_songs rank)`, `queue_view`, `batch_view`; checkpoint per projector.
@@ -81,7 +81,7 @@ Envelope (RON for domain events): `event_id, aggregate_type, aggregate_id, seq, 
 
 ### Phase 4 — Reads + SSE cutover
 * `internal/query/`: replace `app.RecordQuery("artists"/"scrape_jobs")` in `handlers/*`, `sse.go:73`, `batch_progress.go:180`, `queue.go:505` with view queries.
-* SSE: `Replay(aggregate_id from SQLite) + Subscribe(domain.events.*)` -> `PatchElementTempl` (bee `ReplayAndSubscribe` shape, our storage). `batch_progress.go` maps -> `Batch` aggregate (restart-safe).
+* SSE: `Replay(aggregate_id from SQLite) + Subscribe(domain.events.*)` -> `PatchElementTempl` (bee `ReplayAndSubscribe` shape, our storage). Handoff is gap-free: activate the live subscription before replay, buffer live events during replay, then apply the buffer from the replay cursor forward so events committed mid-replay are not missed. `batch_progress.go` maps -> `Batch` aggregate (restart-safe).
 * `cmd/update_listeners|seed|backfill_song_artists`: go through commands or direct appends.
 
 ### Phase 5 — PB retirement
