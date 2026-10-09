@@ -37,22 +37,22 @@ templ SongBatchCell(batchSeq, batchPos int) {
 }
 
 templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort string) {
+	{{
+		ind := "_recent_" + songID
+		indSignal := "$" + ind
+		bind := "_song_recent_" + songID
+	}}
 	<td class="text-center">
 		<input
 			type="checkbox"
-			class="checkbox checkbox-sm checkbox-primary"
+			class="checkbox checkbox-sm checkbox-primary cursor-pointer"
 			aria-label={ fmt.Sprintf("Mark %s as recently added", songTitle) }
 			checked?={ isRecent }
-			data-on:change={ songRecentToggleAction(songID, playlistSort) }
+			data-song-id={ songID }
+			data-indicator={ ind }
+			data-bind={ bind }
+			data-attr:disabled={ indSignal }
+			data-on:change={ "@post('/api/songs/" + url.PathEscape(songID) + "/recent/' + $" + bind + " + '?playlist_sort=" + url.QueryEscape(playlistSort) + "')" }
 		/>
 	</td>
-}
-
-func songRecentToggleAction(songID, playlistSort string) string {
-	escapedSongID := url.PathEscape(songID)
-	query := url.Values{"playlist_sort": []string{playlistSort}}.Encode()
-	return fmt.Sprintf(
-		"if (evt.target.checked) { @post('/api/songs/%s/recent/true?%s') } else { @post('/api/songs/%s/recent/false?%s') }",
-		escapedSongID, query, escapedSongID, query,
-	)
 }
