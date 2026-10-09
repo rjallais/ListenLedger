@@ -180,7 +180,10 @@ func RenderDatastarWithConfig(w http.ResponseWriter, r *http.Request, cfg *confi
 // _feedbackVisible false, and the fresh notice must show even then.
 func patchFeedbackNotice(sse *datastar.ServerSentEventGenerator, c templ.Component) error {
 	_ = sse.PatchSignals([]byte(`{"_feedbackVisible": true}`))
-	return sse.PatchElementTempl(c)
+	if err := sse.PatchElementTempl(c); err != nil {
+		return fmt.Errorf("patch feedback notice: %w", err)
+	}
+	return nil
 }
 
 // writeJSON writes a JSON response with status code and sets Content-Type.

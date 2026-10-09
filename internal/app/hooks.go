@@ -43,7 +43,7 @@ func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase,
 		// Off the write path: the saga lookup below waits up to 2s on a
 		// scrape_jobs query, which must never block the record save that
 		// triggered this hook.
-		go func(snap publishSnapshot, requestID string) {
+		go func(ctx context.Context, snap publishSnapshot, requestID string) {
 			if requestID == "" {
 				requestID = correlation.Pop(snap.artistID)
 			} else {
@@ -84,7 +84,7 @@ func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase,
 			} else if requestID != "" {
 				logger.Debug("[hooks] published artist.updated", "artist_id", snap.artistID, "request_id", requestID)
 			}
-		}(snap, requestID)
+		}(ctx, snap, requestID)
 	}
 
 	app.OnRecordAfterUpdateSuccess("artists").BindFunc(func(e *core.RecordEvent) error {
