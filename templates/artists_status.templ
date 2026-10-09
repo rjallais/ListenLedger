@@ -1,26 +1,49 @@
 package templates
 
-// ListStatusDropdown renders an interactive dropdown to change list status.
+import "net/url"
+
+// ListStatusDropdown renders an Open Props / OPUI select to change list status.
+//
+// Two-way bound: data-bind mirrors the selection into a signal (initialised
+// from the rendered option), and the change handler reads the signal — no
+// evt.target DOM reads. Backend contract unchanged (status stays in the URL).
 templ ListStatusDropdown(artistID, currentStatus string) {
-	<div class="dropdown dropdown-end">
-		<div tabindex="0" role="button" class="btn btn-xs btn-ghost gap-1">
-			@ArtistBadge(listStatusBadgeProps(currentStatus))
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-			</svg>
-		</div>
-		<ul tabindex="0" class="dropdown-content z-50 menu p-2 shadow-xl bg-base-100 border border-base-300 rounded-box w-48">
-			for _, option := range listStatusOptions(artistID, currentStatus) {
-				@ListStatusOption(option)
-			}
-		</ul>
-	</div>
+	{{
+		ind := "_updating_" + artistID
+		indSignal := "$" + ind
+		bind := "_status_" + artistID
+	}}
+	<select
+		class="select select-xs font-medium cursor-pointer status-select"
+		data-status={ currentStatus }
+		data-indicator={ ind }
+		data-bind={ bind }
+		data-attr:disabled={ indSignal }
+		data-on:change={ "@post('/api/artists/" + url.PathEscape(artistID) + "/status/' + $" + bind + ")" }
+		aria-label="Change status"
+	>
+		<option value="included" selected?={ currentStatus == "included" }>Included</option>
+		<option value="recently_added" selected?={ currentStatus == "recently_added" }>Recently Added</option>
+		<option value="not_added" selected?={ currentStatus == "not_added" }>Not Added</option>
+		<option value="waiting" selected?={ currentStatus == "waiting" }>Move to Queue</option>
+	</select>
 }
 
 templ ListStatusOption(option artistStatusOption) {
+	{{
+		ind := "_updating_" + option.ArtistID
+		indSignal := "$" + ind
+		notIndSignal := "!$" + ind
+	}}
 	<li class={ option.ItemClass }>
-		<button class={ option.ButtonClass } data-on:click={ option.Action }>
-			<span class={ option.DotClass }></span>
+		<button
+			class={ option.ButtonClass }
+			data-indicator={ ind }
+			data-attr:disabled={ indSignal }
+			data-on:click={ option.Action }
+		>
+			<span data-show={ indSignal } class="loading loading-spinner loading-xs" style="display: none"></span>
+			<span data-show={ notIndSignal } class={ option.DotClass }></span>
 			{ option.Label }
 		</button>
 	</li>
@@ -29,7 +52,7 @@ templ ListStatusOption(option artistStatusOption) {
 templ ArtistBadge(props artistBadgeProps) {
 	<span class={ props.Classes }>
 		if props.ShowIcon {
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d={ props.IconPath }></path>
 			</svg>
 		}
