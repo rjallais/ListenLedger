@@ -5,7 +5,7 @@ import "fmt"
 // AlbumSectionLazy renders a collapsible album section with lazy loading.
 templ AlbumSectionLazy(status, badge, title, badgeColor string, count int) {
 	<div class={ "collapse collapse-arrow border", sectionBorderClass(badgeColor) }>
-		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		<input type="checkbox" class="album-section-toggle" data-status={ status } data-preserve-attr="checked" aria-label={ "Toggle " + title + " section" }/>
 		@AlbumSectionTitle(badge, title, badgeColor, count)
 		<div class="collapse-content">
 			@AlbumSectionTable(status)
@@ -40,12 +40,19 @@ templ AlbumSectionTable(status string) {
 }
 
 templ AlbumSectionLoadButton(status string) {
+	{{
+		ind := "_loading_albums_" + status
+		indSignal := "$" + ind
+	}}
 	<div id={ "load-more-" + status } class="mt-4 text-center">
 		<button
 			class="btn btn-outline btn-sm"
+			data-indicator={ ind }
+			data-attr:disabled={ indSignal }
 			data-on:click={ albumsStatusURL(status, 0) }
 		>
-			Load Albums
+			<span data-show={ indSignal } class="loading loading-spinner loading-xs" style="display: none"></span>
+			<span>Load Albums</span>
 		</button>
 	</div>
 }
@@ -53,7 +60,7 @@ templ AlbumSectionLoadButton(status string) {
 // AlbumSectionWaiting renders the waiting section with one-at-a-time loading.
 templ AlbumSectionWaiting(status, badge, title string, count int) {
 	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
-		<input type="checkbox" class="album-section-toggle" data-status={ status } aria-label={ "Toggle " + title + " section" }/>
+		<input type="checkbox" class="album-section-toggle" data-status={ status } data-preserve-attr="checked" aria-label={ "Toggle " + title + " section" }/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-ghost">{ badge }</span>
 			<span>{ title } ({ fmt.Sprintf("%d", count) })</span>
@@ -78,9 +85,14 @@ templ AlbumSectionWaitingLoadButton() {
 	<div id="load-more-waiting" class="mt-4">
 		<button
 			class="btn btn-primary btn-sm gap-2"
+			data-indicator:_loading_waiting
+			data-attr:disabled="$_loading_waiting"
 			data-on:click={ albumsWaitingURL(0) }
 		>
-			@IconEye("h-4 w-4")
+			<span data-show="$_loading_waiting" class="loading loading-spinner loading-xs" style="display: none"></span>
+			<span data-show="!$_loading_waiting">
+				@IconEye("h-4 w-4")
+			</span>
 			Show First Album
 		</button>
 	</div>
@@ -117,9 +129,14 @@ templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
 		<div id="load-more-waiting">
 			<button
 				class="btn btn-primary btn-sm gap-2"
+				data-indicator:_loading_next
+				data-attr:disabled="$_loading_next"
 				data-on:click={ albumsWaitingURL(nextOffset) }
 			>
-				@IconDoubleArrow("h-4 w-4")
+				<span data-show="$_loading_next" class="loading loading-spinner loading-xs" style="display: none"></span>
+				<span data-show="!$_loading_next">
+					@IconDoubleArrow("h-4 w-4")
+				</span>
 				Show Next Album ({ fmt.Sprintf("%d", nextOffset) } shown)
 			</button>
 		</div>
@@ -131,13 +148,21 @@ templ AlbumLoadMoreWaiting(nextOffset int, hasMore bool) {
 }
 
 templ AlbumLoadMoreNonWaiting(status string, nextOffset int, hasMore bool) {
+	{{
+		ind := "_loading_more_" + status
+		indSignal := "$" + ind
+	}}
 	if hasMore {
-		<div id={ "load-more-" + status }>
+		<div id={ "load-more-" + status } class="text-center">
 			<button
 				class="btn btn-outline btn-sm"
+				data-indicator={ ind }
+				data-attr:disabled={ indSignal }
+				data-on-intersect__once={ albumsStatusURL(status, nextOffset) }
 				data-on:click={ albumsStatusURL(status, nextOffset) }
 			>
-				Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)
+				<span data-show={ indSignal } class="loading loading-spinner loading-xs" style="display: none"></span>
+				<span>Load More ({ fmt.Sprintf("%d", nextOffset) } loaded)</span>
 			</button>
 		</div>
 	} else {
