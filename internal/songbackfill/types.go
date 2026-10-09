@@ -63,13 +63,13 @@ type Resolution struct {
 	Notes                    []string           `json:"notes,omitempty"`
 }
 
-func (r Resolution) Approved(minimumConfidence float64) bool {
+func (r *Resolution) Approved(minimumConfidence float64) bool {
 	return r.Action == ActionUpdate &&
 		r.UpdatedArtistSpotifyIDs != "" &&
 		r.Confidence >= minimumConfidence
 }
 
-func (r Resolution) NamePrefillApproved(minimumConfidence float64) bool {
+func (r *Resolution) NamePrefillApproved(minimumConfidence float64) bool {
 	return r.Action == ActionUpdateNameOnly &&
 		r.UpdatedArtistName != "" &&
 		r.UpdatedArtistName != r.OriginalArtistName &&
