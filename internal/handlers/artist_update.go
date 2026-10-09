@@ -46,11 +46,19 @@ func (h *Handler) HandleUpdateListStatus(w http.ResponseWriter, r *http.Request)
 	// so a crash leaves a replayable fact, never a phantom row flip.
 	if h.artistRepo != nil {
 		agg, err := h.artistRepo.Load(ctx, artistID)
-		if err != nil && errors.Is(err, eventsourcing.ErrStreamNotFound) {
-			// Seed with the pre-update status: record still carries
-			// oldStatus here, and seeding with it keeps ChangeListStatus
-			// from collapsing to a no-op with the transition lost.
-			agg, _ = artist.NewArtist(artistID, record.GetString("name"), record.GetString("spotify_id"), record.GetString("genre_group"), oldStatus)
+		if err != nil {
+			if !errors.Is(err, eventsourcing.ErrStreamNotFound) {
+				log.Printf("[artist_update] load artist %s for status update: %v", artistID, err)
+			} else {
+				// Seed with the pre-update status: record still carries
+				// oldStatus here, and seeding with it keeps ChangeListStatus
+				// from collapsing to a no-op with the transition lost.
+				agg, err = artist.NewArtist(artistID, record.GetString("name"), record.GetString("spotify_id"), record.GetString("genre_group"), oldStatus)
+				if err != nil {
+					log.Printf("[artist_update] seed artist %s for status update: %v", artistID, err)
+					agg = nil
+				}
+			}
 		}
 		if agg != nil {
 			if err := agg.ChangeListStatus(newStatus, ""); err != nil {
@@ -60,14 +68,16 @@ func (h *Handler) HandleUpdateListStatus(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	} else if h.db != nil {
-		_ = h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("UPDATE artists SET list_status = ? WHERE id = ?;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, newStatus)
 			stmt.BindText(2, artistID)
 			_, err := stmt.Step()
 			return err
-		})
+		}); err != nil {
+			log.Printf("[artist_update] SQLite list_status update for %s failed: %v", artistID, err)
+		}
 	}
 
 	record.Set("list_status", newStatus)

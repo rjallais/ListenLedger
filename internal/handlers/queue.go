@@ -293,8 +293,16 @@ func (h *Handler) ReconcileQueueOnStartup(ctx context.Context) error {
 func (h *Handler) expireStaleQueuedJobs(ctx context.Context, stats *queueRetryStats) error {
 	cutoff := time.Now().UTC().Add(-queuedJobExpiry).Format("2006-01-02 15:04:05.000Z")
 
+	// Dual-write: repair the SQLite read model and the PocketBase compat
+	// rows. Counters below sum per-store repairs (a job mirrored in both
+	// stores counts once per store it was repaired in).
 	if h.db != nil {
-		return h.expireStaleQueuedJobsSQLite(ctx, cutoff, stats)
+		if err := h.expireStaleQueuedJobsSQLite(ctx, cutoff, stats); err != nil {
+			return err
+		}
+	}
+	if h.app == nil {
+		return nil
 	}
 
 	records := make([]*core.Record, 0)
@@ -452,6 +460,8 @@ func (h *Handler) resetOrphanPendingArtists(ctx context.Context, stats *queueRet
 			return err
 		}
 		h.recordFetchStatusConvergence(ctx, ids, "idle")
+	}
+	if h.app == nil {
 		return nil
 	}
 	exp := dbx.NewExp(
@@ -488,6 +498,8 @@ func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetrySta
 			return err
 		}
 		h.recordFetchStatusConvergence(ctx, ids, "failed")
+	}
+	if h.app == nil {
 		return nil
 	}
 	exp := dbx.NewExp(

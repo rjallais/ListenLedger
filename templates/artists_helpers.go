@@ -227,11 +227,22 @@ func batchQueuedSummary(queued int) string {
 
 func batchPriorityStats(stats map[string]int) []batchPriorityStat {
 	return []batchPriorityStat{
-		{Label: "P0 (queued)", Count: intString(stats["P0Queued"])},
-		{Label: "P1-P2 (recent)", Count: intString(stats["P1RockRecent"] + stats["P2OtherRecent"])},
-		{Label: "P3-P4 (not added)", Count: intString(stats["P3RockNotAdded"] + stats["P4OtherNotAdded"])},
-		{Label: "P5-P6 (included)", Count: intString(stats["P5RockIncluded"] + stats["P6OtherIncluded"])},
+		{Label: "P0 (queued)", Count: intString(prioCount(stats, "P0Queued", "P0_Queued"))},
+		{Label: "P1-P2 (recent)", Count: intString(prioCount(stats, "P1RockRecent", "P1_RockRecent") + prioCount(stats, "P2OtherRecent", "P2_OtherRecent"))},
+		{Label: "P3-P4 (not added)", Count: intString(prioCount(stats, "P3RockNotAdded", "P3_RockNotAdded") + prioCount(stats, "P4OtherNotAdded", "P4_OtherNotAdded"))},
+		{Label: "P5-P6 (included)", Count: intString(prioCount(stats, "P5RockIncluded", "P5_RockIncluded") + prioCount(stats, "P6OtherIncluded", "P6_OtherIncluded"))},
 	}
+}
+
+// prioCount reads a persisted priority-bucket count accepting both the
+// compact key (P0Queued) written since the Tier rename and the legacy
+// underscore key (P0_Queued) in rows persisted before it. Prefers the compact
+// key when both are present so a batch is never double-counted.
+func prioCount(stats map[string]int, compact, legacy string) int {
+	if v, ok := stats[compact]; ok {
+		return v
+	}
+	return stats[legacy]
 }
 
 func batchIDText(batchID string) string {

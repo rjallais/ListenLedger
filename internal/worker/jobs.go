@@ -669,15 +669,20 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 			continue
 		}
 		// Event first so a crash leaves a fact, not a phantom row flip.
-		if err := w.recordJobEvent(ctx, requestID, artistID, func(j *scrapejob.Job) error {
-			_, _, err := j.RecordFailed("stale_timeout", eventsourcing.Correlation{RequestID: requestID})
-			return err
-		}); err != nil {
-			if w.isRequestAlreadySucceeded(ctx, requestID) {
+		// With SQLite configured, markStaleJobsSQLite already recorded this
+		// fact; appending again would double-record one timeout, so the PB
+		// pass only mirrors the row below.
+		if w.db == nil {
+			if err := w.recordJobEvent(ctx, requestID, artistID, func(j *scrapejob.Job) error {
+				_, _, err := j.RecordFailed("stale_timeout", eventsourcing.Correlation{RequestID: requestID})
+				return err
+			}); err != nil {
+				if w.isRequestAlreadySucceeded(ctx, requestID) {
+					continue
+				}
+				log.Printf("[worker] Warning: job event stale-timeout for request %s not logged: %v", requestID, err)
 				continue
 			}
-			log.Printf("[worker] Warning: job event stale-timeout for request %s not logged: %v", requestID, err)
-			continue
 		}
 
 		updated, err := w.markSingleStaleJob(ctx, job, cutoff)

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -27,14 +28,20 @@ var adminCheckpointNames = []string{
 func (h *Handler) HandleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	status := map[string]any{"status": "ok"}
+	degraded := false
 
 	if h.store != nil {
-		if lag, err := h.store.UnpublishedCount(ctx); err == nil {
+		if lag, err := h.store.UnpublishedCount(ctx); err != nil {
+			status["outbox_lag_error"] = err.Error()
+			degraded = true
+		} else {
 			status["outbox_lag"] = lag
 		}
 		checkpoints := make(map[string]int64)
 		for _, name := range adminCheckpointNames {
-			if pos, err := h.store.GetCheckpoint(ctx, name); err == nil && pos > 0 {
+			if pos, err := h.store.GetCheckpoint(ctx, name); err != nil {
+				degraded = true
+			} else if pos > 0 {
 				checkpoints[name] = pos
 			}
 		}
@@ -42,10 +49,16 @@ func (h *Handler) HandleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.db != nil {
-		if states, err := sagaInstanceStates(ctx, h); err == nil {
+		if states, err := sagaInstanceStates(ctx, h); err != nil {
+			status["sagas_error"] = err.Error()
+			degraded = true
+		} else {
 			status["sagas"] = states
 		}
-		if snap, found := h.readActiveBatchSnapshot(ctx); found {
+		if snap, found, err := h.readActiveBatchSnapshotChecked(ctx); err != nil {
+			status["batch_error"] = err.Error()
+			degraded = true
+		} else if found {
 			status["batch"] = map[string]any{
 				"id":        snap.ID,
 				"total":     snap.Total,
@@ -55,6 +68,9 @@ func (h *Handler) HandleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if degraded {
+		status["status"] = "degraded"
+	}
 	_ = writeJSON(w, http.StatusOK, status)
 }
 
@@ -76,22 +92,27 @@ func sagaInstanceStates(ctx context.Context, h *Handler) (map[string]int64, erro
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("count saga instance states: %w", err)
 	}
 	return states, nil
 }
 
-// readActiveBatchSnapshot returns the active batch for status polling. The
-// stored path reads the projection directly; without a store there is none.
-func (h *Handler) readActiveBatchSnapshot(ctx context.Context) (batchProgressSnapshot, bool) {
+// readActiveBatchSnapshotChecked returns the active batch for status polling,
+// distinguishing a failed read (err) from no active batch (!found). The stored
+// path reads the projection directly; without a store there is none.
+func (h *Handler) readActiveBatchSnapshotChecked(ctx context.Context) (batchProgressSnapshot, bool, error) {
 	if h.batchStore != nil {
 		snap, found, err := h.batchStore.ActiveSnapshot(ctx)
-		if err != nil || !found {
-			return batchProgressSnapshot{}, false
+		if err != nil {
+			return batchProgressSnapshot{}, false, err
 		}
-		return batchSnapshotFromStore(snap), true
+		if !found {
+			return batchProgressSnapshot{}, false, nil
+		}
+		return batchSnapshotFromStore(snap), true, nil
 	}
-	return h.getActiveBatchSnapshot(ctx)
+	snap, found := h.getActiveBatchSnapshot(ctx)
+	return snap, found, nil
 }
 
 func (h *Handler) handleAdminStatus(e *core.RequestEvent) error {

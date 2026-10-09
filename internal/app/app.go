@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/pocketbase"
@@ -78,19 +79,27 @@ func Run(ctx context.Context) error {
 		// and reconciler must never observe a closed SQLite DB, and the relay
 		// must stop publishing before NATS drains.
 		bgCtx, cancelBG := context.WithCancel(ctx)
-		defer cancelBG()
 
 		// Outbox relay: publishes SQLite outbox rows (written transactionally
 		// with events) to JetStream DOMAIN_EVENTS. Catches migration backfill
 		// and any commit whose synchronous projection publish crashed.
 		relay := outbox.NewRelay(slog.Default(), sqliteDB, embeddedNATS.JS)
-		go relay.Run(bgCtx)
+		var bgWG sync.WaitGroup
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			relay.Run(bgCtx)
+		}()
 
 		// Saga orchestrator: refreshes durable saga_instances states from
 		// job streams (observability for scrapejob→artist sagas). Like the
 		// relay it is crash-safe: Tick derives everything, so restarts just
 		// re-converge on the next pass.
-		go saga.NewOrchestrator(sqliteDB).Run(bgCtx, 30*time.Second)
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			saga.NewOrchestrator(sqliteDB).Run(bgCtx, 30*time.Second)
+		}()
 
 		// Batch saga reconciler: converges durable batch progress without UI
 		// polling. Startup tick recovers batches whose artist.updated fanout
@@ -98,14 +107,20 @@ func Run(ctx context.Context) error {
 		// messages and failed CompleteArtist writes. Reconcile reads the
 		// SQLite read model (not ephemeral NATS) and logs each catch-up as
 		// a BatchArtistCompleted fact, so it is crash-safe.
-		go h.RunBatchReconciler(bgCtx, 5*time.Second)
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			h.RunBatchReconciler(bgCtx, 5*time.Second)
+		}()
 
 		// Self-heal crash orphans (pending artists without jobs, phantom
 		// queued rows older than stream retention) once at boot so the queue
 		// converges without a manual /api/queue/retry. Idempotent; runs
 		// async so it never blocks serving. Derived from the app context so
 		// shutdown cancels it promptly.
+		bgWG.Add(1)
 		go func() {
+			defer bgWG.Done()
 			rctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 			if err := h.ReconcileQueueOnStartup(rctx); err != nil {
@@ -113,8 +128,10 @@ func Run(ctx context.Context) error {
 			}
 		}()
 
+		bgWG.Add(1)
 		go func() {
-			wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer bgWG.Done()
+			wctx, cancel := context.WithTimeout(bgCtx, 15*time.Second)
 			defer cancel()
 			h.WarmupCache(wctx)
 		}()
@@ -125,8 +142,18 @@ func Run(ctx context.Context) error {
 			// shutdown budget, and close SQLite last so no goroutine can
 			// observe a closed database or publish during the drain.
 			cancelBG()
+			bgDone := make(chan struct{})
+			go func() {
+				bgWG.Wait()
+				close(bgDone)
+			}()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			select {
+			case <-bgDone:
+			case <-shutdownCtx.Done():
+				app.Logger().Warn("[app] background workers did not stop in time")
+			}
 			if err := embeddedNATS.Close(shutdownCtx); err != nil {
 				app.Logger().Warn("[nats] embedded NATS shutdown error", "err", err)
 			}

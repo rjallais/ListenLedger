@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
+	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/messaging"
 	"ListenLedger/templates"
@@ -84,6 +85,50 @@ func (h *Handler) patchBatchAndQueueProgress(ctx context.Context, patch ssePatch
 	h.patchLatestQueueStats(ctx, patch, logger)
 }
 
+// rankArtistPosition returns the (total, rank) of one artist among non-waiting
+// artists of its genre via two indexed counts: total peers, plus peers ranked
+// ahead (more listeners, or equal listeners with a smaller id — the same
+// tie-break as buildArtistRankMap). Used by per-event SSE patches to avoid a
+// full genre scan per event per connection.
+func (h *Handler) rankArtistPosition(ctx context.Context, genre string, listeners int, artistID string) (total, rank int, err error) {
+	if h.db == nil {
+		return 0, 0, fmt.Errorf("rankArtistPosition requires SQLite")
+	}
+	err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting';")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, genre)
+		hasRow, err := stmt.Step()
+		if err != nil || !hasRow {
+			return err
+		}
+		total = int(stmt.ColumnInt64(0))
+		return nil
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("count artists for genre %s: %w", genre, err)
+	}
+	err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep(`SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting'
+			AND (monthly_listeners > ? OR (monthly_listeners = ? AND id < ?));`)
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, genre)
+		stmt.BindInt64(2, int64(listeners))
+		stmt.BindInt64(3, int64(listeners))
+		stmt.BindText(4, artistID)
+		hasRow, err := stmt.Step()
+		if err != nil || !hasRow {
+			return err
+		}
+		rank = int(stmt.ColumnInt64(0)) + 1
+		return nil
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("rank artist %s for genre %s: %w", artistID, genre, err)
+	}
+	return total, rank, nil
+}
+
 // patchArtistElement fetches the latest artist state from DB and patches the card or table row.
 func (h *Handler) patchArtistElement(ctx context.Context, patch ssePatcher, logger *slog.Logger, artistID string) {
 	dbCtx, dbCancel := context.WithTimeout(ctx, 2*time.Second)
@@ -96,8 +141,18 @@ func (h *Handler) patchArtistElement(ctx context.Context, patch ssePatcher, logg
 	}
 
 	genre := record.GetString("genre_group")
-	rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
-	totalSongs := h.dynamicTotalSongs(dbCtx, record, rankCache)
+	var totalSongs int
+	if h.db != nil {
+		total, rank, rankErr := h.rankArtistPosition(dbCtx, genre, record.GetInt("monthly_listeners"), artistID)
+		if rankErr != nil {
+			logger.Debug("[sse] Failed to rank artist for patch", "artist_id", artistID, "error", rankErr)
+			return
+		}
+		totalSongs = rankedArtistTotalSongs(total, 0, rank-1)
+	} else {
+		rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
+		totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)
+	}
 	artist := artistFromRecord(record, totalSongs)
 
 	var comp templ.Component
@@ -287,7 +342,10 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	sub, err := h.subscribeArtistUpdates(ctx, patch, logger, &wg)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to subscribe: %v", err), http.StatusInternalServerError)
+		logger.Error("[sse] failed to subscribe to artist updates", "error", err)
+		patchMu.Lock()
+		_ = sse.ConsoleError(fmt.Errorf("failed to subscribe: %w", err))
+		patchMu.Unlock()
 		return
 	}
 

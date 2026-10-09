@@ -34,9 +34,12 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if spotify_id already exists
+	// Check if spotify_id already exists. The lookup must run against the
+	// store that receives the insert below (PocketBase): a PB row missing
+	// from the SQLite read model would otherwise pass the SQLite check and
+	// create a duplicate artist and event stream.
 	var existingName string
-	if h.db != nil {
+	if h.app == nil && h.db != nil {
 		err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("SELECT name FROM artists WHERE spotify_id = ? LIMIT 1;")
 			defer func() { _ = stmt.Reset() }()

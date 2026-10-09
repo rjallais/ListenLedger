@@ -345,7 +345,7 @@ func TestHandlers_CreateArtistWithAggregate(t *testing.T) {
 		"spotify_id":       {"5M52tdi3196eUebVv3bJbH"},
 		"genre_group":      {"rock_metal"},
 		"list_status":      {"included"},
-		"monthlyListeners": {"16000000"},
+		"monthly_listeners": {"16000000"},
 		"collection_songs": {"45"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/artists", strings.NewReader(formData.Encode()))
@@ -380,6 +380,9 @@ func TestHandlers_CreateArtistWithAggregate(t *testing.T) {
 	}
 	if agg.GenreGroup != "rock_metal" {
 		t.Errorf("expected aggregate genre rock_metal, got %s", agg.GenreGroup)
+	}
+	if agg.MonthlyListeners != 16000000 {
+		t.Errorf("expected aggregate monthly listeners 16000000, got %d", agg.MonthlyListeners)
 	}
 }
 
