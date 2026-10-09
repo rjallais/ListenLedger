@@ -9,113 +9,149 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/starfederation/datastar-go/datastar"
+
+	"ListenLedger/templates"
 )
 
-// handleRefresh triggers a refresh request for an artist.
-func (h *Handler) handleRefresh(e *core.RequestEvent) error {
-	ctx := e.Request.Context()
-	artistID := e.Request.PathValue("artistId")
+// HandleRefresh triggers a refresh request for an artist.
+func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	artistID := getRouteParam(r, "artistId")
 	if artistID == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "artist ID required"})
+		writeError(w, http.StatusBadRequest, "artist ID required")
+		return
 	}
 
-	if !h.hasAvailableQuota(ctx) {
-		return e.JSON(http.StatusTooManyRequests, map[string]string{
-			"error": "No scraping quota available. Please check /api/quota for details.",
-		})
+	if !h.hasAvailableQuota() {
+		writeError(w, http.StatusTooManyRequests, "No scraping quota available. Please check /api/quota for details.")
+		return
 	}
 
 	record, err := h.findArtistRecord(ctx, artistID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return e.JSON(http.StatusNotFound, map[string]string{"error": "artist not found"})
+			writeError(w, http.StatusNotFound, "artist not found")
+			return
 		}
 		log.Printf("[artist_refresh] findArtistRecord error: %v", err)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to lookup artist"})
+		writeError(w, http.StatusInternalServerError, "failed to lookup artist")
+		return
 	}
 
 	_, duplicate, err := h.queueArtistRefresh(ctx, record)
 	if err != nil {
 		log.Printf("[artist_refresh] queueArtistRefresh error: %v", err)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to queue refresh"})
+		writeError(w, http.StatusInternalServerError, "failed to queue refresh")
+		return
 	}
 	if duplicate {
 		log.Printf("[handlers] Duplicate refresh request ignored for artist %s", record.Id)
-		return respondArtistRefreshQueued(e, record.Id, "already_queued")
+		_ = respondArtistRefreshQueuedHTTP(w, r, record.Id, "already_queued")
+		return
 	}
 
-	return respondArtistRefreshQueued(e, record.Id, "queued")
+	_ = respondArtistRefreshQueuedHTTP(w, r, record.Id, "queued")
 }
 
-func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
+func (h *Handler) handleRefresh(e *core.RequestEvent) error {
+	h.HandleRefresh(e.Response, e.Request)
+	return nil
+}
+
+// HandleBatchRefresh triggers batch refresh workflow.
+func (h *Handler) HandleBatchRefresh(w http.ResponseWriter, r *http.Request) {
 	h.ensureBatchProgressSubscriber()
 
-	if err := e.Request.ParseForm(); err != nil {
+	if err := r.ParseForm(); err != nil {
 		log.Printf("[batch] ParseForm failed: %v", err)
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "invalid form data"})
+		writeError(w, http.StatusBadRequest, "invalid form data")
+		return
 	}
 
-	if snapshot, ok := h.resumableBatchRefreshSnapshot(e.Request.FormValue("batch_id")); ok {
-		return h.patchBatchRefreshState(e, snapshot)
+	if snapshot, ok := h.resumableBatchRefreshSnapshot(r.Context(), r.FormValue("batch_id")); ok {
+		_ = h.patchBatchRefreshStateHTTP(w, r, snapshot)
+		return
 	}
 
-	count, err := parseBatchRefreshCount(e.Request)
+	count, err := parseBatchRefreshCount(r)
 	if err != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
-	// Run the queueing workflow on a bounded server-side context so a client-side
-	// XHR abort (for example, browser navigation/retry) doesn't cancel the batch
-	// creation midway.
 	opCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// hasAvailableQuota is a best-effort gate: it checks whether any quota
-	// remains across all configured providers. It does NOT reserve capacity
-	// for the requested count because per-job reservation is infeasible —
-	// quota is consumed asynchronously by provider goroutine pools in the
-	// worker, and providers like local-headless and Browserless have no
-	// numeric credit API to reserve against.
-	//
-	// Authoritative quota enforcement happens downstream:
-	//   - Worker provider pools detect quota exhaustion via
-	//     spotify.ErrQuotaExhausted (triggered by HTTP 401/402/403/429 from
-	//     external providers).
-	//   - On exhaustion, the provider's pool shuts down and NAKs in-flight
-	//     messages back to JetStream for redelivery by surviving providers.
-	//   - When all pools are exhausted, the NATS consumer is drained and
-	//     remaining messages stay queued for redelivery after restart.
-	//
-	// See also: enqueueBatchRefreshJobs, batchRefreshJobs.
-	if !h.hasAvailableQuota(opCtx) {
-		return e.JSON(http.StatusTooManyRequests, map[string]string{
-			"error": "No scraping quota available.",
-		})
+	if !h.hasAvailableQuota() {
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusTooManyRequests, "No scraping quota available.")
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = sse.PatchElementTempl(templates.BatchRefreshErrorAlert("No scraping quota available."))
+		return
 	}
 
-	// Match the PocketBase DateTime format (space-separated, not RFC3339 T-separated)
-	// so SQLite string comparison works correctly.
+	if h.batchStore == nil {
+		log.Printf("[batch] batch progress store is not configured")
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusServiceUnavailable, "batch progress tracking is unavailable")
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = sse.PatchElementTempl(templates.BatchRefreshErrorAlert("Batch progress tracking is unavailable."))
+		return
+	}
+
 	jobs, err := h.batchRefreshJobs(opCtx, batchRefreshCutoff(time.Now()))
 	if err != nil {
 		log.Printf("[batch] batchRefreshJobs failed: %v", err)
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to fetch artists"})
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusInternalServerError, "failed to fetch artists")
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = sse.PatchElementTempl(templates.BatchRefreshErrorAlert("Failed to fetch artists for batch refresh."))
+		return
 	}
 
 	queuedArtistIDs, stats := h.enqueueBatchRefreshJobs(opCtx, jobs, count)
 	if len(queuedArtistIDs) == 0 {
-		if wantsJSONResponse(e.Request) {
-			return e.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "no artists queued"})
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusUnprocessableEntity, "no artists queued")
+			return
 		}
-		return h.patchBatchRefreshState(e, batchProgressSnapshot{
+		_ = h.patchBatchRefreshStateHTTP(w, r, batchProgressSnapshot{
 			ID:        "",
 			Stats:     stats,
 			Total:     0,
 			Completed: 0,
 			Done:      true,
 		})
+		return
 	}
 
-	snapshot := h.createBatchProgress(queuedArtistIDs, stats)
+	snapshot, err := h.createBatchProgress(opCtx, queuedArtistIDs, stats)
+	if err != nil {
+		log.Printf("[batch] createBatchProgress failed: %v", err)
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusInternalServerError, "failed to track batch progress")
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = sse.PatchElementTempl(templates.BatchRefreshErrorAlert("Failed to track batch progress."))
+		return
+	}
 	log.Printf("[batch] Created batch %s with %d queued artist(s)", snapshot.ID, snapshot.Total)
-	return h.patchBatchRefreshState(e, snapshot)
+	if wantsJSONResponse(r) {
+		_ = writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
+	_ = h.patchBatchRefreshStateHTTP(w, r, snapshot)
+}
+
+func (h *Handler) handleBatchRefresh(e *core.RequestEvent) error {
+	h.HandleBatchRefresh(e.Response, e.Request)
+	return nil
 }
