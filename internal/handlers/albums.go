@@ -464,6 +464,11 @@ func deleteOrphanAlbumRecord(ctx context.Context, h *Handler, record *core.Recor
 	if h == nil || h.app == nil || record == nil {
 		return
 	}
+	// Detached bounded context: rollback runs after a save failure, which
+	// can stem from request cancellation — the request context alone would
+	// abort the cleanup and leave the orphan behind.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if delErr := h.app.DeleteWithContext(ctx, record); delErr != nil {
 		log.Printf("[albums] handleCreateAlbum rollback Delete error: %v", delErr)
 	}

@@ -99,7 +99,7 @@ func run(ctx context.Context) error {
 		// rebuild styles.css without a restart (plain copy, no Tailwind step).
 		cssTick := time.NewTicker(1 * time.Second)
 		defer cssTick.Stop()
-		cssLast := cssModTime()
+		cssLast := cssModTime(ctx)
 		for {
 			select {
 			case <-ctx.Done():
@@ -108,11 +108,11 @@ func run(ctx context.Context) error {
 				}
 				return nil
 			case <-cssTick.C:
-				if mod := cssModTime(); mod.After(cssLast) {
-					cssLast = mod
+				if mod := cssModTime(ctx); mod.After(cssLast) {
 					if err := buildCSS(); err != nil {
 						slog.Error("CSS rebuild failed", "error", err)
 					} else {
+						cssLast = mod
 						notifyHotReload(context.Background())
 					}
 				}
@@ -131,7 +131,10 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-func cssModTime() time.Time {
+func cssModTime(ctx context.Context) time.Time {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}
+	}
 	fi, err := os.Stat("input.css")
 	if err != nil {
 		return time.Time{}
