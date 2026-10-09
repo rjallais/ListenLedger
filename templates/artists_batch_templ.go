@@ -29,7 +29,7 @@ func BatchRefreshModal() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"batch-refresh-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" data-signals=\"{batchID:'',batchTotal:0,batchCompleted:0,batchDone:false,batchInFlight:false}\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"batch-refresh-title\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h2 id=\"batch-refresh-title\" class=\"font-bold text-lg\">Batch Refresh Artists</h2><label for=\"batch-refresh-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-on:submit__prevent=\"if ($batchInFlight && !$batchDone) { return; } if ($batchDone) { $batchID = ''; $batchTotal = 0; $batchCompleted = 0; $batchDone = false; } $batchInFlight = true; @post('/api/refresh/batch', {contentType: 'form'})\" data-on:datastar-fetch=\"if (evt.detail.type === 'finished' || evt.detail.type === 'error') { $batchInFlight = false }\"><input type=\"hidden\" name=\"batch_id\" data-bind=\"$batchID\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-signals=\"{_batch_refresh_open: false}\" data-attr:open=\"$_batch_refresh_open\" data-on:sb-close=\"$_batch_refresh_open = false\" heading=\"Batch Refresh Artists\"><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-indicator:_batch_refresh_loading data-on:submit__prevent=\"@post('/api/refresh/batch', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -37,11 +37,15 @@ func BatchRefreshModal() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</form><div id=\"batch-refresh-result\"></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
 		templ_7745c5c3_Err = BatchRefreshModalActions().Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</form><div id=\"batch-refresh-result\"></div></div><label class=\"modal-backdrop\" for=\"batch-refresh-modal\"></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</sb-modal>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -70,7 +74,7 @@ func BatchRefreshCountField() templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"batch-refresh-count\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select id=\"batch-refresh-count\" name=\"count\" class=\"select select-bordered w-full\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"batch-refresh-count\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select id=\"batch-refresh-count\" name=\"count\" class=\"select select-bordered w-full\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -80,7 +84,7 @@ func BatchRefreshCountField() templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</select> <label class=\"label\"><span class=\"label-text-alt text-base-content/60\">Higher counts use more scraping quota</span></label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</select> <label class=\"label\"><span class=\"label-text-alt text-base-content/60\">Higher counts use more scraping quota</span></label></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -109,7 +113,7 @@ func BatchRefreshModalActions() templ.Component {
 			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<div class=\"modal-action\"><label for=\"batch-refresh-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary\" data-attr=\"{'disabled': $batchInFlight && !$batchDone}\">Start Refresh</button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"batch-refresh-form\" class=\"btn btn-primary gap-2\" data-attr:disabled=\"$_batch_refresh_loading\"><span data-show=\"$_batch_refresh_loading\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> Start Refresh</button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
