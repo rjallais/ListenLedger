@@ -78,7 +78,7 @@ func CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) te
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"songs-current-playlist-section\" class=\"collapse collapse-arrow border bg-success/10 border-success\"><input type=\"checkbox\" checked aria-label=\"Toggle current playlist section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-success\">Current Playlist</span> <span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"songs-current-playlist-section\" class=\"collapse collapse-arrow border bg-success/10 border-success\"><input type=\"checkbox\" checked data-preserve-attr=\"checked\" aria-label=\"Toggle current playlist section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-success\">Current Playlist</span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -132,7 +132,7 @@ func SongWaitingRemovalSection(waitingRemovalSongs []Song, playlistSort string) 
 			templ_7745c5c3_Var4 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div class=\"collapse collapse-arrow border bg-warning/10 border-warning\"><input type=\"checkbox\" aria-label=\"Toggle waiting for removal section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-warning\">Waiting For Removal</span> <span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div class=\"collapse collapse-arrow border bg-warning/10 border-warning\"><input type=\"checkbox\" data-preserve-attr=\"checked\" aria-label=\"Toggle waiting for removal section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-warning\">Waiting For Removal</span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -186,7 +186,7 @@ func SongNotRecentSection(notRecentCount int, playlistSort string) templ.Compone
 			templ_7745c5c3_Var6 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"collapse collapse-arrow border bg-base-100 border-base-300\"><input type=\"checkbox\" class=\"songs-not-recent-toggle\" aria-label=\"Toggle not recent songs section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-ghost\">Not Recent</span> <span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div class=\"collapse collapse-arrow border bg-base-100 border-base-300\"><input type=\"checkbox\" class=\"songs-not-recent-toggle\" data-preserve-attr=\"checked\" aria-label=\"Toggle not recent songs section\"><div class=\"collapse-title text-xl font-medium flex items-center gap-2\"><span class=\"badge badge-ghost\">Not Recent</span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -249,20 +249,20 @@ func SongNotRecentLoadControl(notRecentCount int, playlistSort string) templ.Com
 			return templ_7745c5c3_Err
 		}
 		if notRecentCount > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<button class=\"btn btn-outline btn-sm\" data-on:click=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "<button class=\"btn btn-outline btn-sm\" data-indicator:_loading_not_recent data-attr:disabled=\"$_loading_not_recent\" data-on:click=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.ResolveAttributeValue(songsNotRecentURL(0, playlistSort))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sections.templ`, Line: 66, Col: 92}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_sections.templ`, Line: 70, Col: 54}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var9)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\">Load Songs</button>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\"><span data-show=\"$_loading_not_recent\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> <span>Load Songs</span></button>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
