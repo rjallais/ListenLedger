@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,9 +24,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/pocketbase"
 
+	toolbeltdb "github.com/delaneyj/toolbelt/db"
+
 	"ListenLedger/config"
+	"ListenLedger/internal/domain/artist"
+	"ListenLedger/internal/domain/scrapejob"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/fetcher"
 	"ListenLedger/internal/messaging"
+	"ListenLedger/internal/projections"
 	"ListenLedger/internal/quota"
 	"ListenLedger/internal/spotify"
 )
@@ -119,6 +126,12 @@ type Worker struct {
 	fetcher *fetcher.Service
 	quota   *quota.Checker
 
+	db               *toolbeltdb.Database
+	artistRepo       *artist.Repository
+	artistProjection *projections.ArtistProjection
+	jobStore         *eventsourcing.SQLiteStore
+	jobRepo          *scrapejob.Repository
+
 	// groups holds per-provider goroutine pool metadata. Used during shutdown to
 	// wait for each pool independently and to log which providers are still alive.
 	groups []*providerGroup
@@ -128,9 +141,9 @@ type Worker struct {
 	// piling up in the work channel with nobody to process them.
 	allGroupsDead chan struct{}
 	cancel        context.CancelFunc
-	recalcTimer   *time.Timer
+	rankTimer     *time.Timer
 
-	recalcPending     map[string]struct{}
+	rankPending       map[string]struct{}
 	succeededRequests map[string]time.Time
 	metricsProvider   map[string]*providerMetrics
 
@@ -139,9 +152,15 @@ type Worker struct {
 	progress      time.Duration
 	providerCount int
 
-	recalcMu    sync.Mutex
+	rankMu      sync.Mutex
 	succeededMu sync.Mutex
 	metricsMu   sync.Mutex
+
+	// lastPurge tracks the last succeeded-job retention purge (guarded by
+	// purgeMu) so the hourly maintenance in sweepStaleJobs also runs once at
+	// startup.
+	lastPurge time.Time
+	purgeMu   sync.Mutex
 
 	// accepting gates whether dispatch callbacks may enqueue into work.
 	accepting atomic.Bool
@@ -152,11 +171,33 @@ type Worker struct {
 	drainOnce     sync.Once
 }
 
+// Option configures optional dependencies for Worker.
+type Option func(*Worker)
+
+// WithDatabase configures the worker with SQLite database, event store, and projection.
+func WithDatabase(db *toolbeltdb.Database) Option {
+	return func(w *Worker) {
+		w.db = db
+		if db != nil {
+			store := eventsourcing.NewSQLiteStore(db)
+			w.artistRepo = artist.NewRepository(store)
+			w.artistProjection = projections.NewArtistProjection(slog.Default(), db, w.nc)
+			// Durable domain.events.> publishing (append-only log = source of truth).
+			// Core-NATS fanout for live SSE stays as the ephemeral UI hint.
+			if w.js != nil {
+				w.artistProjection.SetJetStream(w.js)
+			}
+			w.jobStore = store
+			w.jobRepo = scrapejob.NewRepository(store)
+		}
+	}
+}
+
 // New creates a new worker instance.
-func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg *config.Config) *Worker {
+func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg *config.Config, opts ...Option) *Worker {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Worker{
+	w := &Worker{
 		app:               app,
 		nc:                nc,
 		js:                js,
@@ -164,10 +205,16 @@ func New(app *pocketbase.PocketBase, nc *nats.Conn, js jetstream.JetStream, cfg 
 		quota:             quota.NewChecker(cfg),
 		ctx:               ctx,
 		cancel:            cancel,
-		recalcPending:     make(map[string]struct{}),
+		rankPending:       make(map[string]struct{}),
 		succeededRequests: make(map[string]time.Time),
 		metricsProvider:   make(map[string]*providerMetrics),
 	}
+
+	for _, opt := range opts {
+		opt(w)
+	}
+
+	return w
 }
 
 func (w *Worker) Start() error {
@@ -232,6 +279,11 @@ func (w *Worker) initFetcherClient() {
 
 // resolveJetStreamTuning derives maxDeliver, backoff, ackWait, and progress from
 // config, applying safe defaults where values are absent or out of range.
+//
+// AckWait is never allowed below minSafeAckWait: a stale or explicitly
+// configured value under the worst-case fetch timeout guarantees redelivery
+// while a fetch is still running (each redelivery burns a provider attempt
+// until MaxDeliver is exhausted).
 func (w *Worker) resolveJetStreamTuning() {
 	maxDeliver := w.cfg.ScrapeMaxDeliver
 	if maxDeliver <= 0 {
@@ -246,13 +298,11 @@ func (w *Worker) resolveJetStreamTuning() {
 	w.backoff = backoff
 
 	ackWait := w.cfg.ScrapeAckWait
-	if ackWait <= 0 {
-		ackWait = max(2*w.maxFetchTimeout(), 2*time.Minute)
-		for _, d := range backoff {
-			if d > ackWait {
-				ackWait = d
-			}
+	if floor := w.minSafeAckWait(); ackWait < floor {
+		if w.cfg.ScrapeAckWait > 0 {
+			log.Printf("[worker] Configured SCRAPE_ACK_WAIT=%s is below the safe floor %s for the enabled providers; clamping", w.cfg.ScrapeAckWait, floor)
 		}
+		ackWait = floor
 	}
 	w.ackWait = ackWait
 
@@ -267,8 +317,37 @@ func (w *Worker) resolveJetStreamTuning() {
 	w.progress = progress
 }
 
-// createAndAlignConsumer ensures the durable JetStream consumer exists, reads back
-// the server-side config, and returns the active ConsumeContext.
+// minSafeAckWait returns the floor for server-side redelivery timing derived
+// from the worst-case fetch timeout across enabled providers.
+// Callers must have populated w.backoff (see resolveJetStreamTuning) first.
+func (w *Worker) minSafeAckWait() time.Duration {
+	floor := max(2*w.maxFetchTimeout(), 2*time.Minute)
+	for _, d := range w.backoff {
+		if d > floor {
+			floor = d
+		}
+	}
+	return floor
+}
+
+// serverBackoff returns the BackOff schedule installed on the JetStream
+// consumer. When BackOff is set, the server normalizes the stored AckWait to
+// BackOff[0] and redelivers unacked messages on that schedule — so BackOff,
+// not AckWait, is the effective safety net.
+//
+// This must stay above minSafeAckWait: while a provider goroutine is alive it
+// sends InProgress heartbeats every w.progress (20s), but any heartbeat gap
+// (preflight checks, PB stalls, crashes) longer than BackOff[0] duplicates
+// the fetch. A single entry suffices — explicit NAKs in processing.go carry
+// their own NakWithDelay pacing from w.backoff, so the server schedule only
+// fires for genuinely orphaned deliveries.
+func (w *Worker) serverBackoff() []time.Duration {
+	return []time.Duration{w.minSafeAckWait()}
+}
+
+// createAndAlignConsumer ensures the durable JetStream consumer exists, heals
+// stale server-side tuning, reads back the live config, and returns the
+// active ConsumeContext.
 // Returns (consume, nil) on success or (nil, error) on failure.
 func (w *Worker) createAndAlignConsumer(ctx context.Context, totalConc int) (jetstream.ConsumeContext, error) {
 	ensureCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -280,11 +359,18 @@ func (w *Worker) createAndAlignConsumer(ctx context.Context, totalConc int) (jet
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       w.ackWait,
 		MaxDeliver:    w.maxDeliver,
-		BackOff:       w.backoff,
+		BackOff:       w.serverBackoff(),
 		MaxAckPending: totalConc,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ensure scrape consumer: %w", err)
+	}
+
+	healCtx, healCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer healCancel()
+	consumer, err = w.healConsumerTuning(healCtx, consumer, totalConc)
+	if err != nil {
+		return nil, err
 	}
 
 	alignCtx, alignCancel := context.WithTimeout(ctx, 2*time.Second)
@@ -296,6 +382,50 @@ func (w *Worker) createAndAlignConsumer(ctx context.Context, totalConc int) (jet
 		return nil, fmt.Errorf("start consumer: %w", err)
 	}
 	return consume, nil
+}
+
+// healConsumerTuning deletes and recreates the durable consumer when the
+// stored redelivery schedule is below the safe floor (e.g. BackOff starting
+// at 10s persisted by older defaults while the slowest enabled fetch needs
+// minutes). When BackOff is set the server redelivers on that schedule
+// regardless of AckWait, so a short BackOff[0] duplicates every slow scrape
+// on any heartbeat gap. CreateOrUpdate does not reliably converge
+// pre-existing consumers, hence delete + recreate. Returns the live handle.
+func (w *Worker) healConsumerTuning(ctx context.Context, consumer jetstream.Consumer, totalConc int) (jetstream.Consumer, error) {
+	info, err := consumer.Info(ctx)
+	if err != nil || info == nil {
+		// Leave diagnosis to alignFromConsumerInfo; don't fail startup here.
+		return consumer, nil
+	}
+	floor := w.minSafeAckWait()
+	staleBackoff := len(info.Config.BackOff) == 0 || info.Config.BackOff[0] < floor
+	if info.Config.AckWait >= floor && !staleBackoff {
+		return consumer, nil
+	}
+
+	log.Printf("[worker] Healing stale consumer tuning: durable=%s ack_wait=%s backoff=%v below safe floor %s (max fetch timeout %s) — recreating consumer",
+		info.Config.Durable, info.Config.AckWait, info.Config.BackOff, floor, w.maxFetchTimeout())
+
+	stream, err := w.js.Stream(ctx, messaging.ScrapeRequestsStreamName)
+	if err != nil {
+		return nil, fmt.Errorf("heal consumer: load scrape stream: %w", err)
+	}
+	if err := stream.DeleteConsumer(ctx, messaging.ScrapeWorkerConsumerName); err != nil {
+		return nil, fmt.Errorf("heal consumer: delete stale consumer: %w", err)
+	}
+	healed, err := messaging.EnsureScrapeWorkerConsumer(ctx, w.js, jetstream.ConsumerConfig{
+		Durable:       messaging.ScrapeWorkerConsumerName,
+		FilterSubject: messaging.SubjectScrapeRequest,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       w.ackWait,
+		MaxDeliver:    w.maxDeliver,
+		BackOff:       w.serverBackoff(),
+		MaxAckPending: totalConc,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("heal consumer: recreate consumer: %w", err)
+	}
+	return healed, nil
 }
 
 func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.Consumer) {
@@ -310,15 +440,24 @@ func (w *Worker) alignFromConsumerInfo(ctx context.Context, consumer jetstream.C
 	if info.Config.MaxDeliver > 0 {
 		w.maxDeliver = info.Config.MaxDeliver
 	}
-	if info.Config.AckWait > 0 {
+	// Never adopt a server-side AckWait below the safe floor: stale durables
+	// (e.g. AckWait=10s from older defaults) would otherwise survive every
+	// restart via this alignment and redeliver slow fetches mid-flight.
+	// healConsumerTuning recreates such consumers before we get here; this
+	// guard covers the case where healing was skipped or failed.
+	if info.Config.AckWait >= w.minSafeAckWait() {
 		w.ackWait = info.Config.AckWait
-		mp := max(w.ackWait/2, time.Second)
-		if w.progress > mp {
-			w.progress = mp
-		}
+	} else {
+		log.Printf("[worker] Ignoring unsafe server AckWait=%s (floor %s); keeping %s",
+			info.Config.AckWait, w.minSafeAckWait(), w.ackWait)
 	}
-	if len(info.Config.BackOff) > 0 {
-		w.backoff = info.Config.BackOff
+	// Deliberately do NOT adopt the server BackOff into w.backoff: the server
+	// schedule is the unacked-delivery safety net (see serverBackoff), while
+	// w.backoff paces explicit NakWithDelay retries in processing.go and must
+	// stay short for fast-fail errors.
+	mp := max(w.ackWait/2, time.Second)
+	if w.progress > mp {
+		w.progress = mp
 	}
 	log.Printf(
 		"[worker] Consumer config: durable=%s subject=%s ack_wait=%s max_deliver=%d backoff=%v max_ack_pending=%d progress=%s",
@@ -363,12 +502,12 @@ func (w *Worker) launchBackgroundWorkers() {
 func (w *Worker) Stop() {
 	w.cancel()
 
-	w.recalcMu.Lock()
-	if w.recalcTimer != nil {
-		w.recalcTimer.Stop()
-		w.recalcTimer = nil
+	w.rankMu.Lock()
+	if w.rankTimer != nil {
+		w.rankTimer.Stop()
+		w.rankTimer = nil
 	}
-	w.recalcMu.Unlock()
+	w.rankMu.Unlock()
 
 	// Drain NATS consumer (idempotent with watchAllGroups via drainOnce).
 	w.drainOnce.Do(func() {
