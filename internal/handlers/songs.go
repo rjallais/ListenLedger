@@ -2,30 +2,21 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
+	"zombiezen.com/go/sqlite"
 
+	"ListenLedger/internal/domain/song"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/templates"
 )
-
-// formatReleaseDateForUI converts a stored YYYY-MM-DD date to a human-friendly
-// format like "2 January 2006". If the value can't be parsed as YYYY-MM-DD,
-// it's returned as-is (handles legacy formats gracefully).
-func formatReleaseDateForUI(stored string) string {
-	t, err := time.Parse("2006-01-02", stored)
-	if err != nil {
-		return stored // legacy format or plain year — pass through
-	}
-	return t.Format("2 January 2006")
-}
 
 func parseBoolValue(value string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -43,7 +34,6 @@ func songReleaseNameFromRecord(record *core.Record) string {
 	if releaseName != "" {
 		return releaseName
 	}
-
 	return "—"
 }
 
@@ -64,13 +54,6 @@ func songFromRecord(record *core.Record) templates.Song {
 	}
 }
 
-type songListEntry struct {
-	song             templates.Song
-	createdAt        time.Time
-	releaseDate      time.Time
-	releaseDateValid bool
-}
-
 type songPageData struct {
 	CurrentPlaylist []templates.Song
 	WaitingRemoval  []templates.Song
@@ -78,24 +61,63 @@ type songPageData struct {
 	NotRecentCount  int
 }
 
-func parseSongReleaseDate(stored string) (time.Time, bool) {
-	t, err := time.Parse("2006-01-02", stored)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-func normalizePlaylistSort(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case playlistSortReleaseAsc:
-		return playlistSortReleaseAsc
-	default:
-		return playlistSortAddedDesc
-	}
-}
-
 func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) {
+	if h.db != nil {
+		var entries []songListEntry
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT id, title, artist_name, album, release_date, release_type, is_recent, recent_batch_seq, recent_batch_pos, created_at FROM songs;")
+			defer func() { _ = stmt.Reset() }()
+
+			for {
+				hasRow, err := stmt.Step()
+				if err != nil {
+					return err
+				}
+				if !hasRow {
+					break
+				}
+
+				releaseDateRaw := stmt.ColumnText(4)
+				rd, valid := parseSongReleaseDate(releaseDateRaw)
+				createdAtRaw := stmt.ColumnText(9)
+				createdAt, _ := time.Parse(time.RFC3339Nano, createdAtRaw)
+				if createdAt.IsZero() {
+					createdAt, _ = time.Parse("2006-01-02 15:04:05", createdAtRaw)
+				}
+
+				recentBatchSeq := max(int(stmt.ColumnInt64(7)), 0)
+				recentBatchPos := max(int(stmt.ColumnInt64(8)), 0)
+
+				albumName := strings.TrimSpace(stmt.ColumnText(3))
+				if albumName == "" {
+					albumName = "—"
+				}
+
+				entries = append(entries, songListEntry{
+					song: templates.Song{
+						ID:          stmt.ColumnText(0),
+						Title:       stmt.ColumnText(1),
+						ArtistName:  stmt.ColumnText(2),
+						ReleaseDate: formatReleaseDateForUI(releaseDateRaw),
+						ReleaseType: stmt.ColumnText(5),
+						Album:       albumName,
+						IsRecent:    stmt.ColumnInt64(6) != 0,
+						BatchSeq:    recentBatchSeq,
+						BatchPos:    recentBatchPos,
+					},
+					createdAt:        createdAt,
+					releaseDate:      rd,
+					releaseDateValid: valid,
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return entries, nil
+	}
+
 	return h.listSongEntriesWithApp(ctx, h.app)
 }
 
@@ -125,188 +147,6 @@ func (h *Handler) listSongEntriesWithApp(ctx context.Context, app core.App) ([]s
 	}
 
 	return entries, nil
-}
-
-func sortRecentSongEntries(entries []songListEntry) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		left := entries[i]
-		right := entries[j]
-
-		if left.song.BatchSeq != right.song.BatchSeq {
-			return left.song.BatchSeq > right.song.BatchSeq
-		}
-		// Within each batch, older insertions keep higher positions and stay
-		// longer in the playlist.
-		if left.song.BatchPos != right.song.BatchPos {
-			return left.song.BatchPos > right.song.BatchPos
-		}
-		if !left.createdAt.Equal(right.createdAt) {
-			return left.createdAt.Before(right.createdAt)
-		}
-		if !left.releaseDate.Equal(right.releaseDate) {
-			return left.releaseDate.After(right.releaseDate)
-		}
-		leftTitle := strings.ToLower(left.song.Title)
-		rightTitle := strings.ToLower(right.song.Title)
-		if leftTitle != rightTitle {
-			return leftTitle < rightTitle
-		}
-
-		return left.song.ID < right.song.ID
-	})
-}
-
-func sortNotRecentSongEntries(entries []songListEntry) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		left := entries[i]
-		right := entries[j]
-
-		if !left.releaseDate.Equal(right.releaseDate) {
-			return left.releaseDate.After(right.releaseDate)
-		}
-		if !left.createdAt.Equal(right.createdAt) {
-			return left.createdAt.After(right.createdAt)
-		}
-		leftTitle := strings.ToLower(left.song.Title)
-		rightTitle := strings.ToLower(right.song.Title)
-		if leftTitle != rightTitle {
-			return leftTitle < rightTitle
-		}
-		return left.song.ID < right.song.ID
-	})
-}
-
-// compareByReleaseDateAsc returns true when left should sort before right by
-// ascending release date, falling through to createdAt then title then ID.
-// Invalid/legacy dates are treated as "unknown" and sort after valid dates.
-func compareByReleaseDateAsc(left, right songListEntry) bool {
-	// Invalid dates sort after valid dates
-	if left.releaseDateValid != right.releaseDateValid {
-		return left.releaseDateValid
-	}
-	if !left.releaseDate.Equal(right.releaseDate) {
-		return left.releaseDate.Before(right.releaseDate)
-	}
-	if !left.createdAt.Equal(right.createdAt) {
-		return left.createdAt.Before(right.createdAt)
-	}
-	return compareTitleThenID(left, right)
-}
-
-// compareByBatchSeq sorts by batch seq (desc when descending=true, else asc),
-// then pos ascending, then createdAt (desc/asc), then song ID ascending.
-func compareInt(a, b int, descending bool) bool {
-	if descending {
-		return a > b
-	}
-	return a < b
-}
-
-func compareTime(a, b time.Time, descending bool) bool {
-	if descending {
-		return a.After(b)
-	}
-	return a.Before(b)
-}
-
-func compareByBatchSeq(left, right songListEntry, descending bool) bool {
-	if left.song.BatchSeq != right.song.BatchSeq {
-		return compareInt(left.song.BatchSeq, right.song.BatchSeq, descending)
-	}
-	if left.song.BatchPos != right.song.BatchPos {
-		return left.song.BatchPos < right.song.BatchPos
-	}
-	if !left.createdAt.Equal(right.createdAt) {
-		return compareTime(left.createdAt, right.createdAt, descending)
-	}
-	return left.song.ID < right.song.ID
-}
-
-// compareByBatchSeqDesc sorts by batch seq descending, pos ascending, then
-// createdAt descending — used for the current-playlist "added-desc" view.
-func compareByBatchSeqDesc(left, right songListEntry) bool {
-	return compareByBatchSeq(left, right, true)
-}
-
-// compareByBatchSeqAsc sorts by batch seq ascending, pos ascending, then
-// createdAt ascending — used for the waiting-removal "added-desc" view.
-func compareByBatchSeqAsc(left, right songListEntry) bool {
-	return compareByBatchSeq(left, right, false)
-}
-
-// compareByWaitingReleaseAsc sorts waiting-removal entries by release date asc,
-// then batch seq/pos asc, createdAt asc, title, ID.
-// Invalid/legacy dates are treated as "unknown" and sort after valid dates.
-func compareByWaitingReleaseAsc(left, right songListEntry) bool {
-	// Invalid dates sort after valid dates
-	if left.releaseDateValid != right.releaseDateValid {
-		return left.releaseDateValid
-	}
-	if !left.releaseDate.Equal(right.releaseDate) {
-		return left.releaseDate.Before(right.releaseDate)
-	}
-	return compareByBatchSeqAsc(left, right)
-}
-
-func compareTitleThenID(left, right songListEntry) bool {
-	lt := strings.ToLower(left.song.Title)
-	rt := strings.ToLower(right.song.Title)
-	if lt != rt {
-		return lt < rt
-	}
-	return left.song.ID < right.song.ID
-}
-
-type songSortMode struct {
-	releaseAsc func(left, right songListEntry) bool
-	defaultCmp func(left, right songListEntry) bool
-}
-
-var playlistSortMode = songSortMode{
-	releaseAsc: compareByReleaseDateAsc,
-	defaultCmp: compareByBatchSeqDesc,
-}
-
-var waitingRemovalSortMode = songSortMode{
-	releaseAsc: compareByWaitingReleaseAsc,
-	defaultCmp: compareByBatchSeqAsc,
-}
-
-func sortEntriesByMode(entries []songListEntry, playlistSort string, mode songSortMode) {
-	cmp := mode.defaultCmp
-	if normalizePlaylistSort(playlistSort) == playlistSortReleaseAsc {
-		cmp = mode.releaseAsc
-	}
-	sort.SliceStable(entries, func(i, j int) bool { return cmp(entries[i], entries[j]) })
-}
-
-// partitionRecentEntries splits entries into recent and not-recent slices.
-func partitionRecentEntries(entries []songListEntry) (recent, notRecent []songListEntry) {
-	recent = make([]songListEntry, 0, len(entries))
-	notRecent = make([]songListEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.song.IsRecent {
-			recent = append(recent, entry)
-		} else {
-			notRecent = append(notRecent, entry)
-		}
-	}
-	return
-}
-
-// splitPlaylistBuckets partitions sorted recent entries into current-playlist
-// and waiting-removal buckets based on songsCurrentPlaylistSize.
-func splitPlaylistBuckets(recent []songListEntry) (current, waiting []songListEntry) {
-	current = make([]songListEntry, 0, min(len(recent), songsCurrentPlaylistSize))
-	waiting = make([]songListEntry, 0, max(0, len(recent)-songsCurrentPlaylistSize))
-	for i, entry := range recent {
-		if i < songsCurrentPlaylistSize {
-			current = append(current, entry)
-		} else {
-			waiting = append(waiting, entry)
-		}
-	}
-	return
 }
 
 func (h *Handler) buildSongPageData(ctx context.Context, playlistSort string) (songPageData, error) {
@@ -370,31 +210,14 @@ func clampPageSize(limit int) int {
 	return min(limit, songsMaxPageSize)
 }
 
-func filterNotRecentEntries(entries []songListEntry) []songListEntry {
-	notRecent := make([]songListEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.song.IsRecent {
-			notRecent = append(notRecent, entry)
-		}
-	}
-	return notRecent
-}
-
-func paginateEntries(entries []songListEntry, offset, limit int) []templates.Song {
-	total := len(entries)
-	if offset >= total {
-		return []templates.Song{}
-	}
-	end := min(offset+limit, total)
-	page := make([]templates.Song, 0, end-offset)
-	for _, entry := range entries[offset:end] {
-		page = append(page, entry.song)
-	}
-	return page
-}
-
 func (h *Handler) nextRecentBatchAssignment(ctx context.Context, now time.Time) (int, int, error) {
-	return h.nextRecentBatchAssignmentWithApp(ctx, h.app, now)
+	entries, err := h.listSongEntries(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	seq, pos := nextRecentBatchAssignmentFromEntries(entries, now)
+	return seq, pos, nil
 }
 
 func (h *Handler) nextRecentBatchAssignmentWithApp(ctx context.Context, app core.App, now time.Time) (int, int, error) {
@@ -467,19 +290,6 @@ func computeNextBatchPosition(stats batchStats, now time.Time) (int, int) {
 	return stats.maxSeq, nextPos
 }
 
-// updateMaxSeqStats accumulates count, minimum batch position, and latest
-// created-at for all entries sharing the current maxSeq.
-func updateMaxSeqStats(count, minPos int, latest time.Time, entry songListEntry) (int, int, time.Time) {
-	count++
-	if pos := clampRecentBatchPos(entry.song.BatchPos); pos < minPos {
-		minPos = pos
-	}
-	if entry.createdAt.After(latest) {
-		latest = entry.createdAt
-	}
-	return count, minPos, latest
-}
-
 func clampRecentBatchPos(pos int) int {
 	switch {
 	case pos < 1:
@@ -491,27 +301,213 @@ func clampRecentBatchPos(pos int) int {
 	}
 }
 
-// loadSongPageData builds song page data for the given sort key, returning an
+// loadSongPageDataHTTP builds song page data for the given sort key, returning an
 // HTTP 500 response on error. The bool return is false on failure.
-func (h *Handler) loadSongPageData(e *core.RequestEvent, caller string) (songPageData, bool) {
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	pageData, err := h.buildSongPageData(e.Request.Context(), playlistSort)
+func (h *Handler) loadSongPageDataHTTP(w http.ResponseWriter, r *http.Request, caller string) (songPageData, bool) {
+	playlistSort := normalizePlaylistSort(getQueryParam(r, "playlist_sort", ""))
+	pageData, err := h.buildSongPageData(r.Context(), playlistSort)
 	if err != nil {
 		if caller != "" {
 			log.Printf("[%s] buildSongPageData failed: %v", caller, err)
 		}
-		_ = e.String(http.StatusInternalServerError, "Failed to load songs")
+		http.Error(w, "Failed to load songs", http.StatusInternalServerError)
 		return songPageData{}, false
 	}
 	return pageData, true
 }
 
-func (h *Handler) handleSongs(e *core.RequestEvent) error {
-	pageData, ok := h.loadSongPageData(e, "handleSongs")
+func (h *Handler) loadSongPageData(e *core.RequestEvent, caller string) (songPageData, bool) {
+	return h.loadSongPageDataHTTP(e.Response, e.Request, caller)
+}
+
+// HandleSongs serves the main songs page.
+func (h *Handler) HandleSongs(w http.ResponseWriter, r *http.Request) {
+	pageData, ok := h.loadSongPageDataHTTP(w, r, "HandleSongs")
 	if !ok {
-		return nil
+		return
 	}
-	return renderTempl(e, templates.SongsPage(
+	_ = RenderTempl(w, r, templates.SongsPage(
+		pageData.CurrentPlaylist,
+		pageData.WaitingRemoval,
+		pageData.NotRecentCount,
+		pageData.PlaylistSort,
+	))
+}
+
+func (h *Handler) handleSongs(e *core.RequestEvent) error {
+	h.HandleSongs(e.Response, e.Request)
+	return nil
+}
+
+// songRecentError reports a recent-toggle failure while restoring the
+// current sections on browser requests, so morph resets the optimistically
+// disabled checkbox to committed state. JSON API clients keep the JSON error
+// contract. Server-side 5xx failures are logged by callers' context via msg.
+func (h *Handler) songRecentError(w http.ResponseWriter, r *http.Request, playlistSort string, status int, msg string) {
+	if wantsJSONResponse(r) {
+		writeError(w, status, msg)
+		return
+	}
+	if pageData, err := h.buildSongPageData(r.Context(), playlistSort); err == nil {
+		_ = h.RenderDatastar(w, r, templates.SongsSections(
+			pageData.CurrentPlaylist,
+			pageData.WaitingRemoval,
+			pageData.NotRecentCount,
+			pageData.PlaylistSort,
+		))
+		return
+	}
+	writeError(w, status, msg)
+}
+
+// HandleUpdateSongRecent toggles or updates a song's is_recent status.
+func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request) {
+	playlistSort := normalizePlaylistSort(getQueryParam(r, "playlist_sort", ""))
+
+	songID := strings.TrimSpace(getRouteParam(r, "songId"))
+	if songID == "" {
+		h.songRecentError(w, r, playlistSort, http.StatusBadRequest, "song ID required")
+		return
+	}
+
+	isRecent, err := parseBoolValue(getRouteParam(r, "value"))
+	if err != nil {
+		h.songRecentError(w, r, playlistSort, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx := r.Context()
+	var batchSeq, batchPos int
+	var songRow *legacySongRow
+
+	if h.app != nil {
+		record, err := h.app.FindRecordById("songs", songID)
+		if err != nil {
+			h.songRecentError(w, r, playlistSort, http.StatusNotFound, "song not found")
+			return
+		}
+
+		if err := h.applyRecentUpdate(ctx, record, isRecent); err != nil {
+			h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		if err := h.app.Save(record); err != nil {
+			h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, "failed to update song")
+			return
+		}
+		// Backfill source for songs without an event stream: the PB record
+		// carries the converged post-state loadOrCreateSong needs.
+		songRow = &legacySongRow{
+			title:       record.GetString("title"),
+			artistName:  record.GetString("artist_name"),
+			album:       record.GetString("album"),
+			releaseDate: record.GetString("release_date"),
+			releaseYear: int64(record.GetInt("release_year")),
+			releaseType: record.GetString("release_type"),
+			spotifyID:   record.GetString("spotify_id"),
+		}
+		batchSeq = record.GetInt("recent_batch_seq")
+		batchPos = record.GetInt("recent_batch_pos")
+	} else if h.db != nil {
+		var oldRecent int
+		var existingSeq, existingPos int
+		var found bool
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT is_recent, recent_batch_seq, recent_batch_pos, title, artist_name, album, release_date, release_year, release_type, spotify_id FROM songs WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, songID)
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if hasRow {
+				found = true
+				oldRecent = int(stmt.ColumnInt64(0))
+				existingSeq = int(stmt.ColumnInt64(1))
+				existingPos = int(stmt.ColumnInt64(2))
+				songRow = &legacySongRow{
+					title:       stmt.ColumnText(3),
+					artistName:  stmt.ColumnText(4),
+					album:       stmt.ColumnText(5),
+					releaseDate: stmt.ColumnText(6),
+					releaseYear: stmt.ColumnInt64(7),
+					releaseType: stmt.ColumnText(8),
+					spotifyID:   stmt.ColumnText(9),
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, "failed to query song")
+			return
+		}
+		if !found {
+			h.songRecentError(w, r, playlistSort, http.StatusNotFound, "song not found")
+			return
+		}
+
+		if isRecent {
+			if oldRecent != 0 && existingSeq > 0 && existingPos > 0 {
+				batchSeq = existingSeq
+				batchPos = existingPos
+			} else {
+				var err error
+				batchSeq, batchPos, err = h.nextRecentBatchAssignment(ctx, time.Now())
+				if err != nil {
+					h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, "failed to assign recent batch")
+					return
+				}
+			}
+		}
+	} else {
+		h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, "no database configured")
+		return
+	}
+
+	if h.db != nil {
+		err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("UPDATE songs SET is_recent = ?, recent_batch_seq = ?, recent_batch_pos = ? WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			var isRecInt int64
+			if isRecent {
+				isRecInt = 1
+			}
+			stmt.BindInt64(1, isRecInt)
+			stmt.BindInt64(2, int64(batchSeq))
+			stmt.BindInt64(3, int64(batchPos))
+			stmt.BindText(4, songID)
+			_, err := stmt.Step()
+			return err
+		})
+		if err != nil {
+			h.songRecentError(w, r, playlistSort, http.StatusInternalServerError, "failed to update song in sqlite")
+			return
+		}
+	}
+
+	if h.songRepo != nil {
+		agg, loadErr := h.loadOrCreateSong(ctx, songID, songRow)
+		if loadErr != nil {
+			log.Printf("[songs] loadOrCreateSong error for %s: %v", songID, loadErr)
+		} else if setErr := agg.SetRecent(isRecent, int64(batchSeq), int64(batchPos)); setErr != nil {
+			log.Printf("[songs] SetRecent error for %s: %v", songID, setErr)
+		} else if events, saveErr := h.songRepo.Save(ctx, agg); saveErr != nil {
+			log.Printf("[songs] songRepo.Save error for %s: %v", songID, saveErr)
+		} else if h.catalogProjection != nil && len(events) > 0 {
+			if projErr := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); projErr != nil {
+				log.Printf("[songs] catalogProjection.Project error for %s: %v", songID, projErr)
+			}
+		}
+	}
+
+	pageData, err := h.buildSongPageData(ctx, playlistSort)
+	if err != nil {
+		http.Error(w, "Failed to load songs", http.StatusInternalServerError)
+		return
+	}
+
+	_ = h.RenderDatastar(w, r, templates.SongsSections(
 		pageData.CurrentPlaylist,
 		pageData.WaitingRemoval,
 		pageData.NotRecentCount,
@@ -520,43 +516,38 @@ func (h *Handler) handleSongs(e *core.RequestEvent) error {
 }
 
 func (h *Handler) handleUpdateSongRecent(e *core.RequestEvent) error {
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
+	h.HandleUpdateSongRecent(e.Response, e.Request)
+	return nil
+}
 
-	songID := strings.TrimSpace(e.Request.PathValue("songId"))
-	if songID == "" {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": "song ID required"})
+// legacySongRow carries the song fields read from SQLite for stream backfill.
+type legacySongRow struct {
+	title       string
+	artistName  string
+	album       string
+	releaseDate string
+	releaseYear int64
+	releaseType string
+	spotifyID   string
+}
+
+// loadOrCreateSong replays the song stream, synthesizing a SongCreated
+// event for legacy rows. Recent-flag updates are applied by the caller via SetRecent.
+func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *legacySongRow) (*song.Song, error) {
+	agg, loadErr := h.songRepo.Load(ctx, songID)
+	if !errors.Is(loadErr, eventsourcing.ErrStreamNotFound) || legacy == nil {
+		return agg, loadErr
 	}
 
-	isRecent, err := parseBoolValue(e.Request.PathValue("value"))
-	if err != nil {
-		return e.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	createAgg, createErr := song.NewSong(songID, legacy.title, legacy.artistName, legacy.album,
+		legacy.releaseDate, legacy.releaseType, legacy.spotifyID, legacy.releaseYear, 0, 0, false)
+	if createErr != nil {
+		return nil, createErr
 	}
-
-	record, err := h.app.FindRecordById("songs", songID)
-	if err != nil {
-		return e.JSON(http.StatusNotFound, map[string]string{"error": "song not found"})
+	if _, err := h.songRepo.Save(ctx, createAgg); err != nil {
+		return nil, err
 	}
-
-	ctx := e.Request.Context()
-	if err := h.applyRecentUpdate(ctx, record, isRecent); err != nil {
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-
-	if err := h.app.Save(record); err != nil {
-		return e.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update song"})
-	}
-
-	pageData, err := h.buildSongPageData(ctx, playlistSort)
-	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load songs")
-	}
-
-	return renderDatastar(e, templates.SongsSections(
-		pageData.CurrentPlaylist,
-		pageData.WaitingRemoval,
-		pageData.NotRecentCount,
-		pageData.PlaylistSort,
-	))
+	return h.songRepo.Load(ctx, songID)
 }
 
 func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {
@@ -580,24 +571,32 @@ func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, is
 	return nil
 }
 
+// HandleSongsCurrentPlaylistAPI returns the current playlist section fragments.
+func (h *Handler) HandleSongsCurrentPlaylistAPI(w http.ResponseWriter, r *http.Request) {
+	pageData, ok := h.loadSongPageDataHTTP(w, r, "HandleSongsCurrentPlaylistAPI")
+	if !ok {
+		return
+	}
+	_ = h.RenderDatastar(w, r, templates.CurrentPlaylistSection(pageData.CurrentPlaylist, pageData.PlaylistSort))
+}
+
 func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
-	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.CurrentPlaylistSection(d.CurrentPlaylist, d.PlaylistSort))
-	})
+	h.HandleSongsCurrentPlaylistAPI(e.Response, e.Request)
+	return nil
+}
+
+// HandleSongsSectionsAPI returns all songs sections fragments.
+func (h *Handler) HandleSongsSectionsAPI(w http.ResponseWriter, r *http.Request) {
+	pageData, ok := h.loadSongPageDataHTTP(w, r, "HandleSongsSectionsAPI")
+	if !ok {
+		return
+	}
+	_ = h.RenderDatastar(w, r, templates.SongsSections(pageData.CurrentPlaylist, pageData.WaitingRemoval, pageData.NotRecentCount, pageData.PlaylistSort))
 }
 
 func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {
-	return h.renderSongPageData(e, func(d songPageData) error {
-		return renderDatastar(e, templates.SongsSections(d.CurrentPlaylist, d.WaitingRemoval, d.NotRecentCount, d.PlaylistSort))
-	})
-}
-
-func (h *Handler) renderSongPageData(e *core.RequestEvent, render func(songPageData) error) error {
-	pageData, ok := h.loadSongPageData(e, "")
-	if !ok {
-		return nil
-	}
-	return render(pageData)
+	h.HandleSongsSectionsAPI(e.Response, e.Request)
+	return nil
 }
 
 // needsBatchAssignment reports whether a song being marked recent requires a
@@ -606,52 +605,36 @@ func needsBatchAssignment(wasRecent bool, record *core.Record) bool {
 	return !wasRecent || record.GetInt("recent_batch_seq") <= 0 || record.GetInt("recent_batch_pos") <= 0
 }
 
-type intParamSpec struct {
-	Name    string
-	Default int
-	Min     int
-	Max     int
-}
+// HandleSongsNotRecentAPI returns lazy-loaded not-recent songs.
+func (h *Handler) HandleSongsNotRecentAPI(w http.ResponseWriter, r *http.Request) {
+	playlistSort := normalizePlaylistSort(getQueryParam(r, "playlist_sort", ""))
+	offset := getQueryParamInt(r, "offset", 0, 0, 0)
+	limit := getQueryParamInt(r, "limit", songsDefaultPageSize, 1, songsMaxPageSize)
 
-func parseQueryIntParam(r *http.Request, spec intParamSpec) int {
-	raw := r.URL.Query().Get(spec.Name)
-	if raw == "" {
-		return spec.Default
-	}
-	parsed, err := strconv.Atoi(raw)
-	if err != nil || outOfRange(parsed, spec) {
-		return spec.Default
-	}
-	return parsed
-}
-
-func outOfRange(val int, spec intParamSpec) bool {
-	return val < spec.Min || (spec.Max > 0 && val > spec.Max)
-}
-
-func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	offset := parseQueryIntParam(e.Request, intParamSpec{Name: "offset", Default: 0, Min: 0, Max: 0})
-	limit := parseQueryIntParam(e.Request, intParamSpec{Name: "limit", Default: songsDefaultPageSize, Min: 1, Max: songsMaxPageSize})
-
-	ctx := e.Request.Context()
-	songs, totalCount, err := h.listNotRecentSongs(ctx, offset, limit)
+	ctx := r.Context()
+	songViews, totalCount, err := h.listNotRecentSongs(ctx, offset, limit)
 	if err != nil {
-		return e.String(http.StatusInternalServerError, "Failed to load songs")
+		http.Error(w, "Failed to load songs", http.StatusInternalServerError)
+		return
 	}
 
-	nextOffset := offset + len(songs)
+	nextOffset := offset + len(songViews)
 	hasMore := nextOffset < totalCount
 
-	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+	sse := datastar.NewSSE(w, r, sseOpts...)
 
 	// Append each archived song row inside "#songs-not-recent"
-	for _, song := range songs {
-		if err := sse.PatchElementTempl(templates.SongRow(song, playlistSort), datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend()); err != nil {
-			return err
+	for _, songView := range songViews {
+		if err := sse.PatchElementTempl(templates.SongRow(songView, playlistSort), datastar.WithSelectorID("songs-not-recent"), datastar.WithModeAppend()); err != nil {
+			return
 		}
 	}
 
 	// Morph/replace the load-more button container "#load-more-songs-not-recent"
-	return sse.PatchElementTempl(templates.NotRecentSongsLoadMore(nextOffset, hasMore, playlistSort))
+	_ = sse.PatchElementTempl(templates.NotRecentSongsLoadMore(nextOffset, hasMore, playlistSort))
+}
+
+func (h *Handler) handleSongsNotRecentAPI(e *core.RequestEvent) error {
+	h.HandleSongsNotRecentAPI(e.Response, e.Request)
+	return nil
 }
