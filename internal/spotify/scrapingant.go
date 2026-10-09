@@ -11,8 +11,6 @@ import (
 	"os"
 )
 
-
-
 // fetchViaScrapingAnt fetches the monthly listener count via ScrapingAnt HTML scraping.
 func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int, error) {
 	if c.config.ScrapingAntToken == "" || c.config.ScrapingAntEndpoint == "" {
@@ -48,7 +46,7 @@ func (c *Client) fetchViaScrapingAnt(ctx context.Context, artistID string) (int,
 		}
 	}()
 
-	if err := checkProviderHTTPStatus(resp, "scrapingant", http.StatusPaymentRequired); err != nil {
+	if err := checkProviderHTTPStatus(resp, "scrapingant", http.StatusPaymentRequired, http.StatusUnauthorized, http.StatusForbidden); err != nil {
 		return 0, err
 	}
 
