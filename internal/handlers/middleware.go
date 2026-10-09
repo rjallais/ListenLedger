@@ -84,10 +84,12 @@ func SlogMiddleware(baseLogger *slog.Logger) func(next http.Handler) http.Handle
 }
 
 // ThemeMiddleware extracts the theme preference from the HTTP request cookie ("theme")
-// and attaches it to the request context via templates.WithTheme.
+// and attaches it to the request context via templates.WithTheme. With no
+// cookie (or an invalid value) the brand default is dark, matching the
+// dark-first design direction; explicit light/system choices are respected.
 func ThemeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		theme := "system"
+		theme := "dark"
 		if c, err := r.Cookie("theme"); err == nil {
 			v := strings.TrimSpace(c.Value)
 			if v == "light" || v == "dark" || v == "system" {

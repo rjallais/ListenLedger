@@ -225,6 +225,7 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 			CollectionSongs:  input.collectionSongs,
 			TotalSongs:       totalCount,
 			LastUpdated:      formatUpdatedAt(time.Now().UTC().Format(time.RFC3339Nano)),
+			LastUpdatedFull:  formatUpdatedFull(time.Now().UTC().Format(time.RFC3339Nano)),
 		}
 	}
 
@@ -345,6 +346,7 @@ func (h *Handler) fetchArtistGenrePage(ctx context.Context, genre string, page, 
 					CollectionSongs:  int(stmt.ColumnInt64(7)),
 					TotalSongs:       total,
 					LastUpdated:      formatUpdatedAt(stmt.ColumnText(9)),
+					LastUpdatedFull:  formatUpdatedFull(stmt.ColumnText(9)),
 				})
 				index++
 			}
@@ -430,6 +432,7 @@ func (h *Handler) HandleWaitingArtistsAPI(w http.ResponseWriter, r *http.Request
 					CollectionSongs:  collectionSongs,
 					TotalSongs:       collectionSongs,
 					LastUpdated:      formatUpdatedAt(stmt.ColumnText(9)),
+					LastUpdatedFull:  formatUpdatedFull(stmt.ColumnText(9)),
 				})
 			}
 			return nil

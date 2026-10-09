@@ -37,7 +37,7 @@ func ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapshot
 		}
 		ctx = templ.ClearChildren(ctx)
 		spark := ComputeSparkline(snapshots, 380, 80)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"artist-history-drawer-container\"><dialog id=\"artist-history-dialog\" class=\"drawer-dialog\" aria-label=\"Artist listener history\" data-init=\"el.showModal()\" data-on:cancel__prevent=\"@get('/api/artists/history/close')\"><div class=\"drawer-backdrop\" data-on:click=\"@get('/api/artists/history/close')\"></div><div class=\"drawer-content p-6 flex flex-col gap-6\"><!-- Header --><div class=\"flex items-start justify-between\"><div><div class=\"flex items-center gap-2 mb-1\"><h2 class=\"text-xl font-bold tracking-tight\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"artist-history-drawer-container\"><dialog id=\"artist-history-dialog\" class=\"drawer-dialog\" aria-label=\"Artist listener history\" data-init=\"el.showModal()\" data-on:cancel__prevent=\"el.close(); @get('/api/artists/history/close')\"><div class=\"drawer-backdrop\" data-on:click=\"el.closest('dialog').close(); @get('/api/artists/history/close')\"></div><div class=\"drawer-content p-6 flex flex-col gap-6\"><!-- Header --><div class=\"flex items-start justify-between\"><div><div class=\"flex items-center gap-2 mb-1\"><h2 class=\"text-xl font-bold tracking-tight\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -86,7 +86,7 @@ func ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapshot
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</span> <span class=\"text-xs text-muted-foreground uppercase font-semibold tracking-wider\">Monthly Listeners</span></div></div><button type=\"button\" class=\"btn btn-sm btn-circle btn-ghost\" data-on:click=\"@get('/api/artists/history/close')\" aria-label=\"Close drawer\">✕</button></div><!-- Trend Sparkline -->")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</span> <span class=\"text-xs text-muted-foreground uppercase font-semibold tracking-wider\">Monthly Listeners</span></div></div><button type=\"button\" class=\"btn btn-sm btn-circle btn-ghost\" data-on:click=\"el.closest('dialog').close(); @get('/api/artists/history/close')\" aria-label=\"Close drawer\">✕</button></div><!-- Trend Sparkline -->")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -444,7 +444,7 @@ func ArtistHistoryDrawer(artist Artist, snapshots []projections.ListenerSnapshot
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</span> <button type=\"button\" class=\"btn btn-sm btn-ghost\" data-on:click=\"@get('/api/artists/history/close')\">Close</button></div></div></dialog></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</span> <button type=\"button\" class=\"btn btn-sm btn-ghost\" data-on:click=\"el.closest('dialog').close(); @get('/api/artists/history/close')\">Close</button></div></div></dialog></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

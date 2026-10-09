@@ -65,12 +65,12 @@ func TestThemeMiddleware(t *testing.T) {
 
 	handler := ThemeMiddleware(testHandler)
 
-	// Case 1: No cookie -> defaults to "system"
+	// Case 1: No cookie -> defaults to "dark" (brand default)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if observedTheme != "system" {
-		t.Errorf("expected default theme 'system', got %q", observedTheme)
+	if observedTheme != "dark" {
+		t.Errorf("expected default theme 'dark', got %q", observedTheme)
 	}
 
 	// Case 2: Dark theme cookie

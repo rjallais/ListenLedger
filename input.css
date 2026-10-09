@@ -717,40 +717,54 @@ body {
 .icon-refresh { --icon: var(--icon-refresh); }
 .icon-trend { --icon: var(--icon-trend); }
 
-/* Status select (Open Props / OPUI) */
-.status-select {
-  padding: 0.15rem 0.5rem;
-  font-size: 0.75rem;
-  height: 1.5rem;
-  line-height: 1.2;
-  border-radius: var(--radius-round);
+/* Status select (Open Props / OPUI) — LED pill spec: 20px height, 4px radius,
+   mono uppercase label, phosphor dot prefix via layered background. */
+select.status-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 1.25rem;
+  padding: 0 0.5rem 0 1.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
   font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 4px;
   border: 1px solid var(--border);
   background-color: var(--surface);
+  background-image:
+    radial-gradient(circle 2.5px at center, currentColor 98%, transparent 100%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 0.55rem center, right 0.3rem center;
+  background-size: 5px 5px, 0.7rem 0.7rem;
+  padding-right: 1.2rem;
   color: var(--foreground);
+  cursor: pointer;
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
-.status-select:focus {
+select.status-select:focus {
   outline: none;
   border-color: var(--ring);
   box-shadow: 0 0 0 1px var(--ring);
 }
-.status-select[data-status="included"] {
+select.status-select[data-status="included"] {
   background-color: color-mix(in oklab, var(--success) 12%, var(--surface));
   border-color: color-mix(in oklab, var(--success) 40%, var(--border));
   color: var(--success);
 }
-.status-select[data-status="recently_added"] {
+select.status-select[data-status="recently_added"] {
   background-color: color-mix(in oklab, var(--color-blue-500, #3b82f6) 12%, var(--surface));
   border-color: color-mix(in oklab, var(--color-blue-500, #3b82f6) 40%, var(--border));
   color: var(--color-blue-500, #3b82f6);
 }
-.status-select[data-status="not_added"] {
+select.status-select[data-status="not_added"] {
   background-color: var(--surface);
   border-color: var(--border);
   color: var(--muted-foreground);
 }
-.status-select[data-status="waiting"] {
+select.status-select[data-status="waiting"] {
   background-color: color-mix(in oklab, var(--warning) 12%, var(--surface));
   border-color: color-mix(in oklab, var(--warning) 40%, var(--border));
   color: var(--warning);
@@ -924,7 +938,11 @@ body {
 .font-semibold { font-weight: 600; }
 .font-bold { font-weight: 700; }
 .font-extrabold { font-weight: 800; }
-.font-mono { font-family: var(--font-mono); }
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
 
 .tracking-tight { letter-spacing: -0.025em; }
 .tracking-tighter { letter-spacing: -0.05em; }
@@ -1699,6 +1717,24 @@ details.dropdown[open] > .dropdown-content {
 .dropdown-hover:hover .dropdown-content {
   visibility: visible;
   opacity: 1;
+}
+
+/* Ledger table frame: bordered container with distinct header strip. */
+.ledger-frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  overflow-x: auto;
+  background-color: var(--surface);
+}
+.ledger-frame > table.table {
+  margin: 0;
+}
+.ledger-frame > table.table thead th {
+  background-color: var(--surface-container-high, var(--muted));
+  height: 1.75rem;
+}
+.ledger-frame > table.table tbody tr {
+  min-height: 2.25rem;
 }
 
 /* Tables */
