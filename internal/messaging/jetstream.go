@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -31,6 +32,20 @@ const (
 
 	// EventsStreamName is the JetStream stream used for replayable domain events.
 	EventsStreamName = "EVENTS"
+
+	// DomainEventsStreamName is the durable JetStream stream for domain events
+	// (domain.events.>"). Per the Datastar YouTube canon the append-only log
+	// is the source of truth; SQLite projections are rebuildable indexes.
+	// Legacy artist.updated stays in EVENTS as an ephemeral UI hint alias.
+	DomainEventsStreamName = "DOMAIN_EVENTS"
+
+	// DomainEventsRetention bounds the DOMAIN_EVENTS log. At the observed rate
+	// (~1800 events/day, ~150 bytes each) 90 days is ~162k events / ~32 MB,
+	// well inside the 512 MB default file store. SQLite remains the permanent
+	// log; JetStream is the catch-up buffer for new subscribers and replays.
+	// SCRAPE_REQUESTS deliberately stays at 24h (WorkQueue semantics: rows
+	// older than that are phantoms per queuedJobExpiry).
+	DomainEventsRetention = 90 * 24 * time.Hour
 )
 
 // ScrapeWorkerConsumerNames returns all known scrape consumer durables.
@@ -111,6 +126,36 @@ func EnsureEventsStream(ctx context.Context, js jetstream.JetStream) error {
 	}, "events")
 }
 
+// EnsureDomainEventsStream creates or updates the durable DOMAIN_EVENTS stream
+// for domain.events.> subjects (LimitsPolicy, 90d retention, file storage).
+func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error {
+	return ensureStreamFromConfig(ctx, js, streamConfig{
+		Name:       DomainEventsStreamName,
+		Subjects:   []string{SubjectDomainEventsWildcard},
+		Retention:  jetstream.LimitsPolicy,
+		MaxAge:     DomainEventsRetention,
+		MaxMsgs:    1_000_000,
+		Duplicates: 10 * time.Minute,
+	}, "domain events")
+}
+
+// PublishDomainEvent publishes one domain event to JetStream with the event ID
+// as MsgID so redelivered projections stay idempotent (duplicate-acked).
+func PublishDomainEvent(ctx context.Context, js jetstream.JetStream, subject string, eventID string, data []byte) (*jetstream.PubAck, error) {
+	if strings.TrimSpace(subject) == "" {
+		return nil, fmt.Errorf("publish domain event: empty subject")
+	}
+	var opts []jetstream.PublishOpt
+	if strings.TrimSpace(eventID) != "" {
+		opts = []jetstream.PublishOpt{jetstream.WithMsgID(eventID)}
+	}
+	ack, err := js.Publish(ctx, subject, data, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("publish to subject %s failed: %w", subject, err)
+	}
+	return ack, nil
+}
+
 // EnsureScrapeWorkerConsumer creates or updates the durable scrape worker consumer.
 func EnsureScrapeWorkerConsumer(ctx context.Context, js jetstream.JetStream, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	stream, err := js.Stream(ctx, ScrapeRequestsStreamName)
@@ -124,9 +169,18 @@ func EnsureScrapeWorkerConsumer(ctx context.Context, js jetstream.JetStream, cfg
 	return consumer, nil
 }
 
-// ScrapeRequestMsgID returns a stable de-duplication ID per artist.
-func ScrapeRequestMsgID(artistID string) string {
-	return "scrape.request:" + artistID
+// ScrapeRequestMsgID returns a stable de-duplication ID per scrape request.
+// The request_id is the saga idempotency key (see commands.Log): two publishes
+// with the same request_id dedup within ScrapeRequestDedupWindow, while two
+// different requests for the same artist do NOT dedup — double-click
+// protection lives in the artist aggregate (fetch_status==pending), not here.
+// Empty IDs return "" (publish without MsgID): a shared fallback ID would
+// wrongly dedup distinct requests against each other within the window.
+func ScrapeRequestMsgID(requestID string) string {
+	if strings.TrimSpace(requestID) == "" {
+		return ""
+	}
+	return "scrape.request:" + requestID
 }
 
 type scrapePublishParams struct {
