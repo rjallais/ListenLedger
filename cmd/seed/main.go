@@ -180,10 +180,22 @@ type albumRowFields struct {
 	Status         string
 }
 
-// findAlbumByTitleAndArtist is a thin wrapper around findRecordByTitleAndArtist
-// that supplies cfg's app and collection, keeping the call sites below 5 args.
+// recordLookupQuery encapsulates parameters for title and artist record lookups.
+type recordLookupQuery struct {
+	App        *pocketbase.PocketBase
+	Collection *core.Collection
+	Title      string
+	ArtistName string
+}
+
+// findAlbumByTitleAndArtist finds an existing album matching title and artistName.
 func (cfg albumSeedConfig) findAlbumByTitleAndArtist(ctx context.Context, title, artistName string) (*core.Record, error) {
-	return findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, title, artistName)
+	return findRecordByTitleAndArtist(ctx, recordLookupQuery{
+		App:        cfg.app,
+		Collection: cfg.collection,
+		Title:      title,
+		ArtistName: artistName,
+	})
 }
 
 // updateExistingAlbum sets fields on an existing album record and saves it (or
@@ -204,6 +216,18 @@ func (cfg albumSeedConfig) updateExistingAlbum(ctx context.Context, existing *co
 	return 1
 }
 
+func (cfg albumSeedConfig) resolveAlbumSaveConflict(ctx context.Context, f albumRowFields) (int, bool) {
+	existing, err := cfg.findAlbumByTitleAndArtist(ctx, f.Title, f.ArtistName)
+	if err != nil || existing == nil {
+		return 0, false
+	}
+	if cfg.updateExistingAlbum(ctx, existing, f) == 1 {
+		log.Printf("[seed] Resolved duplicate for album %q by %q via update", f.Title, f.ArtistName)
+		return 1, true
+	}
+	return 0, false
+}
+
 // createNewAlbum creates a new album record from f and saves it (or logs a
 // dry-run message). Returns 1 on success or dry-run, 0 on save failure.
 func (cfg albumSeedConfig) createNewAlbum(ctx context.Context, f albumRowFields) int {
@@ -221,14 +245,8 @@ func (cfg albumSeedConfig) createNewAlbum(ctx context.Context, f albumRowFields)
 
 	if err := cfg.app.SaveWithContext(ctx, record); err != nil {
 		if isUniqueConstraintError(err) {
-			if existing, findErr := findRecordByTitleAndArtist(ctx, cfg.app, cfg.collection, f.Title, f.ArtistName); findErr == nil && existing != nil {
-				existing.Set("collection_songs", f.CollectionSongs)
-				existing.Set("total_songs", f.TotalSongs)
-				existing.Set("status", f.Status)
-				if saveErr := cfg.app.SaveWithContext(ctx, existing); saveErr == nil {
-					log.Printf("[seed] Resolved duplicate for album %q by %q via update", f.Title, f.ArtistName)
-					return 1
-				}
+			if count, ok := cfg.resolveAlbumSaveConflict(ctx, f); ok {
+				return count
 			}
 		}
 		log.Printf("[seed] Warning: failed to save album %q: %v", f.Title, err)
@@ -499,7 +517,12 @@ func (cfg sheet2Config) seedSongRow(ctx context.Context, row []string, added map
 		return 0
 	}
 
-	existing, err := findRecordByTitleAndArtist(ctx, cfg.app, cfg.songsCollection, songTitle, artistName)
+	existing, err := findRecordByTitleAndArtist(ctx, recordLookupQuery{
+		App:        cfg.app,
+		Collection: cfg.songsCollection,
+		Title:      songTitle,
+		ArtistName: artistName,
+	})
 	if err != nil {
 		log.Printf("[seed] Warning: lookup failed for song %q by %q: %v", songTitle, artistName, err)
 		return 0
@@ -584,16 +607,16 @@ func findArtistBySpotifyID(ctx context.Context, app *pocketbase.PocketBase, coll
 	return records[0], nil
 }
 
-func findRecordByTitleAndArtist(ctx context.Context, app *pocketbase.PocketBase, collection *core.Collection, title, artistName string) (*core.Record, error) {
+func findRecordByTitleAndArtist(ctx context.Context, q recordLookupQuery) (*core.Record, error) {
 	records := make([]*core.Record, 0)
-	err := app.RecordQuery(collection.Id).
+	err := q.App.RecordQuery(q.Collection.Id).
 		WithContext(ctx).
-		AndWhere(dbx.NewExp("title = {:title} AND artist_name = {:artistName}", dbx.Params{"title": title, "artistName": artistName})).
+		AndWhere(dbx.NewExp("title = {:title} AND artist_name = {:artistName}", dbx.Params{"title": q.Title, "artistName": q.ArtistName})).
 		OrderBy("created DESC").
 		Limit(1).
 		All(&records)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find record by title %q and artist %q in collection %s: %w", title, artistName, collection.Id, err)
+		return nil, fmt.Errorf("failed to find record by title %q and artist %q in collection %s: %w", q.Title, q.ArtistName, q.Collection.Id, err)
 	}
 	if len(records) == 0 {
 		return nil, nil
