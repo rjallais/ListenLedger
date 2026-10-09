@@ -10,7 +10,7 @@ import (
 	"ListenLedger/config"
 )
 
-func TestFetchViaScraperAPIForbiddenIsNotQuotaExhausted(t *testing.T) {
+func TestFetchViaScraperAPIForbiddenIsQuotaExhausted(t *testing.T) {
 	clientHTTP := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -36,8 +36,8 @@ func TestFetchViaScraperAPIForbiddenIsNotQuotaExhausted(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if errors.Is(err, ErrQuotaExhausted) {
-		t.Fatalf("expected non-quota error, got ErrQuotaExhausted: %v", err)
+	if !errors.Is(err, ErrQuotaExhausted) {
+		t.Fatalf("expected ErrQuotaExhausted on 403, got %v", err)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestFetchViaScraperAPIQuotaExhaustedOn402(t *testing.T) {
 	}
 }
 
-func TestFetchViaScraperAPIUnauthorizedIsNotQuotaExhausted(t *testing.T) {
+func TestFetchViaScraperAPIUnauthorizedIsQuotaExhausted(t *testing.T) {
 	clientHTTP := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -98,7 +98,7 @@ func TestFetchViaScraperAPIUnauthorizedIsNotQuotaExhausted(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if errors.Is(err, ErrQuotaExhausted) {
-		t.Fatalf("expected non-quota error, got ErrQuotaExhausted: %v", err)
+	if !errors.Is(err, ErrQuotaExhausted) {
+		t.Fatalf("expected ErrQuotaExhausted on 401, got %v", err)
 	}
 }
