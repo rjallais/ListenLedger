@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/config"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/messaging"
-
-	"zombiezen.com/go/sqlite"
 )
 
 func TestWorker_EventSourcingAndProjection(t *testing.T) {
@@ -194,7 +194,7 @@ func TestWorker_EventSourcingAndProjection(t *testing.T) {
 	}
 
 	// Set processing
-	w.setScrapeJobProcessing(reqID)
+	w.setScrapeJobProcessing(ctx, reqID)
 
 	// Verify processing
 	err = sqliteDB.ReadTX(ctx, func(tx *sqlite.Conn) error {

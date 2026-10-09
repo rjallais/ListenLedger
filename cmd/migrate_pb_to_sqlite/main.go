@@ -8,10 +8,10 @@ import (
 	"os"
 	"time"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/artist"
-
-	"zombiezen.com/go/sqlite"
 )
 
 func main() {

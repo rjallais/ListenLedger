@@ -29,7 +29,7 @@ func BatchRefreshModal() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-signals=\"{_batch_refresh_open: false}\" data-attr:open=\"$_batch_refresh_open\" data-on:sb-close=\"$_batch_refresh_open = false\" heading=\"Batch Refresh Artists\"><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-indicator:_batch_refresh_loading data-on:submit__prevent=\"@post('/api/refresh/batch', {contentType: 'form'})\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-signals=\"{_batch_refresh_open: false}\" data-attr:open=\"$_batch_refresh_open\" data-on:sb-close=\"$_batch_refresh_open = false\" heading=\"Batch Refresh Artists\"><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-indicator:_batch_refresh_loading data-on:submit__prevent=\"!$_batch_refresh_loading && @post('/api/refresh/batch', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

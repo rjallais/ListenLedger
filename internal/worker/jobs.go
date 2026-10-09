@@ -107,14 +107,14 @@ func (w *Worker) recordJobEventWarn(ctx context.Context, requestID, artistID, wh
 	}
 }
 
-func (w *Worker) setScrapeJobProcessing(requestID string) {
+func (w *Worker) setScrapeJobProcessing(ctx context.Context, requestID string) {
 	if requestID == "" {
 		return
 	}
 
 	if w.db != nil {
 		now := time.Now().UTC().Format(jobTimestampFormat)
-		if err := w.db.WriteWithoutTx(w.ctx, func(tx *sqlite.Conn) error {
+		if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("UPDATE scrape_jobs SET status = 'processing', attempts = attempts + 1, started_at = ?, error = '' WHERE request_id = ?;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, now)
@@ -140,14 +140,14 @@ func (w *Worker) setScrapeJobProcessing(requestID string) {
 	}
 }
 
-func (w *Worker) setScrapeJobFinished(requestID, status, errMsg string) {
+func (w *Worker) setScrapeJobFinished(ctx context.Context, requestID, status, errMsg string) {
 	if requestID == "" {
 		return
 	}
 
 	if w.db != nil {
 		now := time.Now().UTC().Format(jobTimestampFormat)
-		if err := w.db.WriteWithoutTx(w.ctx, func(tx *sqlite.Conn) error {
+		if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("UPDATE scrape_jobs SET status = ?, finished_at = ?, error = ? WHERE request_id = ?;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, status)
@@ -212,7 +212,7 @@ func (w *Worker) setScrapeJobFinishedWithContext(ctx context.Context, requestID,
 	return nil
 }
 
-func (w *Worker) isRequestAlreadySucceeded(requestID string) bool {
+func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string) bool {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return false
@@ -230,7 +230,7 @@ func (w *Worker) isRequestAlreadySucceeded(requestID string) bool {
 	// Domain-level dedup: the request stream's terminal state survives
 	// restarts and retention purges that the cache and scrape_jobs row do not.
 	if w.jobStore != nil {
-		if evts, err := w.jobStore.Load(w.ctx, requestID); err == nil && len(evts) > 0 {
+		if evts, err := w.jobStore.Load(ctx, requestID); err == nil && len(evts) > 0 {
 			if agg, err := scrapejob.Replay(requestID, evts); err == nil && agg.Status() == scrapejob.StatusSucceeded {
 				w.succeededMu.Lock()
 				w.pruneSucceededLocked(now)
@@ -293,25 +293,32 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 	note := reconciliationNote(succeededRequestID)
 
 	if w.db != nil {
-		// Emit recovery facts first so cleared rows stay auditable. Failed
-		// streams stay open for retry, so RecordSucceeded(reconcile) closes
-		// them honestly as recovered_by_retry.
+		// Update only the rows the SELECT below actually returns: the SELECT
+		// is capped at 500 and its errors are handled, while a predicate-wide
+		// UPDATE would flip rows this run never audits (including rows a
+		// concurrent retry moved out of failed after the SELECT ran).
 		type failedJob struct{ requestID, artistID string }
 		var failed []failedJob
-		_ = w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		if err := w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("SELECT request_id, artist_id FROM scrape_jobs WHERE artist_id = ? AND status = 'failed' AND request_id != ? LIMIT 500;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, artistID)
 			stmt.BindText(2, succeededRequestID)
 			for {
 				hasRow, err := stmt.Step()
-				if err != nil || !hasRow {
+				if err != nil {
+					return err
+				}
+				if !hasRow {
 					break
 				}
 				failed = append(failed, failedJob{requestID: stmt.ColumnText(0), artistID: stmt.ColumnText(1)})
 			}
 			return nil
-		})
+		}); err != nil {
+			log.Printf("[worker] Warning: failed to load failed jobs for artist %s, skipping clear: %v", artistID, err)
+			return
+		}
 		for _, job := range failed {
 			if ctx.Err() != nil {
 				break
@@ -323,14 +330,21 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 		}
 		now := time.Now().UTC().Format(jobTimestampFormat)
 		if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE artist_id = ? AND status = 'failed' AND request_id != ?;")
+			stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ?;")
 			defer func() { _ = stmt.Reset() }()
-			stmt.BindText(1, now)
-			stmt.BindText(2, note)
-			stmt.BindText(3, artistID)
-			stmt.BindText(4, succeededRequestID)
-			_, err := stmt.Step()
-			return err
+			for _, job := range failed {
+				if ctx.Err() != nil {
+					break
+				}
+				_ = stmt.Reset()
+				stmt.BindText(1, now)
+				stmt.BindText(2, note)
+				stmt.BindText(3, job.requestID)
+				if _, err := stmt.Step(); err != nil {
+					return err
+				}
+			}
+			return nil
 		}); err != nil {
 			log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
 		}
@@ -546,7 +560,7 @@ func (w *Worker) markStaleJobsSQLite(ctx context.Context, cutoff string) {
 		if ctx.Err() != nil {
 			return
 		}
-		if w.isRequestAlreadySucceeded(job.requestID) {
+		if w.isRequestAlreadySucceeded(ctx, job.requestID) {
 			w.convergeStaleRowToSucceeded(ctx, job.requestID)
 			continue
 		}
@@ -555,7 +569,7 @@ func (w *Worker) markStaleJobsSQLite(ctx context.Context, cutoff string) {
 			return err
 		}); err != nil {
 			// Lost race with a concurrent completion: converge, don't fail.
-			if w.isRequestAlreadySucceeded(job.requestID) {
+			if w.isRequestAlreadySucceeded(ctx, job.requestID) {
 				w.convergeStaleRowToSucceeded(ctx, job.requestID)
 				continue
 			}
@@ -651,7 +665,7 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 		requestID := job.GetString("request_id")
 
 		// Crash-window convergence: stream already succeeded, don't fail it.
-		if w.isRequestAlreadySucceeded(requestID) {
+		if w.isRequestAlreadySucceeded(ctx, requestID) {
 			continue
 		}
 		// Event first so a crash leaves a fact, not a phantom row flip.
@@ -659,7 +673,7 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 			_, _, err := j.RecordFailed("stale_timeout", eventsourcing.Correlation{RequestID: requestID})
 			return err
 		}); err != nil {
-			if w.isRequestAlreadySucceeded(requestID) {
+			if w.isRequestAlreadySucceeded(ctx, requestID) {
 				continue
 			}
 			log.Printf("[worker] Warning: job event stale-timeout for request %s not logged: %v", requestID, err)

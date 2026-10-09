@@ -23,7 +23,7 @@ templ AddSongForm() {
 	<form
 		id="add-song-form"
 		data-indicator:_loading
-		data-on:submit__prevent="@post('/api/songs', {contentType: 'form'})"
+		data-on:submit__prevent="!$_loading && @post('/api/songs', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
 			<label class="label" for="song-name">

@@ -175,7 +175,6 @@ func RenderDatastarWithConfig(w http.ResponseWriter, r *http.Request, cfg *confi
 	return nil
 }
 
-// RenderDatastar renders a templ component patch via Datastar SSE with default options.
 // writeJSON writes a JSON response with status code and sets Content-Type.
 func writeJSON(w http.ResponseWriter, status int, data any) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

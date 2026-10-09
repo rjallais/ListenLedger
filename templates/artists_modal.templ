@@ -23,7 +23,7 @@ templ AddArtistForm(currentGenre string) {
 	<form
 		id="add-artist-form"
 		data-indicator:_add_artist_loading
-		data-on:submit__prevent="@post('/api/artists', {contentType: 'form'})"
+		data-on:submit__prevent="!$_add_artist_loading && @post('/api/artists', {contentType: 'form'})"
 	>
 		@AddArtistNameField()
 		@AddArtistSpotifyIDField()

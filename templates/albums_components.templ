@@ -228,7 +228,7 @@ templ AddAlbumForm() {
 	<form
 		id="add-album-form"
 		data-indicator:_loading
-		data-on:submit__prevent="@post('/api/albums', {contentType: 'form'})"
+		data-on:submit__prevent="!$_loading && @post('/api/albums', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
 			<label class="label" for="album-title">

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
-
-	"github.com/go-chi/chi/v5"
-	"zombiezen.com/go/sqlite"
 )
 
 // TestHandlers_CatalogEventSourcingAndReplay exercises the user path: create an

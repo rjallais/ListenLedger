@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -35,14 +36,14 @@ func (e *EmbeddedNATS) Close(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	drainClientConn(ctx, e.Conn)
-	shutdownServer(ctx, e.Server)
-	return nil
+	drainErr := drainClientConn(ctx, e.Conn)
+	shutdownErr := shutdownServer(ctx, e.Server)
+	return errors.Join(drainErr, shutdownErr)
 }
 
-func drainClientConn(ctx context.Context, conn *nats.Conn) {
+func drainClientConn(ctx context.Context, conn *nats.Conn) error {
 	if conn == nil || conn.IsClosed() {
-		return
+		return nil
 	}
 	flushDone := make(chan struct{})
 	go func() {
@@ -52,21 +53,30 @@ func drainClientConn(ctx context.Context, conn *nats.Conn) {
 	select {
 	case <-flushDone:
 	case <-ctx.Done():
+		return ctx.Err()
 	}
 
-	closed := make(chan struct{})
-	conn.SetClosedHandler(func(*nats.Conn) { close(closed) })
-	if err := conn.Drain(); err == nil {
+	// Poll IsClosed instead of SetClosedHandler: installing a handler would
+	// overwrite any handler set earlier, and the wait below observes the
+	// same state without racing handler configuration on a live Conn.
+	if err := conn.Drain(); err != nil {
+		return fmt.Errorf("drain NATS client connection: %w", err)
+	}
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	for !conn.IsClosed() {
 		select {
-		case <-closed:
 		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
 		}
 	}
+	return nil
 }
 
-func shutdownServer(ctx context.Context, server *natsserver.Server) {
+func shutdownServer(ctx context.Context, server *natsserver.Server) error {
 	if server == nil {
-		return
+		return nil
 	}
 	server.Shutdown()
 	shutdownDone := make(chan struct{})
@@ -76,8 +86,9 @@ func shutdownServer(ctx context.Context, server *natsserver.Server) {
 	}()
 	select {
 	case <-shutdownDone:
+		return nil
 	case <-ctx.Done():
-		log.Printf("[nats] warning: embedded NATS server shutdown interrupted: %v", ctx.Err())
+		return fmt.Errorf("embedded NATS server shutdown interrupted: %w", ctx.Err())
 	}
 }
 

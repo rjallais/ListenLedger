@@ -273,7 +273,7 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 			return
 		}
 		if elog != nil {
-			elog.recordFetchFailed(ctx, rec.Id, rec.GetString("name"), spotifyID,
+			elog.recordFetchFailed(context.WithoutCancel(ctx), rec.Id, rec.GetString("name"), spotifyID,
 				rec.GetString("genre_group"), rec.GetString("list_status"), err.Error())
 		}
 		return
@@ -289,7 +289,7 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 		return
 	}
 	if elog != nil {
-		elog.recordListeners(ctx, rec.Id, rec.GetString("name"), spotifyID,
+		elog.recordListeners(context.WithoutCancel(ctx), rec.Id, rec.GetString("name"), spotifyID,
 			rec.GetString("genre_group"), rec.GetString("list_status"), int64(listeners), durationMs)
 	}
 }

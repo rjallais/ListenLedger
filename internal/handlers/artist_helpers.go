@@ -565,9 +565,15 @@ func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, r
 func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) error {
 	// Event first: aggregate owns pending state, projection updates the
 	// SQLite read model. Direct row writes below are compat mirrors.
+	previousStatus := record.GetString("fetch_status")
 	h.emitArtistFetchStatus(ctx, record.Id, "pending", "queue refresh", requestID)
 	record.Set("fetch_status", "pending")
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
+		// Roll back the emitted fact so the aggregate does not stay pending
+		// forever (which would report every later refresh as already_queued).
+		if rbErr := h.unmarkArtistRefreshQueued(ctx, record, previousStatus, requestID); rbErr != nil {
+			return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w (rollback: %v)", err, rbErr)
+		}
 		return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w", err)
 	}
 	// SQLite-first: keep the SQLite read model in sync (source of truth for

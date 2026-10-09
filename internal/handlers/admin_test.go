@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"ListenLedger/internal/eventsourcing"
 )
 
 // TestAdminStatus_EmptyDB proves the ops endpoint serves with zero state and
@@ -56,7 +58,7 @@ func TestAdminStatus_WithBatchAndCheckpoint(t *testing.T) {
 	if snap.Total != 1 {
 		t.Fatalf("batch total = %d, want 1", snap.Total)
 	}
-	if err := h.store.SaveCheckpoint(ctx, "artist", 42); err != nil {
+	if err := h.store.SaveCheckpoint(ctx, eventsourcing.CheckpointArtistProjection, 42); err != nil {
 		t.Fatalf("SaveCheckpoint: %v", err)
 	}
 

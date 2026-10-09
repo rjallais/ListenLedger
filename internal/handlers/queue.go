@@ -363,26 +363,40 @@ func (h *Handler) expireStaleQueuedJobsSQLite(ctx context.Context, cutoff string
 	// fail jobs beyond the 500-row cap that this run never emits facts for.
 	placeholders := strings.Repeat("?,", len(expired))
 	placeholders = strings.TrimSuffix(placeholders, ",")
+	// Collect the rows the UPDATE actually changes: a worker can move a
+	// selected job to processing before the UPDATE runs, and the status guard
+	// then skips it. Facts below must cover only changed rows, never skipped
+	// ones (which would record a false failure for a running job).
+	var updated []expiredJob
 	err = h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("UPDATE scrape_jobs SET status = 'failed', finished_at = ?, error = 'queue_expired' WHERE status = 'queued' AND queued_at < ? AND request_id IN (" + placeholders + ");")
+		stmt := tx.Prep("UPDATE scrape_jobs SET status = 'failed', finished_at = ?, error = 'queue_expired' WHERE status = 'queued' AND queued_at < ? AND request_id IN (" + placeholders + ") RETURNING request_id, artist_id;")
 		defer func() { _ = stmt.Reset() }()
 		stmt.BindText(1, now)
 		stmt.BindText(2, cutoff)
 		for i, job := range expired {
 			stmt.BindText(i+3, job.requestID)
 		}
-		_, err := stmt.Step()
-		return err
+		for {
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if !hasRow {
+				break
+			}
+			updated = append(updated, expiredJob{requestID: stmt.ColumnText(0), artistID: stmt.ColumnText(1)})
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("expire stale queued jobs (SQLite): %w", err)
 	}
-	stats.StaleQueuedExpired = len(expired)
+	stats.StaleQueuedExpired = len(updated)
 	if len(expired) == 500 {
 		log.Printf("[queue-retry] stale queued expiry hit 500-record cap; remainder on next run")
 	}
-	log.Printf("[queue-retry] expired %d stale queued job(s) older than %s", len(expired), queuedJobExpiry)
-	for _, job := range expired {
+	log.Printf("[queue-retry] expired %d stale queued job(s) older than %s", len(updated), queuedJobExpiry)
+	for _, job := range updated {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

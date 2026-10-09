@@ -357,6 +357,8 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 				VALUES (?, ?, ?, 'queued', 0, '', ?)
 				ON CONFLICT(request_id) DO NOTHING;`)
 			defer func() { _ = stmt.Reset() }()
+			statusStmt := tx.Prep(`UPDATE artists SET fetch_status = 'pending' WHERE id = ?;`)
+			defer func() { _ = statusStmt.Reset() }()
 			for _, candidate := range candidates {
 				if ctx.Err() != nil {
 					break
@@ -367,6 +369,14 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 				stmt.BindText(3, candidate.job.Record.Id)
 				stmt.BindText(4, now)
 				if _, err := stmt.Step(); err != nil {
+					return err
+				}
+				// Artists mirror: without it SQLite keeps idle while PB and
+				// scrape_jobs say queued, so the batch reconciler would
+				// complete members instantly and queue counts under-report.
+				_ = statusStmt.Reset()
+				statusStmt.BindText(1, candidate.job.Record.Id)
+				if _, err := statusStmt.Step(); err != nil {
 					return err
 				}
 			}

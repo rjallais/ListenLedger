@@ -14,7 +14,7 @@ templ BatchRefreshModal() {
 		<form
 			id="batch-refresh-form"
 			data-indicator:_batch_refresh_loading
-			data-on:submit__prevent="@post('/api/refresh/batch', {contentType: 'form'})"
+			data-on:submit__prevent="!$_batch_refresh_loading && @post('/api/refresh/batch', {contentType: 'form'})"
 		>
 			@BatchRefreshCountField()
 		</form>

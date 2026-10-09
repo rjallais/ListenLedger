@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/internal/correlation"
 	"ListenLedger/internal/domain/artist"
-
-	"zombiezen.com/go/sqlite"
 )
 
 const queueTestTS = "2006-01-02 15:04:05.000Z"

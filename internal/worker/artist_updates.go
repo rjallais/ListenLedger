@@ -144,11 +144,18 @@ func (w *Worker) updateArtistStatus(ctx context.Context, artistID, status string
 	// 1. Event store & projection update
 	if w.artistRepo != nil {
 		agg, err := w.artistRepo.Load(ctx, artistID)
-		if err == nil && agg != nil {
-			if err := agg.SetFetchStatus(status, "", corr); err == nil {
-				events, saveErr := w.artistRepo.Save(ctx, agg)
-				if saveErr == nil && len(events) > 0 && w.artistProjection != nil {
-					_ = w.artistProjection.Project(ctx, agg, events)
+		if err != nil {
+			if !errors.Is(err, eventsourcing.ErrStreamNotFound) {
+				log.Printf("[worker] Warning: load artist aggregate %s for status update: %v", artistID, err)
+			}
+		} else if agg != nil {
+			if err := agg.SetFetchStatus(status, "", corr); err != nil {
+				log.Printf("[worker] Warning: set fetch status %s for artist %s: %v", status, artistID, err)
+			} else if events, saveErr := w.artistRepo.Save(ctx, agg); saveErr != nil {
+				log.Printf("[worker] Warning: save status event %s for artist %s: %v", status, artistID, saveErr)
+			} else if len(events) > 0 && w.artistProjection != nil {
+				if projErr := w.artistProjection.Project(ctx, agg, events); projErr != nil {
+					log.Printf("[worker] Warning: project status event %s for artist %s: %v", status, artistID, projErr)
 				}
 			}
 		}
@@ -186,11 +193,44 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 		return fmt.Errorf("check cancellation before loading artist %s for listener update: %w", artistID, err)
 	}
 
-	// 1. Event store & projection
+	// 1. PocketBase update for backward compatibility, first: the sets below
+	// are idempotent, so a failure here leaves no fact behind and a retry is
+	// clean. (Appending the event first would record a fact that a retry
+	// would duplicate when this save fails.)
+	if w.app != nil {
+		record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
+			q.WithContext(ctx)
+			return nil
+		})
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("load artist %s for listener update: %w", artistID, err)
+		}
+
+		record.Set("monthly_listeners", listeners)
+		record.Set("last_updated", time.Now())
+		record.Set("fetch_status", "idle")
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("check cancellation before saving listeners for artist %s: %w", artistID, err)
+		}
+		if err := w.app.Save(record); err != nil {
+			return fmt.Errorf("save listeners for artist %s: %w", artistID, err)
+		}
+	}
+
+	// 2. Event store & projection
 	if w.artistRepo != nil {
 		agg, err := w.artistRepo.Load(ctx, artistID)
 		if err != nil {
 			if errors.Is(err, eventsourcing.ErrStreamNotFound) {
+				// Bootstrap from PocketBase when available: legacy artists
+				// predate the event log. Without app there is no row to
+				// seed from (event-only operation, e.g. tests), so fall
+				// back to the artist ID; with app a missing row means the
+				// artist does not exist and fabricating one would ghost a
+				// placeholder aggregate, so fail instead.
 				name := artistID
 				spotifyID := ""
 				genreGroup := "everything_else"
@@ -200,12 +240,16 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 						q.WithContext(ctx)
 						return nil
 					})
-					if recErr == nil && rec != nil {
-						name = rec.GetString("name")
-						spotifyID = rec.GetString("spotify_id")
-						genreGroup = rec.GetString("genre_group")
-						listStatus = rec.GetString("list_status")
+					if recErr != nil {
+						return fmt.Errorf("load artist %s for aggregate seed: %w", artistID, recErr)
 					}
+					if rec == nil {
+						return fmt.Errorf("seed artist aggregate %s: PocketBase row missing", artistID)
+					}
+					name = rec.GetString("name")
+					spotifyID = rec.GetString("spotify_id")
+					genreGroup = rec.GetString("genre_group")
+					listStatus = rec.GetString("list_status")
 				}
 				agg, err = artist.NewArtist(artistID, name, spotifyID, genreGroup, listStatus)
 				if err != nil {
@@ -233,30 +277,6 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 			if err := w.artistProjection.Project(ctx, agg, events); err != nil {
 				log.Printf("[worker] Warning: projection error for artist %s: %v", artistID, err)
 			}
-		}
-	}
-
-	// 2. PocketBase update for backward compatibility
-	if w.app != nil {
-		record, err := w.app.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
-			q.WithContext(ctx)
-			return nil
-		})
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-			return fmt.Errorf("load artist %s for listener update: %w", artistID, err)
-		}
-
-		record.Set("monthly_listeners", listeners)
-		record.Set("last_updated", time.Now())
-		record.Set("fetch_status", "idle")
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("check cancellation before saving listeners for artist %s: %w", artistID, err)
-		}
-		if err := w.app.Save(record); err != nil {
-			return fmt.Errorf("save listeners for artist %s: %w", artistID, err)
 		}
 	}
 	return nil

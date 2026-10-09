@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"testing"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/config"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/scrapejob"
 	"ListenLedger/internal/messaging"
-
-	"zombiezen.com/go/sqlite"
 )
 
 func setupTestJobWorker(t *testing.T) (*Worker, context.Context) {
@@ -86,7 +86,7 @@ func TestJobEvents_TransitionsAndDedup(t *testing.T) {
 	}
 
 	// Not terminal: dedup stays false without touching PocketBase (app is nil).
-	if w.isRequestAlreadySucceeded("req_j1") {
+	if w.isRequestAlreadySucceeded(ctx, "req_j1") {
 		t.Fatal("processing job should not dedup")
 	}
 
@@ -100,7 +100,7 @@ func TestJobEvents_TransitionsAndDedup(t *testing.T) {
 	}
 
 	// Terminal success dedups purely from the stream (restart-safe).
-	if !w.isRequestAlreadySucceeded("req_j1") {
+	if !w.isRequestAlreadySucceeded(ctx, "req_j1") {
 		t.Fatal("succeeded job should dedup from its stream")
 	}
 
@@ -147,7 +147,7 @@ func TestJobEvents_FailedAndDeadLettered(t *testing.T) {
 			t.Fatalf("stream = %v, want %v", got, want)
 		}
 	}
-	if w.isRequestAlreadySucceeded("req_j2") {
+	if w.isRequestAlreadySucceeded(ctx, "req_j2") {
 		t.Fatal("dead-lettered job should not dedup as succeeded")
 	}
 }

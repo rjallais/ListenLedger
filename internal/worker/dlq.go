@@ -31,7 +31,7 @@ func (w *Worker) handleDLQ(ctx context.Context, env msgEnvelope, err error) msgR
 	if statusErr := w.updateArtistStatus(ctx, env.req.ArtistID, "failed", env.req.RequestID); statusErr != nil {
 		log.Printf("[worker] Failed to mark retry-exhausted artist %s as failed: %v", env.req.ArtistID, statusErr)
 	}
-	w.setScrapeJobFinished(env.req.RequestID, "failed", "retry_exhausted")
+	w.setScrapeJobFinished(ctx, env.req.RequestID, "failed", "retry_exhausted")
 	w.recordJobEventWarn(ctx, env.req.RequestID, env.req.ArtistID, "dead-lettered", func(j *scrapejob.Job) error {
 		corr := eventsourcing.Correlation{RequestID: env.req.RequestID}
 		if _, _, err := j.RecordFailed(reason, corr); err != nil {

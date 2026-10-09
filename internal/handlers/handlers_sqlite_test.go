@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/config"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/projections"
-
-	"zombiezen.com/go/sqlite"
 )
 
 func setupTestSQLiteDB(t *testing.T) (*Handler, string) {

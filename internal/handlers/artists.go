@@ -126,30 +126,57 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 		artistID = record.Id
 	}
 
+	// Persistence below must not report success when nothing was stored:
+	// the PB row above already exists, so failures here delete the orphan
+	// instead of returning 201 for an artist that exists nowhere.
+	deleteOrphan := func() {
+		if h.app == nil || record == nil {
+			return
+		}
+		if delErr := h.app.Delete(record); delErr != nil {
+			log.Printf("[artists] failed deleting orphaned artist record %s: %v", record.Id, delErr)
+		}
+	}
+	respondCreateError := func(msg string, cause error) {
+		log.Printf("[artists] create artist persistence failure: %v", cause)
+		if wantsJSONResponse(r) {
+			writeError(w, http.StatusInternalServerError, msg)
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = sse.PatchElementTempl(templates.AddArtistErrorNotice(msg))
+	}
+
 	if h.artistRepo != nil {
 		agg, err := artist.NewArtist(artistID, input.name, input.spotifyID, input.genreGroup, input.listStatus)
-		if err == nil {
-			if input.monthlyListeners > 0 {
-				if recErr := agg.RecordMonthlyListeners(int64(input.monthlyListeners), "manual", 0); recErr != nil {
-					log.Printf("[artists] failed recording listeners for new artist %s: %v", artistID, recErr)
-				}
+		if err != nil {
+			deleteOrphan()
+			respondCreateError("failed to save artist", err)
+			return
+		}
+		if input.monthlyListeners > 0 {
+			if recErr := agg.RecordMonthlyListeners(int64(input.monthlyListeners), "manual", 0); recErr != nil {
+				log.Printf("[artists] failed recording listeners for new artist %s: %v", artistID, recErr)
 			}
-			if input.collectionSongs > 0 {
-				if adjErr := agg.AdjustCollectionSongs(int64(input.collectionSongs), 0); adjErr != nil {
-					log.Printf("[artists] failed adjusting collection songs for new artist %s: %v", artistID, adjErr)
-				}
+		}
+		if input.collectionSongs > 0 {
+			if adjErr := agg.AdjustCollectionSongs(int64(input.collectionSongs), 0); adjErr != nil {
+				log.Printf("[artists] failed adjusting collection songs for new artist %s: %v", artistID, adjErr)
 			}
-			events, saveErr := h.artistRepo.Save(ctx, agg)
-			if saveErr != nil {
-				log.Printf("[artists] failed saving aggregate for new artist %s: %v", artistID, saveErr)
-			} else if h.artistProjection != nil && len(events) > 0 {
-				if projErr := h.artistProjection.Project(ctx, agg, events); projErr != nil {
-					log.Printf("[artists] failed projecting new artist %s: %v", artistID, projErr)
-				}
+		}
+		events, saveErr := h.artistRepo.Save(ctx, agg)
+		if saveErr != nil {
+			deleteOrphan()
+			respondCreateError("failed to save artist", saveErr)
+			return
+		}
+		if h.artistProjection != nil && len(events) > 0 {
+			if projErr := h.artistProjection.Project(ctx, agg, events); projErr != nil {
+				log.Printf("[artists] failed projecting new artist %s: %v", artistID, projErr)
 			}
 		}
 	} else if h.db != nil {
-		_ = h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		if writeErr := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("INSERT OR REPLACE INTO artists (id, name, spotify_id, monthly_listeners, genre_group, list_status, fetch_status, collection_songs, total_songs, last_updated, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);")
 			defer func() { _ = stmt.Reset() }()
 			nowStr := time.Now().UTC().Format(time.RFC3339Nano)
@@ -166,7 +193,11 @@ func (h *Handler) HandleCreateArtist(w http.ResponseWriter, r *http.Request) {
 			stmt.BindText(11, nowStr)
 			_, err := stmt.Step()
 			return err
-		})
+		}); writeErr != nil {
+			deleteOrphan()
+			respondCreateError("failed to save artist", writeErr)
+			return
+		}
 	}
 
 	// Get total count for this genre to calculate dynamic total_songs.

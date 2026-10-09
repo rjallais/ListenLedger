@@ -80,7 +80,7 @@ func AddArtistForm(currentGenre string) templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"add-artist-form\" data-indicator:_add_artist_loading data-on:submit__prevent=\"@post('/api/artists', {contentType: 'form'})\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"add-artist-form\" data-indicator:_add_artist_loading data-on:submit__prevent=\"!$_add_artist_loading && @post('/api/artists', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

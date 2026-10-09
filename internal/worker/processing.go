@@ -36,7 +36,7 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 	item.dispatchProgress.Stop()
 
-	if w.isRequestAlreadySucceeded(env.req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, env.req.RequestID) {
 		return w.handleDedupSkip(ctx, env)
 	}
 
@@ -371,7 +371,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 	startedAt := time.Now()
 	req := env.req
 
-	if w.isRequestAlreadySucceeded(req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale redelivery for already-succeeded request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}
@@ -384,7 +384,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 		_, _, err := j.RecordStarted(eventsourcing.Correlation{RequestID: req.RequestID})
 		return err
 	})
-	w.setScrapeJobProcessing(req.RequestID)
+	w.setScrapeJobProcessing(ctx, req.RequestID)
 
 	if err := w.updateArtistStatus(ctx, req.ArtistID, "pending", req.RequestID); err != nil {
 		return fmt.Errorf("set pending: %w", err)
@@ -399,7 +399,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 		return err
 	}
 
-	if w.isRequestAlreadySucceeded(req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale duplicate completion for request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}
@@ -441,7 +441,7 @@ func (w *Worker) handleFetcherUnavailable(ctx context.Context, req messaging.Scr
 		_, _, err := j.RecordFailed("fetcher_unavailable", eventsourcing.Correlation{RequestID: req.RequestID})
 		return err
 	})
-	w.setScrapeJobFinished(req.RequestID, "failed", "fetcher_unavailable")
+	w.setScrapeJobFinished(ctx, req.RequestID, "failed", "fetcher_unavailable")
 	return errTerminalFailure
 }
 
@@ -462,7 +462,7 @@ func (w *Worker) fetchListeners(ctx context.Context, req messaging.ScrapeRequest
 			return 0, fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, label, err)
 		}
 
-		if w.isRequestAlreadySucceeded(req.RequestID) {
+		if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 			log.Printf("[worker] Ignoring stale fetch error for already-succeeded request_id=%s", req.RequestID)
 			return 0, errRequestAlreadySucceeded
 		}

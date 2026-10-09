@@ -73,17 +73,24 @@ func Run(ctx context.Context) error {
 		h := handlers.New(app, embeddedNATS.Conn, embeddedNATS.JS, cfg, handlers.WithDatabase(sqliteDB))
 		h.RegisterRoutes(se.Router)
 
+		// Background workers share a cancelable context so the terminate hook
+		// below stops them before any database is closed: relay, orchestrator,
+		// and reconciler must never observe a closed SQLite DB, and the relay
+		// must stop publishing before NATS drains.
+		bgCtx, cancelBG := context.WithCancel(ctx)
+		defer cancelBG()
+
 		// Outbox relay: publishes SQLite outbox rows (written transactionally
 		// with events) to JetStream DOMAIN_EVENTS. Catches migration backfill
 		// and any commit whose synchronous projection publish crashed.
 		relay := outbox.NewRelay(slog.Default(), sqliteDB, embeddedNATS.JS)
-		go relay.Run(ctx)
+		go relay.Run(bgCtx)
 
 		// Saga orchestrator: refreshes durable saga_instances states from
 		// job streams (observability for scrapejob→artist sagas). Like the
 		// relay it is crash-safe: Tick derives everything, so restarts just
 		// re-converge on the next pass.
-		go saga.NewOrchestrator(sqliteDB).Run(ctx, 30*time.Second)
+		go saga.NewOrchestrator(sqliteDB).Run(bgCtx, 30*time.Second)
 
 		// Batch saga reconciler: converges durable batch progress without UI
 		// polling. Startup tick recovers batches whose artist.updated fanout
@@ -91,7 +98,7 @@ func Run(ctx context.Context) error {
 		// messages and failed CompleteArtist writes. Reconcile reads the
 		// SQLite read model (not ephemeral NATS) and logs each catch-up as
 		// a BatchArtistCompleted fact, so it is crash-safe.
-		go h.RunBatchReconciler(ctx, 5*time.Second)
+		go h.RunBatchReconciler(bgCtx, 5*time.Second)
 
 		// Self-heal crash orphans (pending artists without jobs, phantom
 		// queued rows older than stream retention) once at boot so the queue
@@ -99,7 +106,7 @@ func Run(ctx context.Context) error {
 		// async so it never blocks serving. Derived from the app context so
 		// shutdown cancels it promptly.
 		go func() {
-			rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			rctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 			if err := h.ReconcileQueueOnStartup(rctx); err != nil {
 				app.Logger().Warn("[app] startup queue reconcile failed", "err", err)
@@ -114,10 +121,16 @@ func Run(ctx context.Context) error {
 
 		app.OnTerminate().BindFunc(func(te *core.TerminateEvent) error {
 			w.Stop()
+			// Stop background SQLite users first, then drain NATS within the
+			// shutdown budget, and close SQLite last so no goroutine can
+			// observe a closed database or publish during the drain.
+			cancelBG()
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
+			if err := embeddedNATS.Close(shutdownCtx); err != nil {
+				app.Logger().Warn("[nats] embedded NATS shutdown error", "err", err)
+			}
 			_ = sqliteDB.Close()
-			_ = embeddedNATS.Close(shutdownCtx)
 			app.Logger().Info("[nats] Embedded NATS server stopped")
 			return te.Next()
 		})

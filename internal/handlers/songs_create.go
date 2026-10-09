@@ -859,6 +859,20 @@ func (h *Handler) deleteScrapeJobRecordByRequestID(ctx context.Context, requestI
 	if err := h.app.Delete(records[0]); err != nil {
 		return fmt.Errorf("delete scrape job %s: %w", records[0].Id, err)
 	}
+	// SQLite mirror cleanup: without it the mirrored row stays queued for up
+	// to queuedJobExpiry, reporting phantom jobs and shielding orphans. Warn
+	// only — the PB delete above already succeeded.
+	if h.db != nil {
+		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep(`DELETE FROM scrape_jobs WHERE request_id = ?;`)
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, requestID)
+			_, err := stmt.Step()
+			return err
+		}); err != nil {
+			log.Printf("[handlers] Warning: failed to delete SQLite scrape job %s: %v", requestID, err)
+		}
+	}
 	return nil
 }
 
