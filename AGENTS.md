@@ -6,7 +6,7 @@ Guide for AI agents working in the ListenLedger codebase.
 - Primary app is a Go web dashboard using PocketBase + embedded NATS + Templ + Datastar (SSE). Entry point: `main.go`.
 - Background scraping flow: `/api/refresh/{artistId}` publishes `scrape.request` -> `internal/worker` consumes -> `internal/fetcher` retries -> `internal/spotify` (local headless, self-hosted Browserless, cloud Browserless, ScrapingAnt, ScraperAPI, Apify) -> updates PocketBase and publishes `artist.updated` for SSE.
 - Worker architecture: a single durable JetStream consumer feeds a shared Go channel. Each configured provider runs a goroutine pool sized to its concurrency limit (pull-based). Providers pull work as they have capacity — e.g. a provider with 5 slots keeps 5 requests in flight. On quota exhaustion (`spotify.ErrQuotaExhausted`), the provider's entire goroutine pool shuts down; when all providers are exhausted the NATS consumer is drained. NAK-ed messages remain in JetStream for redelivery by surviving providers or after a restart.
-- Standalone utilities: `cmd/update_listeners` (PocketBase + go-rod bulk refresh with priority ordering), `cmd/seed` (CSV seeding for albums/artists/songs), `cmd/backfill_song_artists` (audit/apply missing song artist Spotify IDs with report/review-queue output), and `cmd/safebackup` (VACUUM INTO SQLite backups).
+- Standalone utilities: `cmd/update_listeners` (go-rod bulk refresh with priority ordering; folds results as listener/fetch-status facts into the event log, PocketBase writes stay primary), `cmd/seed` (CSV seeding for albums/artists/songs), `cmd/backfill_song_artists` (audit/apply missing song artist Spotify IDs with report/review-queue output), and `cmd/safebackup` (VACUUM INTO SQLite backups).
 
 ## Build/Lint/Test Commands
 
@@ -31,7 +31,7 @@ go vet ./...
 # Generate templ files (after editing templates/*.templ)
 go tool templ generate
 
-# Generate Tailwind CSS (after editing input.css)
+# Build CSS and assets (after editing input.css)
 mise run build:css
 
 # Hot reload development server
@@ -42,6 +42,9 @@ go run ./cmd/update_listeners
 go run ./cmd/seed --dry-run
 go run ./cmd/backfill_song_artists
 go run ./cmd/safebackup
+go run ./cmd/replay --dry-run
+go run ./cmd/audit
+go run ./cmd/audit --pb-mirror
 ```
 
 ## Code Style Guidelines
@@ -127,14 +130,15 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - **Scrape job tracking**: `scrape_jobs` stores queued/processing/succeeded/failed attempts and powers `/api/queue` plus `/api/queue/retry` (see `migrations/1760500000_scrape_jobs.go`, `internal/handlers/queue.go`, `internal/worker/jobs.go`).
 - **Spotify providers**: local headless (go-rod), self-hosted Browserless (OCI container via `docker-compose.yml`), cloud Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
 - **SSE UI updates**: `/api/events` uses Datastar fragments from `internal/handlers/handlers.go`.
-- **Batch refresh UI**: `/api/refresh/batch` creates in-memory progress state in `internal/handlers/batch_progress.go`; completion is driven by `artist.updated` events.
+- **Ops status**: `/api/admin/status` reports outbox lag, projection/relay checkpoints, saga states, and the active batch (read-only; same open-endpoint posture as `/api/queue` and `/api/quota`).
+- **Batch refresh UI**: `/api/refresh/batch` creates durable batch progress in SQLite (`internal/batchprogress`) with a background reconciler; low-latency completion is driven by `artist.updated` events with reconcile backstop.
 - **Quota checks**: `/api/quota` in `internal/handlers/handlers.go` calls `internal/quota` (ScrapingAnt usage API, Apify `/v2/users/me/limits` for both USD budget and actor memory; Browserless/ScraperAPI assumed available). The `quota.Checker` struct exposes `ScrapingAntAPIBase`, `ScraperAPIBase`, and `ApifyAPIBase` fields that default to production URLs but can be overridden in unit tests with `httptest.NewServer` URLs. At runtime, `spotify.ErrQuotaExhausted` propagates from provider HTTP responses (401/402/403/429) through `internal/fetcher` (which skips retries on quota errors) to `internal/worker` (which NAKs the message and shuts down the provider pool).
 - **Apify pre-flight guard**: Before the Apify provider pool processes a message, `internal/worker` calls `quota.CheckApify()` to verify USD budget and actor memory availability. If the check fails the message is NAK-ed immediately (returned to JetStream for other providers) and the Apify pool shuts down — avoiding a wasted Actor run that would 402.
 
 ## Developer Workflows
 - Requires Go 1.27+; `encoding/json/v2` is stable with no build-tag gating.
 - Templ: edit `templates/*.templ`, then run `go tool templ generate` to update `templates/*_templ.go`.
-- Tailwind: edit `input.css`, then run `mise run build:css` (embedded esbuild via `cmd/build`; also bundles JS).
+- CSS/Styling: edit `input.css`, then run `mise run build:css` (embedded esbuild via `cmd/build`; copies CSS and bundles JS).
 - PocketBase data dir is resolved by `internal/appdir.ResolveDataDir()`: default `pb_data/`, override with `PB_DATA_DIR` for the web app, `cmd/seed`, and `cmd/update_listeners`.
 - Web app uses `pb_data/` for SQLite and is created on first run; PocketBase admin UI is at `/_/`.
 
@@ -143,6 +147,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - Fetch retries use per-request timeouts and exponential backoff (`internal/fetcher/fetcher.go`).
 - UI paging/lazy loading uses HTML fragment endpoints (e.g., `/api/albums/{status}`, `/api/artists/waiting`).
 - CSV seeding lives in `cmd/seed/main.go` for `Music - Sheet1.csv` and `Music - Sheet2.csv`; use `--dry-run` to inspect creates before writing records.
+- **CQRS doctrine**: SQLite `events` is the write-side source of truth (append-only, never mutated/deleted in production). SQLite read tables (`artists`, `albums`, `songs`, `batches`) and PocketBase collections are derived: write state changes by appending events first, then projecting/mirroring — never write read models without a fact (rank caches like artist `total_songs` are derived, not facts). JetStream streams are transport buffers with retention (`SCRAPE_REQUESTS` 24h work-queue, `EVENTS` 7d UI fanout, `DOMAIN_EVENTS` 90d catch-up), never the source of truth — nothing rebuilds state from JetStream; `cmd/replay` folds from SQLite. Verify convergence with `go run ./cmd/audit` (read-only; run quiescent — event-first ordering means live streams briefly lead their rows).
 
 ## Integration Points
 - External services: Browserless BQL endpoint (cloud and self-hosted), ScrapingAnt HTTP API, ScraperAPI, and Apify Actor runs for listener scraping (see `internal/spotify/client.go` and `internal/spotify/apify.go`).
@@ -156,6 +161,9 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - `static/styles.css` is generated; regenerate after CSS changes.
 - Local headless scraping uses go-rod and may fall back to downloading/launching Chromium if `LOCAL_CHROME_PATH` is unset; set `LOCAL_HEADLESS_ENABLED=false` to disable it.
 - `cmd/backfill_song_artists` bootstraps PocketBase directly against the data dir; stop the live app first or point `--data-dir` at a backup copy. Dry run is the default; review the generated JSON/CSV report queue before rerunning with `--apply`.
+- `cmd/replay` rebuilds disposable read models from the event log; dry run is the default (`--dry-run` plan only). Rebuild in staging first, then production with `--data-dir <backup> --apply`; live `--apply` requires `--live-ok`. Every `--apply` records per-projection checkpoints (`artist/album/song/batch`); re-run with `--since-checkpoint` to re-project only streams touched after the saved floor (no reset).
+- Legacy album/song rows predate the event log (PB-only catalog); `go run ./cmd/audit` reports them as unlogged rows. They seed `AlbumCreated`/`SongCreated` facts on next write (song creation seeds album/artist deltas too) — convergence is lazy, tracked by audit, not backfilled.
+- Artist `total_songs` rank is computed at read time (`dynamicTotalSongs`); the stored column is frozen legacy (rank recalc writes removed, rank is never logged as a fact) — do not read or write it for display. Album `total_songs` is real catalog data and unaffected.
 
 ## Skills
 A skill is a set of local instructions in a `SKILL.md` file.
@@ -180,3 +188,16 @@ A skill is a set of local instructions in a `SKILL.md` file.
    - `.agents/skills/whamp-pocketbase/`
    - `.agents/skills/karpathy-guidelines/`
 3. Prefer existing `scripts/` and `assets/` in the skill before hand-writing large replacements.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- For codebase questions, first use the `/graphify` skill workflow (`/graphify query "<question>"`) when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts (these two are real CLI commands; `query` is skill syntax, not a CLI subcommand).
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
