@@ -2,41 +2,90 @@ package templates
 
 // Base layout template with navigation
 templ Layout(title string, activeNav string) {
+	{{
+		theme := ThemeFromContext(ctx)
+		themeClass := ""
+		if theme == "dark" {
+			themeClass = "dark"
+		} else if theme == "light" {
+			themeClass = "light"
+		}
+	}}
 	<!DOCTYPE html>
 	<html
 		lang="en"
-		data-theme="night"
-		data-signals="{theme: localStorage.getItem('theme') || 'night'}"
-		data-attr:data-theme="$theme"
-		data-effect="localStorage.setItem('theme', $theme)"
+		class={ themeClass }
+		data-signals={ "{ theme: '" + theme + "' }" }
+		data-class="{ light: $theme === 'light', dark: $theme === 'dark' }"
 	>
 		<head>
 			<meta charset="UTF-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 			<title>{ title } - Music Collection</title>
 			<meta name="description" content="Manage and track your personal music collection, albums, artists, and songs rotation."/>
-			<!-- DaisyUI component styles -->
-			<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css"/>
-			<!-- Local compiled Tailwind utilities + custom styles -->
-			<link href="/static/styles.css" rel="stylesheet" type="text/css"/>
-			<!-- Datastar for reactivity -->
-			<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.7/bundles/datastar.js"></script>
+		<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>"/>
+		<!-- No imperative global listeners: dropdowns close via
+			data-on:click__outside on native <details> elements, and Datastar
+			aborts @get() SSE streams automatically when their element is
+			detached or the document unloads (MPA navigation). -->
+			<!-- Speculation Rules: Prerender same-origin view links on hover/pointerdown -->
+			<script type="speculationrules">
+			{
+				"prerender": [
+					{
+						"where": {
+							"and": [
+								{ "href_matches": "/*" },
+								{ "not": { "href_matches": "/_/*" } },
+								{ "not": { "href_matches": "/api/*" } },
+								{ "not": { "href_matches": "/static/*" } },
+								{ "not": { "selector_matches": "[target]" } },
+								{ "not": { "selector_matches": "[download]" } }
+							]
+						},
+						"eagerness": "moderate"
+					}
+				]
+			}
+			</script>
+			<!-- Open Props & OPUI Design System (zero build tooling) -->
+			<link href={ AssetURL("styles.css") } rel="stylesheet" type="text/css"/>
+			<!-- Datastar + Rocket (vendored locally; the import map shares one runtime module). -->
+			@templ.JSONScript("", map[string]map[string]string{
+				"imports": map[string]string{"datastar": AssetURL("datastar.js")},
+			}).WithType("importmap")
+			<script type="module">
+				function bootDatastar() {
+					import('datastar');
+				}
+				if (document.prerendering) {
+					document.addEventListener('prerenderingchange', bootDatastar, { once: true });
+				} else {
+					bootDatastar();
+				}
+			</script>
+			<script type="module" src={ AssetURL("sb-modal.js") } defer></script>
 		</head>
 		<body class="min-h-screen bg-base-200">
+			<a href="#main-content" class="skip-link sr-only">Skip to content</a>
+			if IsDevEnvironment() {
+				<div id="hotreload-container" data-init="@get('/reload', {retryMaxCount: Infinity, retryInterval: 300, retryMaxWait: 2000})"></div>
+			}
 			@Navbar(activeNav)
-			<main class="container mx-auto p-4 md:p-6">
+			<main id="main-content" tabindex="-1" class="container mx-auto p-4 md:p-6 outline-none">
 				{ children... }
 			</main>
+			<div id="artist-history-drawer-container"></div>
 		</body>
 	</html>
 }
 
 // Navbar component
 templ Navbar(activeNav string) {
-	<div class="navbar bg-base-100 shadow-lg sticky top-0 z-50">
+	<div class="navbar bg-base-100 shadow-sm sticky top-0 z-50">
 		<!-- Logo -->
 		<div class="navbar-start">
-			<a href="/" class="btn btn-ghost text-xl gap-2">
+			<a href="/" class="btn btn-ghost text-xl gap-2 font-bold tracking-tight">
 				<span>🎵</span>
 				<span class="hidden sm:inline">Music Collection</span>
 			</a>
@@ -44,7 +93,7 @@ templ Navbar(activeNav string) {
 		<!-- Center Navigation -->
 		<div class="navbar-center">
 			<ul class="menu menu-horizontal px-1 gap-1">
-				@NavLink("/albums", "📀", "Albums", activeNav == "albums")
+				@NavLink("/albums", "💿", "Albums", activeNav == "albums")
 				@NavLink("/artists", "🎤", "Artists", activeNav == "artists")
 				@NavLink("/songs", "🎵", "Songs", activeNav == "songs")
 				@NavLinkExternal("/_/", "⚙️", "Admin")
@@ -79,32 +128,26 @@ templ NavLinkExternal(href, icon, label string) {
 	</li>
 }
 
-// ThemeSwitcher renders the theme dropdown
+// ThemeSwitcher renders the Open Props theme toggle (Light / Dark / System)
 templ ThemeSwitcher() {
-	<div class="dropdown dropdown-end">
-		<div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-1" aria-label="Select theme">
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path>
-			</svg>
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-			</svg>
-		</div>
-		<div tabindex="0" class="dropdown-content z-[100] p-4 shadow-2xl bg-base-200 rounded-box w-80 max-h-[28rem] overflow-y-auto">
-			<div class="text-sm font-semibold opacity-60 mb-2">Dark Themes</div>
-			<div class="grid grid-cols-2 gap-1 mb-3">
-				for _, theme := range DarkThemes {
-					@ThemeButton(theme)
-				}
-			</div>
-			<div class="divider my-1"></div>
-			<div class="text-sm font-semibold opacity-60 mb-2">Light Themes</div>
-			<div class="grid grid-cols-2 gap-1">
-				for _, theme := range LightThemes {
-					@ThemeButton(theme)
-				}
-			</div>
-		</div>
+	<div
+		class="theme-switcher"
+		data-signals="{
+			themes: ['light', 'dark', 'system']
+		}"
+	>
+		<button
+			type="button"
+			data-on:click="
+				$theme = $themes[($themes.indexOf($theme) + 1) % $themes.length];
+				@post('/api/theme/' + $theme);
+			"
+			class="theme-button btn btn-sm btn-ghost btn-circle"
+			aria-label="Switch theme"
+			title="Switch theme"
+		>
+			<span class="icon theme-icon"></span>
+		</button>
 	</div>
 }
 
@@ -114,7 +157,7 @@ templ ThemeButton(theme Theme) {
 		type="button"
 		class="btn btn-sm btn-ghost justify-start gap-2 theme-option"
 		data-theme={ theme.Value }
-		data-on:click={ "$theme = '" + theme.Value + "'" }
+		data-on:click={ "$theme = '" + theme.Value + "'; @post('/api/theme/" + theme.Value + "')" }
 		data-class:active={ "$theme === '" + theme.Value + "'" }
 	>
 		{ theme.Icon } { theme.Name }
@@ -123,47 +166,67 @@ templ ThemeButton(theme Theme) {
 
 // SSEIndicator shows the live connection status
 templ SSEIndicator() {
-	<div class="flex items-center gap-2" data-init="@get('/api/events')">
-		<span class="badge badge-success badge-xs" id="sse-indicator"></span>
-		<span class="text-sm opacity-70 hidden sm:inline">Live</span>
+	<div
+		id="sse-indicator-container"
+		class="flex items-center gap-2"
+		data-signals="{_sseStatus: 'connected'}"
+		data-init="@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})"
+		data-on:datastar-fetch="if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' }"
+	>
+		<span
+			id="sse-indicator"
+			class="badge badge-xs badge-success"
+			data-class="{ 'badge-success': $_sseStatus === 'connected', 'badge-warning animate-pulse': $_sseStatus === 'reconnecting', 'badge-error': $_sseStatus === 'disconnected' }"
+		></span>
+		<span
+			class="text-sm opacity-70 hidden sm:inline"
+			data-text="$_sseStatus === 'reconnecting' ? 'Reconnecting' : ($_sseStatus === 'disconnected' ? 'Disconnected' : 'Live')"
+		>Live</span>
 	</div>
 }
 
-// QueueJobsWidget shows lightweight queue + job health stats (polled via Datastar SSE).
+// QueueJobsWidget shows lightweight queue + job health stats pushed via Datastar SSE.
 templ QueueJobsWidget() {
+	@QueueJobsWidgetContent(QueueStats{})
+}
+
+// QueueJobsWidgetContent renders the contents of the queue health widget.
+// The widget is patched from the backend over SSE, so it is marked as a
+// polite live region for screen readers (Tao of Datastar: accessibility).
+templ QueueJobsWidgetContent(stats QueueStats) {
 	<div
+		id="queue-jobs-widget"
 		class="hidden lg:flex items-center gap-2"
-		data-signals="{queuePending:0,queueAckPending:0,queueRedelivered:0,jobsQueued:0,jobsFailed:0,forceRetry:false}"
-		data-init="@get('/api/queue')"
-		data-on-interval__5s="if ($forceRetry && ($jobsQueued > 0 || $jobsFailed > 0)) { @post('/api/queue/retry') } @get('/api/queue'); if ($forceRetry && $jobsQueued === 0 && $jobsFailed === 0) { $forceRetry = false }"
+		aria-live="polite"
+		aria-atomic="true"
 	>
 		<span class="badge badge-outline badge-sm font-mono" title="JetStream pending messages">
-			Q:<span data-text="$queuePending">0</span>
+			Q:<span>{ FormatUint(stats.QueuePending) }</span>
 		</span>
 		<span class="badge badge-outline badge-sm font-mono" title="In-flight (unacked) messages">
-			A:<span data-text="$queueAckPending">0</span>
+			A:<span>{ FormatUint(stats.QueueAckPending) }</span>
 		</span>
 		<span class="badge badge-error badge-sm font-mono" title="Failed jobs">
-			F:<span data-text="$jobsFailed">0</span>
+			F:<span>{ FormatInt64(stats.JobsFailed) }</span>
 		</span>
 		<button
 			type="button"
-			class="btn btn-xs btn-warning"
+			class="btn btn-xs btn-warning gap-1"
 			title="Force retries until queued and failed are zero"
-			data-on:click="if ($forceRetry) { $forceRetry = false } else { $forceRetry = true; @post('/api/queue/retry') } @get('/api/queue')"
+			data-indicator:_retrying
+			data-attr:disabled="$_retrying"
+			data-on:click="@post('/api/queue/retry')"
 		>
-			<span data-show="!$forceRetry">Force Retry</span>
-			<span data-show="$forceRetry">Retrying...</span>
+			<span data-show="$_retrying" class="loading loading-spinner loading-xs" style="display: none"></span>
+			<span>Force Retry</span>
 		</button>
-		<span class="badge badge-success badge-sm font-mono" data-show="$forceRetry">
-			Auto
-		</span>
-		<span
-			class="badge badge-error badge-sm font-mono"
-			title="Redelivered (unacked) messages"
-			data-show="$queueRedelivered > 0"
-		>
-			R:<span data-text="$queueRedelivered">0</span>
-		</span>
+		if stats.QueueRedelivered > 0 {
+			<span
+				class="badge badge-error badge-sm font-mono"
+				title="Redelivered (unacked) messages"
+			>
+				R:<span>{ FormatUint(stats.QueueRedelivered) }</span>
+			</span>
+		}
 	</div>
 }
