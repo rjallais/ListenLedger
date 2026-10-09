@@ -86,7 +86,9 @@ func TestCatalogProjectionAlbumAndReplay(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
-		_, err := tx.Prep("DELETE FROM albums WHERE id = 'al_1';").Step()
+		stmt := tx.Prep("DELETE FROM albums WHERE id = 'al_1';")
+		defer func() { _ = stmt.Reset() }()
+		_, err := stmt.Step()
 		return err
 	}); err != nil {
 		t.Fatalf("delete: %v", err)

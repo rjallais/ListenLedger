@@ -11,6 +11,7 @@ package saga
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -222,14 +223,20 @@ func (o *Orchestrator) refreshInstance(ctx context.Context, requestID, artistID 
 	var job *scrapejob.Job
 	var lastEvent, failure string
 	var attempts int
-	if events, err := o.store.Load(ctx, requestID); err == nil && len(events) > 0 {
-		if agg, err := scrapejob.Replay(requestID, events); err == nil {
-			job = agg
-			attempts = agg.Attempts()
-			lastEvent = events[len(events)-1].EventType
-			if lastEvent == scrapejob.EventTypeScrapeFailed {
-				failure = failedReason(events[len(events)-1])
-			}
+	events, err := o.store.Load(ctx, requestID)
+	if err != nil {
+		return fmt.Errorf("loading job stream %s: %w", requestID, err)
+	}
+	if len(events) > 0 {
+		agg, err := scrapejob.Replay(requestID, events)
+		if err != nil {
+			return fmt.Errorf("replaying job stream %s: %w", requestID, err)
+		}
+		job = agg
+		attempts = agg.Attempts()
+		lastEvent = events[len(events)-1].EventType
+		if lastEvent == scrapejob.EventTypeScrapeFailed {
+			failure = failedReason(events[len(events)-1])
 		}
 	}
 	state := DeriveState(job)

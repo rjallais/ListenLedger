@@ -29,6 +29,12 @@ const (
 	TypeBackfilled = "backfilled"
 )
 
+// timestampFormat is the fixed-width UTC layout for queued_at writes and
+// Since/Until bounds. Fixed width keeps SQLite lexicographic comparison
+// chronological; RFC3339Nano's variable fraction would misorder rows within
+// the same second. Reads still parse RFC3339Nano as a fallback.
+const timestampFormat = "2006-01-02 15:04:05.000Z"
+
 // Command is one accepted scrape command.
 type Command struct {
 	RequestID  string    `json:"request_id"`
@@ -78,7 +84,7 @@ func Log(ctx context.Context, db *toolbeltdb.Database, cmd Command) error {
 		stmt.BindText(2, cmd.Type)
 		stmt.BindText(3, cmd.ArtistID)
 		stmt.BindText(4, string(body))
-		stmt.BindText(5, queuedAt.Format(time.RFC3339Nano))
+		stmt.BindText(5, queuedAt.UTC().Format(timestampFormat))
 		_, err := stmt.Step()
 		return err
 	})
@@ -116,11 +122,11 @@ func List(ctx context.Context, db *toolbeltdb.Database, f Filter) ([]Command, er
 	}
 	if !f.Since.IsZero() {
 		conds = append(conds, "c.queued_at >= ?")
-		args = append(args, f.Since.UTC().Format(time.RFC3339Nano))
+		args = append(args, f.Since.UTC().Format(timestampFormat))
 	}
 	if !f.Until.IsZero() {
 		conds = append(conds, "c.queued_at <= ?")
-		args = append(args, f.Until.UTC().Format(time.RFC3339Nano))
+		args = append(args, f.Until.UTC().Format(timestampFormat))
 	}
 
 	query := `SELECT c.request_id, c.command_type, c.artist_id, c.payload, c.queued_at FROM commands c`
@@ -155,9 +161,9 @@ func List(ctx context.Context, db *toolbeltdb.Database, f Filter) ([]Command, er
 			if err := json.Unmarshal([]byte(stmt.ColumnText(3)), &p); err != nil {
 				return fmt.Errorf("decoding command payload: %w", err)
 			}
-			queuedAt, _ := time.Parse(time.RFC3339Nano, stmt.ColumnText(4))
+			queuedAt, _ := time.Parse(timestampFormat, stmt.ColumnText(4))
 			if queuedAt.IsZero() {
-				queuedAt, _ = time.Parse("2006-01-02 15:04:05.000Z", stmt.ColumnText(4))
+				queuedAt, _ = time.Parse(time.RFC3339Nano, stmt.ColumnText(4))
 			}
 			out = append(out, Command{
 				RequestID:  stmt.ColumnText(0),

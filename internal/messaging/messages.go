@@ -179,8 +179,13 @@ func SubjectRanksUpdatedForGenre(genre string) string {
 func SubjectDomainEvent(streamType, streamID, eventType string) string {
 	sanitize := func(s string) string {
 		s = strings.TrimSpace(s)
-		s = strings.ReplaceAll(s, ".", "_")
-		s = strings.ReplaceAll(s, " ", "_")
+		s = strings.Map(func(r rune) rune {
+			switch r {
+			case '.', '*', '>', ' ', '\t', '\n', '\r':
+				return '_'
+			}
+			return r
+		}, s)
 		if s == "" {
 			return "-"
 		}

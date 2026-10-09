@@ -266,7 +266,8 @@ func TestReplayRebuildsProjection(t *testing.T) {
 func TestActiveLatestAndPrune(t *testing.T) {
 	s, ctx := setupTestStore(t)
 
-	if _, err := s.Start(ctx, "b_old", []string{"ar_1"}, nil, time.Time{}); err != nil {		t.Fatalf("Start: %v", err)
+	if _, err := s.Start(ctx, "b_old", []string{"ar_1"}, nil, time.Time{}); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	if _, err := s.CompleteArtist(ctx, "ar_1", "idle"); err != nil {
 		t.Fatalf("CompleteArtist: %v", err)

@@ -4,10 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"testing"
 
+	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/projections"
@@ -18,64 +17,8 @@ import (
 
 func setupTestDB(t *testing.T) (*toolbeltdb.Database, *eventsourcing.SQLiteStore, *projections.ArtistProjection, func()) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "proj_test_*")
+	db, err := db.SetupDB(context.Background(), slog.Default(), t.TempDir(), false)
 	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	migrations := []string{
-		`CREATE TABLE IF NOT EXISTS events (
-			id TEXT PRIMARY KEY,
-			stream_id TEXT NOT NULL,
-			stream_type TEXT NOT NULL,
-			version INTEGER NOT NULL,
-			event_type TEXT NOT NULL,
-			payload TEXT NOT NULL,
-			metadata TEXT NOT NULL DEFAULT '{}',
-			created_at TEXT NOT NULL,
-			CONSTRAINT uq_stream_version UNIQUE (stream_id, version)
-		);`,
-		`CREATE TABLE IF NOT EXISTS outbox (
-			event_id TEXT PRIMARY KEY,
-			published_at TEXT,
-			FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
-		);`,
-		`CREATE TABLE IF NOT EXISTS artists (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			spotify_id TEXT NOT NULL DEFAULT '',
-			monthly_listeners INTEGER NOT NULL DEFAULT 0,
-			genre_group TEXT NOT NULL CHECK(genre_group IN ('rock_metal', 'everything_else')),
-			list_status TEXT NOT NULL CHECK(list_status IN ('included', 'recently_added', 'not_added', 'waiting')),
-			fetch_status TEXT NOT NULL DEFAULT 'idle' CHECK(fetch_status IN ('idle', 'pending', 'failed')),
-			collection_songs INTEGER NOT NULL DEFAULT 0,
-			total_songs INTEGER NOT NULL DEFAULT 0,
-			last_updated TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS artist_listener_history (
-			id TEXT PRIMARY KEY,
-			artist_id TEXT NOT NULL,
-			version INTEGER NOT NULL,
-			monthly_listeners INTEGER NOT NULL,
-			previous_listeners INTEGER NOT NULL DEFAULT 0,
-			delta INTEGER NOT NULL DEFAULT 0,
-			provider TEXT NOT NULL DEFAULT '',
-			duration_ms INTEGER NOT NULL DEFAULT 0,
-			scraped_at TEXT NOT NULL,
-			FOREIGN KEY (artist_id) REFERENCES artists(id) ON DELETE CASCADE,
-			CONSTRAINT uq_artist_listener_snapshot UNIQUE (artist_id, version)
-		);`,
-	}
-
-	dbFilename := filepath.Join(dir, "test.sqlite")
-	db, err := toolbeltdb.NewDatabase(
-		context.Background(),
-		toolbeltdb.DatabaseWithFilename(dbFilename),
-		toolbeltdb.DatabaseWithMigrations(migrations),
-	)
-	if err != nil {
-		_ = os.RemoveAll(dir)
 		t.Fatalf("failed to create test db: %v", err)
 	}
 
@@ -84,7 +27,7 @@ func setupTestDB(t *testing.T) (*toolbeltdb.Database, *eventsourcing.SQLiteStore
 	projection := projections.NewArtistProjection(logger, db, nil)
 
 	cleanup := func() {
-		_ = os.RemoveAll(dir)
+		_ = db.Close()
 	}
 	return db, store, projection, cleanup
 }

@@ -34,18 +34,9 @@ func NewEvent(streamID, streamType string, version int64, eventType string, payl
 		return Event{}, fmt.Errorf("marshaling event payload as RON: %w", err)
 	}
 
-	var metadataBytes []byte
-	if metadata != nil {
-		var err error
-		metadataBytes, err = ron.Marshal(metadata)
-		if err != nil {
-			return Event{}, fmt.Errorf("marshaling event metadata as RON: %w", err)
-		}
-	} else {
-		metadataBytes, err = ron.Marshal(map[string]any{})
-		if err != nil {
-			return Event{}, fmt.Errorf("marshaling empty event metadata as RON: %w", err)
-		}
+	metadataBytes, err := ron.Marshal(metadata)
+	if err != nil {
+		return Event{}, fmt.Errorf("marshaling event metadata as RON: %w", err)
 	}
 
 	return Event{

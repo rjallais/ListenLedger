@@ -65,14 +65,6 @@ func decodeStats(raw string) map[string]int {
 	return stats
 }
 
-func parseTime(raw string) time.Time {
-	t, _ := time.Parse(time.RFC3339Nano, raw)
-	if t.IsZero() {
-		t, _ = time.Parse("2006-01-02 15:04:05.000Z", raw)
-	}
-	return t
-}
-
 // Start records BatchStarted: one batch row plus one pending member per
 // artist, and prunes done batches older than pruneBefore (zero time skips).
 func (s *Store) Start(ctx context.Context, id string, artistIDs []string, stats map[string]int, pruneBefore time.Time) (Snapshot, error) {
@@ -395,12 +387,18 @@ func (s *Store) Reconcile(ctx context.Context) (int64, error) {
 	}
 
 	err = s.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-		flip := tx.Prep(`UPDATE batch_members SET done = 1 WHERE done = 0
-			AND batch_id IN (SELECT id FROM batches WHERE done = 0)
-			AND artist_id NOT IN (SELECT id FROM artists WHERE fetch_status = 'pending');`)
+		// Flip exactly the members collected above: re-running the status
+		// predicate here could mark a member done that left pending after
+		// the read, while its completion event below would never be logged.
+		flip := tx.Prep(`UPDATE batch_members SET done = 1 WHERE done = 0 AND batch_id = ? AND artist_id = ?;`)
 		defer func() { _ = flip.Reset() }()
-		if _, err := flip.Step(); err != nil {
-			return fmt.Errorf("flipping reconciled members: %w", err)
+		for _, f := range flips {
+			_ = flip.Reset()
+			flip.BindText(1, f.batchID)
+			flip.BindText(2, f.artistID)
+			if _, err := flip.Step(); err != nil {
+				return fmt.Errorf("flipping reconciled member %s/%s: %w", f.batchID, f.artistID, err)
+			}
 		}
 
 		now := time.Now().UTC().Format(time.RFC3339Nano)

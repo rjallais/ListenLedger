@@ -3,70 +3,24 @@ package eventsourcing_test
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
+	"log/slog"
 	"testing"
 	"time"
 
+	"ListenLedger/internal/db"
 	"ListenLedger/internal/eventsourcing"
-
-	toolbeltdb "github.com/delaneyj/toolbelt/db"
 )
 
 func setupTestStore(t *testing.T) (*eventsourcing.SQLiteStore, func()) {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "es_test_*")
+	ctx := context.Background()
+	db, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
 	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	migrations := []string{
-		`CREATE TABLE IF NOT EXISTS events (
-			id TEXT PRIMARY KEY,
-			stream_id TEXT NOT NULL,
-			stream_type TEXT NOT NULL,
-			version INTEGER NOT NULL,
-			event_type TEXT NOT NULL,
-			payload TEXT NOT NULL,
-			metadata TEXT NOT NULL DEFAULT '{}',
-			created_at TEXT NOT NULL,
-			CONSTRAINT uq_stream_version UNIQUE (stream_id, version)
-		);`,
-		`CREATE TABLE IF NOT EXISTS snapshots (
-			stream_id TEXT PRIMARY KEY,
-			stream_type TEXT NOT NULL,
-			version INTEGER NOT NULL,
-			payload TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS outbox (
-			event_id TEXT PRIMARY KEY,
-			published_at TEXT,
-			FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
-		);`,
-		`CREATE TABLE IF NOT EXISTS projection_checkpoints (
-			projection_name TEXT PRIMARY KEY,
-			last_position INTEGER NOT NULL DEFAULT 0,
-			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-		);`,
-	}
-
-	dbFilename := filepath.Join(dir, "test.sqlite")
-	db, err := toolbeltdb.NewDatabase(
-		context.Background(),
-		toolbeltdb.DatabaseWithFilename(dbFilename),
-		toolbeltdb.DatabaseWithMigrations(migrations),
-	)
-	if err != nil {
-		_ = os.RemoveAll(dir)
 		t.Fatalf("failed to create test db: %v", err)
 	}
 
 	store := eventsourcing.NewSQLiteStore(db)
-	cleanup := func() {
-		_ = os.RemoveAll(dir)
-	}
-	return store, cleanup
+	return store, func() { _ = db.Close() }
 }
 
 func TestSQLiteStore_AppendAndLoad(t *testing.T) {

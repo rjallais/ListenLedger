@@ -24,6 +24,7 @@ func setupTestDB(t *testing.T) *toolbeltdb.Database {
 		// SetupDB needs a logger; retry with default via test helper path.
 		t.Fatalf("SetupDB() error = %v", err)
 	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
 	return sqliteDB
 }
 

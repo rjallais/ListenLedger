@@ -120,8 +120,8 @@ func (l *Loader) RecentRequestIDs(ctx context.Context, artistID string, limit in
 
 	seen := make(map[string]struct{})
 	var out []string
-	_ = l.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		collect := func(query string, args ...string) {
+	if err := l.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		collect := func(query string, args ...string) error {
 			stmt := tx.Prep(query)
 			defer func() { _ = stmt.Reset() }()
 			for i, a := range args {
@@ -129,7 +129,10 @@ func (l *Loader) RecentRequestIDs(ctx context.Context, artistID string, limit in
 			}
 			for {
 				hasRow, err := stmt.Step()
-				if err != nil || !hasRow {
+				if err != nil {
+					return fmt.Errorf("collecting recent request ids: %w", err)
+				}
+				if !hasRow {
 					break
 				}
 				id := strings.TrimSpace(stmt.ColumnText(0))
@@ -142,15 +145,22 @@ func (l *Loader) RecentRequestIDs(ctx context.Context, artistID string, limit in
 				seen[id] = struct{}{}
 				out = append(out, id)
 			}
+			return nil
 		}
-		collect(`SELECT request_id FROM commands WHERE artist_id = ? ORDER BY queued_at DESC, request_id ASC LIMIT ?;`,
-			artistID, strconv.Itoa(limit))
+		if err := collect(`SELECT request_id FROM commands WHERE artist_id = ? ORDER BY queued_at DESC, request_id ASC LIMIT ?;`,
+			artistID, strconv.Itoa(limit)); err != nil {
+			return err
+		}
 		if len(out) < limit {
-			collect(`SELECT request_id FROM scrape_jobs WHERE artist_id = ? ORDER BY queued_at DESC, request_id ASC LIMIT ?;`,
-				artistID, strconv.Itoa(limit))
+			if err := collect(`SELECT request_id FROM scrape_jobs WHERE artist_id = ? ORDER BY queued_at DESC, request_id ASC LIMIT ?;`,
+				artistID, strconv.Itoa(limit)); err != nil {
+				return err
+			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("recent request ids for artist %s: %w", artistID, err)
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}

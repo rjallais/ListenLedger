@@ -168,7 +168,10 @@ func TestRedrive_PublishesAndDryRun(t *testing.T) {
 		t.Fatalf("published = %+v", published)
 	}
 	// Log is untouched by redrive (re-execution, never new rows).
-	got, _ := List(ctx, sqliteDB, Filter{})
+	got, err := List(ctx, sqliteDB, Filter{})
+	if err != nil {
+		t.Fatalf("List after redrive: %v", err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("List after redrive len = %d, want 2", len(got))
 	}

@@ -185,7 +185,7 @@ func TestRepository_SaveSnapshotsAtInterval(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	for agg.Version() < snapshotInterval {
-		if err := agg.RecordMonthlyListeners(int64(1000+agg.Version()), "test", 1); err != nil {
+		if err := agg.RecordMonthlyListeners(1000+agg.Version(), "test", 1); err != nil {
 			t.Fatalf("RecordMonthlyListeners: %v", err)
 		}
 		if _, err := repo.Save(ctx, agg); err != nil {
@@ -223,7 +223,7 @@ func TestRepository_SaveSnapshotsOnBoundaryCrossing(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	for agg.Version() < snapshotInterval-1 {
-		if err := agg.RecordMonthlyListeners(int64(agg.Version()), "test", 1); err != nil {
+		if err := agg.RecordMonthlyListeners(agg.Version(), "test", 1); err != nil {
 			t.Fatalf("RecordMonthlyListeners: %v", err)
 		}
 		if _, err := repo.Save(ctx, agg); err != nil {

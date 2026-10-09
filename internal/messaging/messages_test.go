@@ -89,7 +89,8 @@ func TestScrapeProviderFromSubject(t *testing.T) {
 	}
 }
 
-func TestRanksSubjectRoundTrip(t *testing.T) {	for genre, wantSubject := range map[string]string{
+func TestRanksSubjectRoundTrip(t *testing.T) {
+	for genre, wantSubject := range map[string]string{
 		"rock_metal":      "ranks.updated.rock_metal",
 		"everything_else": "ranks.updated.everything_else",
 	} {

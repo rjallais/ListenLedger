@@ -10,7 +10,9 @@ import (
 )
 
 var (
-	ErrEmptyArtistName = errors.New("artist: name cannot be empty")
+	ErrEmptyArtistName  = errors.New("artist: name cannot be empty")
+	ErrInvalidListStatus = errors.New("artist: invalid list status")
+	ErrInvalidFetchStatus = errors.New("artist: invalid fetch status")
 )
 
 const StreamTypeArtist = "artist"
@@ -42,6 +44,12 @@ func NewArtist(id, name, spotifyID, genreGroup, listStatus string) (*Artist, err
 	}
 	if listStatus == "" {
 		listStatus = "waiting"
+	} else {
+		switch listStatus {
+		case "included", "recently_added", "not_added", "waiting":
+		default:
+			return nil, ErrInvalidListStatus
+		}
 	}
 
 	agg := &Artist{
@@ -98,6 +106,11 @@ func (a *Artist) RecordMonthlyListeners(listeners int64, provider string, durati
 
 // ChangeListStatus updates the list_status (included, recently_added, not_added, waiting).
 func (a *Artist) ChangeListStatus(newStatus, reason string, corr ...eventsourcing.Correlation) error {
+	switch newStatus {
+	case "included", "recently_added", "not_added", "waiting":
+	default:
+		return ErrInvalidListStatus
+	}
 	if a.ListStatus == newStatus {
 		return nil
 	}
@@ -120,6 +133,11 @@ func (a *Artist) ChangeListStatus(newStatus, reason string, corr ...eventsourcin
 
 // SetFetchStatus transitions fetch_status between idle, pending, and failed.
 func (a *Artist) SetFetchStatus(status, errMsg string, corr ...eventsourcing.Correlation) error {
+	switch status {
+	case "idle", "pending", "failed":
+	default:
+		return ErrInvalidFetchStatus
+	}
 	if a.FetchStatus == status {
 		return nil
 	}

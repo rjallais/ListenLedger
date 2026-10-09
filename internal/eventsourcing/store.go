@@ -91,7 +91,14 @@ func (s *SQLiteStore) Append(ctx context.Context, streamID string, expectedVersi
 
 		for _, evt := range events {
 			if err := insertEvent(insertStmt, evt); err != nil {
-				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				// Version races (duplicate stream_id+version via
+				// uq_stream_version) are retryable concurrency conflicts.
+				// Any other UNIQUE failure (e.g. a duplicate events.id
+				// primary key) is a bug: surface it as an ordinary error
+				// so callers never retry-loop on it.
+				if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique &&
+					(strings.Contains(err.Error(), "uq_stream_version") ||
+						strings.Contains(err.Error(), "events.stream_id")) {
 					return fmt.Errorf("%w: %s v%d", ErrConcurrencyConflict, streamID, evt.Version)
 				}
 				return fmt.Errorf("inserting event %s v%d: %w", streamID, evt.Version, err)
