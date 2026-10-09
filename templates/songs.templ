@@ -5,10 +5,10 @@ templ SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount
 	@Layout("Songs", "songs") {
 		<div class="flex justify-between items-center mb-6">
 			<h1 class="text-3xl font-bold">Songs Rotation</h1>
-			<label for="add-song-modal" class="btn btn-primary gap-2">
+			<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_song_open = true" aria-haspopup="dialog">
 				@IconPlus("h-5 w-5")
 				Add Song
-			</label>
+			</button>
 		</div>
 		<p class="mb-4 text-base-content/70">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>
 		@SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort)

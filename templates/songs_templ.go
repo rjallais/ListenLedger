@@ -42,7 +42,7 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Songs Rotation</h1><label for=\"add-song-modal\" class=\"btn btn-primary gap-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Songs Rotation</h1><button type=\"button\" class=\"btn btn-primary gap-2\" data-on:click=\"$_add_song_open = true\" aria-haspopup=\"dialog\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -50,7 +50,7 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "Add Song</label></div><p class=\"mb-4 text-base-content/70\">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "Add Song</button></div><p class=\"mb-4 text-base-content/70\">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
