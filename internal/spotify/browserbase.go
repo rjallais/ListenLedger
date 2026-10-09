@@ -48,10 +48,14 @@ func (c *Client) createBrowserbaseSession(ctx context.Context, apiKey string) (s
 	if err != nil {
 		return "", "", &providerHTTPError{provider: "browserbase", err: fmt.Errorf("create session: %w", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if rateLimitErr, ok := c.handleBrowserbaseRateLimit(resp, now); ok {
 		return "", "", rateLimitErr
+	}
+	if resp.StatusCode == http.StatusPaymentRequired || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", fmt.Errorf("browserbase auth/quota failure (status %d): %w: %s", resp.StatusCode, ErrQuotaExhausted, string(body))
 	}
 	if !isCreated(resp.StatusCode) {
 		body, _ := io.ReadAll(resp.Body)
@@ -64,7 +68,7 @@ func (c *Client) createBrowserbaseSession(ctx context.Context, apiKey string) (s
 	}
 
 	// Session created successfully — clear cooldown to allow fresh attempts.
-	c.browserbaseCooldownUntil.Store(0)
+	c.clearBrowserbaseCooldown(now)
 	return session.ID, session.ConnectURL, nil
 }
 
@@ -86,7 +90,7 @@ func (c *Client) endBrowserbaseSession(ctx context.Context, apiKey, sessionID st
 		log.Printf("[browserbase] failed to end session %s: %v", sessionID, err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // isCreated reports whether status indicates a successful Browserbase session
@@ -102,8 +106,11 @@ func (c *Client) handleBrowserbaseRateLimit(resp *http.Response, now time.Time) 
 	if resp.StatusCode != http.StatusTooManyRequests {
 		return nil, false
 	}
-	body, _ := io.ReadAll(resp.Body)
-	retryAfter := rateLimitRetryAfter(body)
+	retryAfter := parseRetryAfterHeader(resp.Header.Get("Retry-After"), now)
+	if retryAfter <= 0 {
+		body, _ := io.ReadAll(resp.Body)
+		retryAfter = rateLimitRetryAfter(body)
+	}
 	// Apply cooldown with a buffer so the 60s rate-limit window fully expires.
 	cooldown := retryAfter + 20*time.Second
 	c.markBrowserbaseCooldown(now.Add(cooldown))
@@ -131,6 +138,7 @@ func decodeBrowserbaseSession(resp *http.Response) (bbCreateSessionResponse, err
 }
 
 // dialBrowserbaseCDP opens a Rod browser backed by a Browserbase CDP WebSocket.
+// Ownership transfers to the caller, which must close the browser.
 func dialBrowserbaseCDP(ctx context.Context, connectURL string) (*rod.Browser, error) {
 	d := *gorilla.DefaultDialer
 	d.HandshakeTimeout = 15 * time.Second
@@ -143,6 +151,13 @@ func dialBrowserbaseCDP(ctx context.Context, connectURL string) (*rod.Browser, e
 
 	adapter := &gorillaAdapter{conn: gorillaConn}
 	cdpClient := cdp.New().Start(adapter)
+	// False positive: on Connect failure the websocket close below unwinds
+	// both the cdp consumer and rod's event goroutine (verified against
+	// go-rod v0.116.2 internals); on success ownership transfers to the
+	// caller, which closes the browser (see the deferred browser.Close in
+	// the fetch path). The remote session is released by the caller's
+	// deferred endBrowserbaseSession.
+	// noinspection GoResourceLeak
 	browser := rod.New().Client(cdpClient).Context(ctx)
 	if err := browser.Connect(); err != nil {
 		_ = gorillaConn.Close()
@@ -177,6 +192,7 @@ func extractBrowserbaseListeners(browser *rod.Browser, spotifyURL string) (strin
 	if err != nil {
 		return "", &providerHTTPError{provider: "browserbase", err: fmt.Errorf("create page: %w", err)}
 	}
+	defer func() { _ = page.Close() }()
 
 	var result string
 	err = rod.Try(func() {
@@ -265,6 +281,23 @@ func (c *Client) markBrowserbaseCooldown(until time.Time) {
 	}
 }
 
+// clearBrowserbaseCooldown CAS-clears the cooldown only when the stored deadline
+// does not exceed the observed success time. This preserves a newer cooldown
+// installed concurrently by markBrowserbaseCooldown.
+func (c *Client) clearBrowserbaseCooldown(now time.Time) {
+	for {
+		current := c.browserbaseCooldownUntil.Load()
+		if now.UnixNano() < current {
+			return
+		}
+		if c.browserbaseCooldownUntil.CompareAndSwap(current, now.UnixNano()) {
+			return
+		}
+	}
+}
+
+var rateLimitRetryPattern = regexp.MustCompile(`(\d+)\s*seconds?`)
+
 // rateLimitRetryAfter extracts a retry-after duration from a JSON API 429
 // response body containing a message like "You can try again in 42 seconds."
 func rateLimitRetryAfter(body []byte) time.Duration {
@@ -274,8 +307,7 @@ func rateLimitRetryAfter(body []byte) time.Duration {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return 0
 	}
-	re := regexp.MustCompile(`(\d+)\s*seconds?`)
-	m := re.FindStringSubmatch(parsed.Message)
+	m := rateLimitRetryPattern.FindStringSubmatch(parsed.Message)
 	if len(m) < 2 {
 		return 0
 	}
