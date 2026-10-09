@@ -41,6 +41,10 @@ reviews:
     - "!**/*_templ.go"
     - "!static/styles.css"
     - "!pb_data/**"
+    # TEMP-REVIEW-SPLIT batch 1: review internal/** only (revert after run 2)
+    - "!templates/**"
+    - "!cmd/**"
+    - "!input.css"
 
   tools:
     golangci-lint:
