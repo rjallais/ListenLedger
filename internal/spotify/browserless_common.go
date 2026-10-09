@@ -1,6 +1,7 @@
 // browserless_common.go provides Browserless cloud (BQL) and self-hosted
 // Browserless container (Chromium /content) scraping for Spotify artist
 // listener data.
+
 package spotify
 
 import (
@@ -33,7 +34,7 @@ func (c *Client) fetchViaBrowserless(ctx context.Context, artistID string) (int,
 		}
 	}()
 
-	if err := checkProviderHTTPStatus(resp, "browserless", http.StatusPaymentRequired); err != nil {
+	if err := checkProviderHTTPStatus(resp, "browserless", http.StatusPaymentRequired, http.StatusUnauthorized, http.StatusForbidden); err != nil {
 		return 0, err
 	}
 
@@ -247,7 +248,7 @@ func (c *Client) parseBrowserlessResponse(body []byte) (int, error) {
 		return 0, fmt.Errorf("browserless: 'monthly listeners' text not found in %q", raw)
 	}
 
-	re := regexp.MustCompile(`(?i)([\.\d,]+)\s*([mMkK]?)\s*monthly`)
+	re := regexp.MustCompile(`(?i)([\d.,]+)\s*([mMkK]?)\s*monthly`)
 	m := re.FindStringSubmatch(raw)
 	if len(m) == 0 {
 		return 0, fmt.Errorf("browserless: unexpected format %q", raw)
