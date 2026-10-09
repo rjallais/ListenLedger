@@ -22,52 +22,69 @@ import (
 // SSE subscribers and batch tracking converge. Rank (total_songs) is derived
 // at read time and no longer written by any flow, so every save fans out.
 func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase, js jetstream.JetStream) {
+	// publishSnapshot carries the cheap in-memory fields the async publish
+	// needs, captured synchronously on the hook so the record write never
+	// waits on the saga lookup below.
+	type publishSnapshot struct {
+		artistID         string
+		name             string
+		monthlyListeners int
+		fetchStatus      string
+		updatedAt        string
+	}
 	publish := func(record *core.Record, requestID string) {
-		if requestID == "" {
-			requestID = correlation.Pop(record.Id)
-		} else {
-			correlation.Clear(record.Id)
+		snap := publishSnapshot{
+			artistID:         record.Id,
+			name:             record.GetString("name"),
+			monthlyListeners: record.GetInt("monthly_listeners"),
+			fetchStatus:      record.GetString("fetch_status"),
+			updatedAt:        record.GetDateTime("last_updated").Time().Format(time.RFC3339),
 		}
-		// Restart-safe fallback: the in-memory registry (5m TTL) misses when
-		// a saga outlives it (Apify fetches run 350s+) or the process
-		// restarted mid-saga. Resolve from the live saga row instead — but
-		// only queued/processing jobs count: a manual edit with no live saga
-		// must ship with empty request_id, never a stale historical one.
-		if requestID == "" {
-			requestID = latestLiveSagaRequestID(ctx, app, record.Id)
-		}
+		// Off the write path: the saga lookup below waits up to 2s on a
+		// scrape_jobs query, which must never block the record save that
+		// triggered this hook.
+		go func(snap publishSnapshot, requestID string) {
+			if requestID == "" {
+				requestID = correlation.Pop(snap.artistID)
+			} else {
+				correlation.Clear(snap.artistID)
+			}
+			// Restart-safe fallback: the in-memory registry (5m TTL) misses when
+			// a saga outlives it (Apify fetches run 350s+) or the process
+			// restarted mid-saga. Resolve from the live saga row instead — but
+			// only queued/processing jobs count: a manual edit with no live saga
+			// must ship with empty request_id, never a stale historical one.
+			if requestID == "" {
+				requestID = latestLiveSagaRequestID(ctx, app, snap.artistID)
+			}
 
-		updatedAt := record.GetDateTime("last_updated").Time().Format(time.RFC3339)
-		update := messaging.ArtistUpdated{
-			Version:          messaging.SchemaVersionV1,
-			RequestID:        requestID,
-			ArtistID:         record.Id,
-			Name:             record.GetString("name"),
-			MonthlyListeners: record.GetInt("monthly_listeners"),
-			FetchStatus:      record.GetString("fetch_status"),
-			UpdatedAt:        updatedAt,
-		}
+			update := messaging.ArtistUpdated{
+				Version:          messaging.SchemaVersionV1,
+				RequestID:        requestID,
+				ArtistID:         snap.artistID,
+				Name:             snap.name,
+				MonthlyListeners: snap.monthlyListeners,
+				FetchStatus:      snap.fetchStatus,
+				UpdatedAt:        snap.updatedAt,
+			}
 
-		data, err := messaging.MarshalArtistUpdated(update)
-		if err != nil {
-			app.Logger().Warn("[hooks] failed to marshal artist.updated", "err", err)
-			return
-		}
+			logger := app.Logger()
+			data, err := messaging.MarshalArtistUpdated(update)
+			if err != nil {
+				logger.Warn("[hooks] failed to marshal artist.updated", "err", err)
+				return
+			}
 
-		artistID := record.Id
-		msgID := "artist.updated:" + artistID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
-		logger := app.Logger()
-
-		go func(artistID, requestID, msgID string, data []byte) {
+			msgID := "artist.updated:" + snap.artistID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 
 			if _, err := js.Publish(publishCtx, messaging.SubjectArtistUpdated, data, jetstream.WithMsgID(msgID)); err != nil {
 				logger.Warn("[hooks] failed to publish artist.updated to JetStream", "err", err)
 			} else if requestID != "" {
-				logger.Debug("[hooks] published artist.updated", "artist_id", artistID, "request_id", requestID)
+				logger.Debug("[hooks] published artist.updated", "artist_id", snap.artistID, "request_id", requestID)
 			}
-		}(artistID, requestID, msgID, data)
+		}(snap, requestID)
 	}
 
 	app.OnRecordAfterUpdateSuccess("artists").BindFunc(func(e *core.RecordEvent) error {
