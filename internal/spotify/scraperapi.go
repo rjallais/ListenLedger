@@ -1,6 +1,7 @@
-// scraperapi.go provides ScraperAPI HTML scraping for Spotify artist
-// listener data, including request-profile fallback and rate-limit cooldown.
 package spotify
+
+// ScraperAPI HTML scraping for Spotify artist
+// listener data, including request-profile fallback and rate-limit cooldown.
 
 import (
 	"context"
@@ -177,17 +178,16 @@ func (c *Client) fetchViaScraperAPIProfile(ctx context.Context, artistID string,
 // isScraperAPIQuotaStatus reports whether the HTTP status indicates a
 // ScraperAPI quota exhaustion condition.
 // ScraperAPI returns 402 Payment Required for quota limits. 403 Forbidden
-// (suspended account / invalid key) is treated as auth failure, not quota.
+// isScraperAPIQuotaStatus returns true when ScraperAPI signals billing/quota exhaustion
+// or invalid/suspended credentials (401/402/403). All of these mean the provider cannot
+// proceed and should shut down its pool gracefully rather than burning retries.
 func isScraperAPIQuotaStatus(code int) bool {
-	return code == http.StatusPaymentRequired
+	return code == http.StatusPaymentRequired || code == http.StatusUnauthorized || code == http.StatusForbidden
 }
 
 func (c *Client) checkScraperAPIHTTPStatus(resp *http.Response) error {
 	if isScraperAPIQuotaStatus(resp.StatusCode) {
-		return fmt.Errorf("scraperapi quota exceeded (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("scraperapi authentication failed (status 401): check SCRAPERAPI_TOKEN")
+		return fmt.Errorf("scraperapi billing/quota/auth failure (status %d): %w", resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		retryAfter := c.markScraperAPIRateLimited(resp.Header.Get("Retry-After"))
