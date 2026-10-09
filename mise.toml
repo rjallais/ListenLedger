@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.27.0"
+go = "1.27.1"
 
 [settings]
 npm.package_manager = "aube"
@@ -45,9 +45,9 @@ sources = ["**/*.templ"]
 outputs = ["**/*_templ.go"]
 
 [tasks."build:css"]
-description = "Build Tailwind CSS and bundle JS via embedded esbuild (single cmd/build invocation)"
+description = "Build CSS and bundle JS via embedded esbuild (single cmd/build invocation)"
 run = "go run ./cmd/build"
-sources = ["./templates/**/*.{templ,go}", "./input.css", "./daisyui/*.js", "web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}", "./cmd/build/**/*.go"]
+sources = ["./templates/**/*.{templ,go}", "./input.css", "web/libs/**/*.{ts,js}", "assets/**/*.{ts,js}", "./cmd/build/**/*.go"]
 outputs = ["static/styles.css"]
 
 [tasks.build]
