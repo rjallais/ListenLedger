@@ -3,10 +3,13 @@ package quota
 import (
 	"ListenLedger/config"
 
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // --------------------------------------------------------------------------
@@ -24,6 +27,7 @@ func testConfig(t *testing.T) *config.Config {
 	cfg.ScrapingAntToken = ""
 	cfg.ScraperAPIToken = ""
 	cfg.ApifyToken = ""
+	cfg.BrowserbaseAPIKey = ""
 	return cfg
 }
 
@@ -722,7 +726,7 @@ func TestHasAvailableQuota_MobileSSRAlwaysAvailable(t *testing.T) {
 	cfg := testConfig(t)
 
 	c := NewChecker(cfg)
-	if !c.HasAvailableQuota(t.Context()) {
+	if !c.HasAvailableQuota() {
 		t.Fatal("expected available quota via mobile SSR even when nothing is configured")
 	}
 }
@@ -733,7 +737,7 @@ func TestHasAvailableQuota_LocalEnabled(t *testing.T) {
 	cfg.LocalConcurrency = 1
 
 	c := NewChecker(cfg)
-	if !c.HasAvailableQuota(t.Context()) {
+	if !c.HasAvailableQuota() {
 		t.Fatal("expected available quota when local headless is enabled")
 	}
 }
@@ -875,5 +879,107 @@ func TestCheckApify_UsesLimitsEndpoint(t *testing.T) {
 
 	if gotPath != "/v2/users/me/limits" {
 		t.Errorf("apify quota check hit %q, want %q", gotPath, "/v2/users/me/limits")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Admission short-circuit
+// --------------------------------------------------------------------------
+
+func TestHasAvailableQuota_ShortCircuitsWithoutNetwork(t *testing.T) {
+	hit := func(w http.ResponseWriter, r *http.Request) {
+		t.Error("paid quota backend must not be hit when a free provider is up")
+		w.WriteHeader(http.StatusTeapot)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(hit))
+	defer srv.Close()
+
+	cfg := testConfig(t)
+	cfg.ScrapingAntToken = "test-token"
+	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
+	cfg.ScraperAPIToken = "test-token"
+	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com"
+	cfg.ApifyToken = "test-token"
+
+	c := NewChecker(cfg)
+	c.ScrapingAntAPIBase = srv.URL
+	c.ScraperAPIBase = srv.URL
+	c.ApifyAPIBase = srv.URL
+
+	// Mobile SSR is unconditionally available, so the verdict is true with
+	// zero backend traffic.
+	if !c.HasAvailableQuota() {
+		t.Fatal("HasAvailableQuota should be true via the free-provider short-circuit")
+	}
+}
+
+func TestCheckAll_NetworkBackendHitExactlyOnce(t *testing.T) {
+	var hits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"plan_name":"Free","plan_total_credits":100,"remained_credits":50}`)
+	}))
+	defer srv.Close()
+
+	cfg := testConfig(t)
+	cfg.ScrapingAntToken = "test-token"
+	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
+
+	c := NewChecker(cfg)
+	c.ScrapingAntAPIBase = srv.URL
+
+	quotas := c.CheckAll(context.Background())
+	if _, ok := quotas["scrapingant"]; !ok {
+		t.Fatal("CheckAll should include scrapingant")
+	}
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("backend hits = %d, want exactly 1", got)
+	}
+}
+
+func TestCheckAll_NetworkChecksOverlap(t *testing.T) {
+	var inflight, maxInflight int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := atomic.AddInt64(&inflight, 1)
+		for {
+			if peak := atomic.LoadInt64(&maxInflight); cur <= peak || atomic.CompareAndSwapInt64(&maxInflight, peak, cur) {
+				break
+			}
+		}
+		// Hold the connection so concurrently started checks overlap.
+		time.Sleep(200 * time.Millisecond)
+		atomic.AddInt64(&inflight, -1)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/users/me/limits":
+			_, _ = fmt.Fprint(w, `{"data":{"limits":{"maxMonthlyUsageUsd":5.0,"maxActorMemoryGbytes":8.0},"current":{"monthlyUsageUsd":0.0,"actorMemoryGbytes":0.0}}}`)
+		case "/account":
+			_, _ = fmt.Fprint(w, `{"credits":100}`)
+		default:
+			_, _ = fmt.Fprint(w, `{"plan_name":"Free","plan_total_credits":100,"remained_credits":50}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := testConfig(t)
+	cfg.ScrapingAntToken = "test-token"
+	cfg.ScrapingAntEndpoint = "https://api.scrapingant.com/v2/general"
+	cfg.ScraperAPIToken = "test-token"
+	cfg.ScraperAPIEndpoint = "https://api.scraperapi.com"
+	cfg.ApifyToken = "test-token"
+	cfg.ApifyEndpoint = "https://api.apify.com/v2/acts"
+	cfg.ApifyActorID = "test-actor"
+	cfg.ApifyMemoryMB = 4096
+
+	c := NewChecker(cfg)
+	c.ScrapingAntAPIBase = srv.URL
+	c.ScraperAPIBase = srv.URL
+	c.ApifyAPIBase = srv.URL
+
+	_ = c.CheckAll(context.Background())
+
+	if got := atomic.LoadInt64(&maxInflight); got != 3 {
+		t.Fatalf("max overlapping backend checks = %d, want 3", got)
 	}
 }

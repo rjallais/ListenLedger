@@ -5,10 +5,10 @@ templ AlbumsPage(fullCount, processedCount, waitingCount int) {
 	@Layout("Albums", "albums") {
 		<div class="flex justify-between items-center mb-6">
 			<h1 class="text-3xl font-bold">Albums Collection</h1>
-			<label for="add-album-modal" class="btn btn-primary gap-2">
+			<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_album_open = true" aria-haspopup="dialog">
 				@IconPlus("h-5 w-5")
 				Add Album
-			</label>
+			</button>
 		</div>
 		<div class="space-y-4">
 			@AlbumSectionLazy("full", "Full", "Complete Albums", "success", fullCount)

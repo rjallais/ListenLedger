@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,8 +16,15 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
+	"zombiezen.com/go/sqlite"
 
+	"ListenLedger/internal/commands"
 	"ListenLedger/internal/correlation"
+	"ListenLedger/internal/domain/album"
+	"ListenLedger/internal/domain/artist"
+	"ListenLedger/internal/domain/scrapejob"
+	"ListenLedger/internal/domain/song"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/templates"
 )
@@ -160,78 +168,316 @@ func (h *Handler) resolveArtistNames(ctx context.Context, spotifyIDs []string) (
 	return artists, 0, nil
 }
 
-func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
-	input, status, errMsg := validateSongForm(e.Request)
+// HandleCreateSong creates a new song record and updates the page via Datastar SSE or JSON.
+func (h *Handler) HandleCreateSong(w http.ResponseWriter, r *http.Request) {
+	input, status, errMsg := validateSongForm(r)
 	if errMsg != "" {
-		return e.JSON(status, map[string]string{"error": errMsg})
+		if wantsJSONResponse(r) {
+			writeError(w, status, errMsg)
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(errMsg))
+		return
 	}
 
-	artists, code, err := h.resolveArtistNames(e.Request.Context(), input.ArtistSpotifyIDs)
+	artists, code, err := h.resolveArtistNames(r.Context(), input.ArtistSpotifyIDs)
 	if err != nil {
 		if code >= http.StatusInternalServerError {
 			log.Printf("[handleCreateSong] resolveArtistNames failed: %v", err)
-			return e.JSON(code, map[string]string{"error": "failed to resolve artist metadata"})
+			errMsg = "failed to resolve artist metadata"
+		} else {
+			errMsg = err.Error()
 		}
-		return e.JSON(code, map[string]string{"error": err.Error()})
+		if wantsJSONResponse(r) {
+			writeError(w, code, errMsg)
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(errMsg))
+		return
 	}
 
-	record, saveErr := h.persistSongWithMetadata(e.Request.Context(), input, artists)
+	record, saveErr := h.persistSongWithMetadata(r.Context(), input, artists)
 	if saveErr != nil {
-		return e.JSON(saveErr.status, map[string]string{"error": saveErr.Error()})
+		if wantsJSONResponse(r) {
+			writeError(w, saveErr.status, saveErr.Error())
+			return
+		}
+		sse := datastar.NewSSE(w, r, sseOpts...)
+		_ = patchFeedbackNotice(sse, templates.AddSongErrorNotice(saveErr.Error()))
+		return
 	}
 
-	playlistSort := normalizePlaylistSort(e.Request.URL.Query().Get("playlist_sort"))
-	ctx := e.Request.Context()
+	if h.songRepo != nil {
+		if songErr := h.recordSongCreatedEvent(r.Context(), record.song); songErr != nil {
+			log.Printf("[handleCreateSong] recordSongCreatedEvent error for %s: %v", record.song.Id, songErr)
+		}
+	}
+
+	// Fold the PB side effects (album count bump/creation, artist count
+	// bump/creation) as facts too. Best-effort like the song event above:
+	// the transaction already committed, so failures only log — audit
+	// flags rows without streams for convergence on the next write.
+	if sideErr := h.recordSongSideEffectEvents(r.Context(), record.album, record.artists); sideErr != nil {
+		log.Printf("[handleCreateSong] recordSongSideEffectEvents error: %v", sideErr)
+	}
+
+	playlistSort := normalizePlaylistSort(r.URL.Query().Get("playlist_sort"))
+	ctx := r.Context()
 	pageData, buildErr := h.buildSongPageData(ctx, playlistSort)
 	if buildErr != nil {
 		log.Printf("[handleCreateSong] buildSongPageData failed: %v", buildErr)
-		return e.JSON(http.StatusOK, map[string]any{
-			"id":    record.Id,
-			"title": record.GetString("title"),
+		_ = writeJSON(w, http.StatusOK, map[string]any{
+			"id":    record.song.Id,
+			"title": record.song.GetString("title"),
 		})
+		return
 	}
 
-	return renderDatastar(e, templates.NewSongCreateResponse(
-		record.GetString("title"),
+	sse := datastar.NewSSE(w, r, sseOpts...)
+
+	// 1. Patch the updated songs sections
+	if err := sse.PatchElementTempl(templates.SongsSections(
 		pageData.CurrentPlaylist,
 		pageData.WaitingRemoval,
 		pageData.NotRecentCount,
 		pageData.PlaylistSort,
-	), patchOpts(h.cfg, "#songs-sections", datastar.WithSelectorID("songs-sections"), datastar.WithModeOuter())...)
+	)); err != nil {
+		log.Printf("[handleCreateSong] patch songs sections failed: %v", err)
+		return
+	}
+
+	// 2. Patch success feedback notice into the modal
+	if err := patchFeedbackNotice(sse, templates.AddSongSuccessNotice(record.song.GetString("title"))); err != nil {
+		log.Printf("[handleCreateSong] patch song feedback failed: %v", err)
+		return
+	}
+
+	// 3. Reset form cleanly via morphing
+	_ = sse.PatchElementTempl(templates.AddSongForm())
 }
 
-func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInput, artists []string) (*core.Record, *songSaveError) {
+func (h *Handler) handleCreateSong(e *core.RequestEvent) error {
+	h.HandleCreateSong(e.Response, e.Request)
+	return nil
+}
+
+// recordSongCreatedEvent appends the SongCreated event for a persisted song.
+func (h *Handler) recordSongCreatedEvent(ctx context.Context, record *core.Record) error {
+	agg, err := song.NewSong(record.Id, record.GetString("title"), record.GetString("artist_name"),
+		record.GetString("album"), record.GetString("release_date"), record.GetString("release_type"),
+		record.GetString("spotify_id"), int64(record.GetInt("release_year")),
+		int64(record.GetInt("recent_batch_seq")), int64(record.GetInt("recent_batch_pos")),
+		record.GetBool("is_recent"))
+	if err != nil {
+		return err
+	}
+	events, err := h.songRepo.Save(ctx, agg)
+	if err != nil {
+		return err
+	}
+	if h.catalogProjection != nil && len(events) > 0 {
+		return h.catalogProjection.Project(ctx, song.StreamTypeSong, events)
+	}
+	return nil
+}
+
+// recordSongSideEffectEvents folds song creation's PocketBase side effects as
+// facts: the album count bump (or creation) and each artist's count bump (or
+// creation). Joined with recordSongCreatedEvent, the full creation — song,
+// album delta, artist deltas — is replayable from the log, closing the last
+// PB-only write path in the main web flow. Best-effort: the PB transaction
+// already committed, so each item logs and continues; the first error is
+// returned for the caller's warning log.
+func (h *Handler) recordSongSideEffectEvents(ctx context.Context, albumRec *core.Record, artistRecs []*core.Record) error {
+	var firstErr error
+	fail := func(err error) {
+		if firstErr == nil && err != nil {
+			firstErr = err
+		}
+	}
+
+	if albumRec != nil {
+		if h.albumRepo == nil {
+			log.Printf("[handleCreateSong] albumRepo not configured, skipping album event for %s", albumRec.Id)
+		} else if err := h.recordAlbumCountAdjusted(ctx, albumRec); err != nil {
+			log.Printf("[handleCreateSong] album side-effect event error for %s: %v", albumRec.Id, err)
+			fail(err)
+		}
+	}
+	if h.artistRepo == nil && len(artistRecs) > 0 {
+		log.Printf("[handleCreateSong] artistRepo not configured, skipping %d artist event(s)", len(artistRecs))
+	}
+	for _, artistRec := range artistRecs {
+		if artistRec == nil || h.artistRepo == nil {
+			continue
+		}
+		if err := h.recordArtistCountAdjusted(ctx, artistRec); err != nil {
+			log.Printf("[handleCreateSong] artist side-effect event error for %s: %v", artistRec.Id, err)
+			fail(err)
+		}
+	}
+	return firstErr
+}
+
+// recordAlbumCountAdjusted loads (seeding legacy PB-only rows) and folds the
+// album's committed post-state counts as an AlbumSongCountsAdjusted fact.
+func (h *Handler) recordAlbumCountAdjusted(ctx context.Context, record *core.Record) error {
+	return h.foldAlbumCounts(ctx, albumView{
+		id:              record.Id,
+		title:           record.GetString("title"),
+		artistName:      record.GetString("artist_name"),
+		status:          record.GetString("status"),
+		collectionSongs: max(int64(record.GetInt("collection_songs")), 0),
+		totalSongs:      max(int64(record.GetInt("total_songs")), 0),
+	})
+}
+
+// albumView is the post-state needed to fold album count facts without a
+// PocketBase record (tests build it directly).
+type albumView struct {
+	id              string
+	title           string
+	artistName      string
+	status          string
+	collectionSongs int64
+	totalSongs      int64
+}
+
+func (h *Handler) foldAlbumCounts(ctx context.Context, view albumView) error {
+	agg, err := h.loadOrCreateAlbum(ctx, view)
+	if err != nil {
+		return err
+	}
+	if err := agg.AdjustSongCounts(view.collectionSongs, view.totalSongs); err != nil {
+		return err
+	}
+	return h.saveAndProjectAlbum(ctx, agg)
+}
+
+// loadOrCreateAlbum replays the album stream, seeding an AlbumCreated fact
+// from the committed post-state for legacy rows that predate the event log.
+func (h *Handler) loadOrCreateAlbum(ctx context.Context, view albumView) (*album.Album, error) {
+	agg, loadErr := h.albumRepo.Load(ctx, view.id)
+	if !errors.Is(loadErr, eventsourcing.ErrStreamNotFound) {
+		return agg, loadErr
+	}
+	seed, seedErr := album.NewAlbum(view.id, view.title, view.artistName, view.status, view.collectionSongs, view.totalSongs)
+	if seedErr != nil {
+		return nil, seedErr
+	}
+	if err := h.saveAndProjectAlbum(ctx, seed); err != nil {
+		return nil, err
+	}
+	return h.albumRepo.Load(ctx, view.id)
+}
+
+// recordArtistCountAdjusted loads (seeding legacy PB-only rows) and folds the
+// artist's committed collection_songs count as an
+// ArtistCollectionSongsAdjusted fact. The rank column (total_songs) stays
+// derived: existing streams keep their logged total, only backfill seeds
+// carry the row's current value for immediate convergence.
+func (h *Handler) recordArtistCountAdjusted(ctx context.Context, record *core.Record) error {
+	return h.foldArtistCounts(ctx, artistView{
+		id:              record.Id,
+		name:            record.GetString("name"),
+		spotifyID:       record.GetString("spotify_id"),
+		genreGroup:      record.GetString("genre_group"),
+		listStatus:      record.GetString("list_status"),
+		collectionSongs: max(int64(record.GetInt("collection_songs")), 0),
+	})
+}
+
+// artistView is the post-state needed to fold artist count facts without a
+// PocketBase record (tests build it directly).
+type artistView struct {
+	id              string
+	name            string
+	spotifyID       string
+	genreGroup      string
+	listStatus      string
+	collectionSongs int64
+}
+
+func (h *Handler) foldArtistCounts(ctx context.Context, view artistView) error {
+	agg, _, err := h.loadOrCreateArtist(ctx, view)
+	if err != nil {
+		return err
+	}
+	if err := agg.AdjustCollectionSongs(view.collectionSongs, agg.TotalSongs); err != nil {
+		return err
+	}
+	h.persistArtist(ctx, view.id, agg)
+	return nil
+}
+
+// loadOrCreateArtist replays the artist stream, seeding a creation fact for
+// legacy PB-only rows. Counts start at zero in the stream: collection
+// advances with the first adjustment, and rank (total_songs) is never logged.
+func (h *Handler) loadOrCreateArtist(ctx context.Context, view artistView) (*artist.Artist, bool, error) {
+	agg, loadErr := h.artistRepo.Load(ctx, view.id)
+	if loadErr == nil {
+		return agg, false, nil
+	}
+	if !errors.Is(loadErr, eventsourcing.ErrStreamNotFound) {
+		return nil, false, loadErr
+	}
+	seed, seedErr := artist.NewArtist(view.id, view.name, view.spotifyID, view.genreGroup, view.listStatus)
+	if seedErr != nil {
+		return nil, false, seedErr
+	}
+	events, err := h.artistRepo.Save(ctx, seed)
+	if err != nil {
+		return nil, false, err
+	}
+	if h.artistProjection != nil && len(events) > 0 {
+		if err := h.artistProjection.Project(ctx, seed, events); err != nil {
+			return nil, false, err
+		}
+	}
+	agg, err = h.artistRepo.Load(ctx, view.id)
+	if err != nil {
+		return nil, false, err
+	}
+	return agg, true, nil
+}
+
+func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInput, artists []string) (*songPersisted, *songSaveError) {
 	if len(artists) == 0 {
 		return nil, &songSaveError{http.StatusBadRequest, "at least one artist is required"}
 	}
 
-	var song *core.Record
+	persisted := &songPersisted{}
 	var newArtistsToQueue []songNewArtistTarget
 
 	txErr := h.app.RunInTransaction(func(txApp core.App) error {
-		if err := h.upsertAlbumForSong(txApp, albumUpsertParams{
+		albumRec, err := h.upsertAlbumForSong(txApp, albumUpsertParams{
 			AlbumName:     input.AlbumName,
 			PrimaryArtist: artists[0],
 			ReleaseType:   input.ReleaseType,
 			TotalSongs:    input.TotalSongsOnAlbum,
-		}); err != nil {
+		})
+		if err != nil {
 			log.Printf("[handleCreateSong] upsertAlbumForSong failed: %v", err)
 			return fmt.Errorf("failed to update album metadata: %w", err)
 		}
+		persisted.album = albumRec
 
-		newArtists, err := h.upsertArtistsForSong(txApp, artists, input.ArtistSpotifyIDs, input.NewArtistGenre)
+		newArtists, touched, err := h.upsertArtistsForSong(txApp, artists, input.ArtistSpotifyIDs, input.NewArtistGenre)
 		if err != nil {
 			log.Printf("[handleCreateSong] upsertArtistsForSong failed: %v", err)
 			return fmt.Errorf("failed to update artist metadata: %w", err)
 		}
 		newArtistsToQueue = newArtists
+		persisted.artists = touched
 
 		songRecord, err := h.createSongRecord(ctx, txApp, input, artists)
 		if err != nil {
 			log.Printf("[handleCreateSong] createSongRecord failed: %v", err)
 			return fmt.Errorf("failed to create song record: %w", err)
 		}
-		song = songRecord
+		persisted.song = songRecord
 		return nil
 	})
 
@@ -249,7 +495,15 @@ func (h *Handler) persistSongWithMetadata(ctx context.Context, input songFormInp
 		}
 	}
 
-	return song, nil
+	return persisted, nil
+}
+
+// songPersisted carries a song creation's committed PocketBase rows so
+// follow-up event appends fold the same post-state as facts.
+type songPersisted struct {
+	song    *core.Record
+	album   *core.Record
+	artists []*core.Record
 }
 
 type songSaveError struct {
@@ -422,7 +676,7 @@ type albumUpsertParams struct {
 	TotalSongs    int
 }
 
-func (h *Handler) upsertAlbumForSong(txApp core.App, p albumUpsertParams) error {
+func (h *Handler) upsertAlbumForSong(txApp core.App, p albumUpsertParams) (*core.Record, error) {
 	filter := "title = {:title} && artist_name = {:artist_name}"
 	params := dbx.Params{"title": p.AlbumName, "artist_name": p.PrimaryArtist}
 	if p.ReleaseType != "" {
@@ -433,11 +687,14 @@ func (h *Handler) upsertAlbumForSong(txApp core.App, p albumUpsertParams) error 
 		"albums", filter, "", 1, 0, params,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(records) > 0 {
 		mutateAlbumRecord(records[0], p)
-		return txApp.Save(records[0])
+		if err := txApp.Save(records[0]); err != nil {
+			return nil, err
+		}
+		return records[0], nil
 	}
 	return h.createAlbumRecord(txApp, p)
 }
@@ -456,10 +713,10 @@ func mutateAlbumRecord(record *core.Record, p albumUpsertParams) {
 	}
 }
 
-func (h *Handler) createAlbumRecord(txApp core.App, p albumUpsertParams) error {
+func (h *Handler) createAlbumRecord(txApp core.App, p albumUpsertParams) (*core.Record, error) {
 	collection, err := txApp.FindCollectionByNameOrId("albums")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	newTotal := max(p.TotalSongs, 1)
@@ -471,7 +728,10 @@ func (h *Handler) createAlbumRecord(txApp core.App, p albumUpsertParams) error {
 	record.Set("total_songs", newTotal)
 	record.Set("release_type", p.ReleaseType)
 	record.Set("status", "waiting")
-	return txApp.Save(record)
+	if err := txApp.Save(record); err != nil {
+		return nil, err
+	}
+	return record, nil
 }
 
 type songNewArtistTarget struct {
@@ -480,22 +740,26 @@ type songNewArtistTarget struct {
 	SpotifyID string
 }
 
-func (h *Handler) upsertArtistsForSong(txApp core.App, artists []string, artistSpotifyIDs []string, newArtistGenre string) ([]songNewArtistTarget, error) {
+func (h *Handler) upsertArtistsForSong(txApp core.App, artists []string, artistSpotifyIDs []string, newArtistGenre string) ([]songNewArtistTarget, []*core.Record, error) {
 	if len(artists) != len(artistSpotifyIDs) {
-		return nil, fmt.Errorf("artists and artistSpotifyIDs length mismatch: %d vs %d", len(artists), len(artistSpotifyIDs))
+		return nil, nil, fmt.Errorf("artists and artistSpotifyIDs length mismatch: %d vs %d", len(artists), len(artistSpotifyIDs))
 	}
 
 	results := make([]songNewArtistTarget, 0, len(artists))
+	touched := make([]*core.Record, 0, len(artists))
 	for i, artistName := range artists {
-		target, isNew, err := h.findOrCreateArtist(txApp, artistName, artistSpotifyIDs[i], newArtistGenre)
+		target, record, isNew, err := h.findOrCreateArtist(txApp, artistName, artistSpotifyIDs[i], newArtistGenre)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if record != nil {
+			touched = append(touched, record)
 		}
 		if isNew {
 			results = append(results, target)
 		}
 	}
-	return results, nil
+	return results, touched, nil
 }
 
 func (h *Handler) lookupArtistRecord(txApp core.App, artistName, artistSpotifyID string) ([]*core.Record, error) {
@@ -528,20 +792,23 @@ func mutateArtistRecord(record *core.Record, artistSpotifyID string) {
 	}
 }
 
-func (h *Handler) findOrCreateArtist(txApp core.App, artistName, artistSpotifyID, newArtistGenre string) (songNewArtistTarget, bool, error) {
+func (h *Handler) findOrCreateArtist(txApp core.App, artistName, artistSpotifyID, newArtistGenre string) (songNewArtistTarget, *core.Record, bool, error) {
 	records, err := h.lookupArtistRecord(txApp, artistName, artistSpotifyID)
 	if err != nil {
-		return songNewArtistTarget{}, false, err
+		return songNewArtistTarget{}, nil, false, err
 	}
 
 	if len(records) > 0 {
 		mutateArtistRecord(records[0], artistSpotifyID)
-		return songNewArtistTarget{}, false, txApp.Save(records[0])
+		if err := txApp.Save(records[0]); err != nil {
+			return songNewArtistTarget{}, nil, false, err
+		}
+		return songNewArtistTarget{}, records[0], false, nil
 	}
 
 	collection, err := txApp.FindCollectionByNameOrId("artists")
 	if err != nil {
-		return songNewArtistTarget{}, false, err
+		return songNewArtistTarget{}, nil, false, err
 	}
 
 	record := core.NewRecord(collection)
@@ -554,9 +821,9 @@ func (h *Handler) findOrCreateArtist(txApp core.App, artistName, artistSpotifyID
 	record.Set("collection_songs", 1)
 	record.Set("total_songs", 0)
 	if err := txApp.Save(record); err != nil {
-		return songNewArtistTarget{}, false, err
+		return songNewArtistTarget{}, nil, false, err
 	}
-	return songNewArtistTarget{ID: record.Id, Name: artistName, SpotifyID: artistSpotifyID}, true, nil
+	return songNewArtistTarget{ID: record.Id, Name: artistName, SpotifyID: artistSpotifyID}, record, true, nil
 }
 
 type rollbackState struct {
@@ -592,6 +859,20 @@ func (h *Handler) deleteScrapeJobRecordByRequestID(ctx context.Context, requestI
 	if err := h.app.Delete(records[0]); err != nil {
 		return fmt.Errorf("delete scrape job %s: %w", records[0].Id, err)
 	}
+	// SQLite mirror cleanup: without it the mirrored row stays queued for up
+	// to queuedJobExpiry, reporting phantom jobs and shielding orphans. Warn
+	// only — the PB delete above already succeeded.
+	if h.db != nil {
+		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep(`DELETE FROM scrape_jobs WHERE request_id = ?;`)
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, requestID)
+			_, err := stmt.Step()
+			return err
+		}); err != nil {
+			log.Printf("[handlers] Warning: failed to delete SQLite scrape job %s: %v", requestID, err)
+		}
+	}
 	return nil
 }
 
@@ -602,7 +883,7 @@ func (h *Handler) rollbackSongArtistRefreshQueue(ctx context.Context, rb rollbac
 	if err := h.deleteScrapeJobRecordByRequestID(ctx, rb.RequestID, rb.ArtistID); err != nil {
 		cleanupFailures = append(cleanupFailures, fmt.Sprintf("delete scrape job: %v", err))
 	}
-	if err := h.unmarkArtistRefreshQueued(ctx, rb.Record, rb.PreviousFetchStatus); err != nil {
+	if err := h.unmarkArtistRefreshQueued(ctx, rb.Record, rb.PreviousFetchStatus, rb.RequestID); err != nil {
 		cleanupFailures = append(cleanupFailures, fmt.Sprintf("restore artist fetch_status: %v", err))
 	}
 	if len(cleanupFailures) > 0 {
@@ -630,9 +911,13 @@ func (h *Handler) queueArtistRefreshFromSong(ctx context.Context, target songNew
 		ArtistID:            target.ID,
 	}
 
-	if err := h.markArtistRefreshPending(ctx, record); err != nil {
+	if err := h.markArtistRefreshPending(ctx, record, requestID); err != nil {
 		return err
 	}
+
+	// Audit first like the other queue paths: open the job stream so a crash
+	// leaves a fact to reconcile instead of a phantom row.
+	h.appendJobRequested(ctx, requestID, target.ID, commands.TypeRefresh)
 
 	correlation.Associate(target.ID, requestID)
 	if err := h.createScrapeJobRecord(ctx, requestID, target.ID); err != nil {
@@ -666,6 +951,10 @@ func (h *Handler) publishArtistRefreshRequest(ctx context.Context, target songNe
 
 	ack, err := h.publishScrapeRequest(pubCtx, req)
 	if err != nil {
+		h.appendJobTransition(ctx, requestID, target.ID, func(j *scrapejob.Job) error {
+			_, _, err := j.RecordFailed("publish_failed", eventsourcing.Correlation{RequestID: requestID})
+			return err
+		})
 		return h.rollbackOnQueueFailure(rb, "publish scrape request", err)
 	}
 	if ack != nil && ack.Duplicate {
@@ -675,10 +964,23 @@ func (h *Handler) publishArtistRefreshRequest(ctx context.Context, target songNe
 	return nil
 }
 
-func (h *Handler) markArtistRefreshPending(ctx context.Context, record *core.Record) error {
+func (h *Handler) markArtistRefreshPending(ctx context.Context, record *core.Record, requestID string) error {
+	// Event first with saga correlation so aggregate state converges with the row.
+	h.emitArtistFetchStatus(ctx, record.Id, "pending", "song queue refresh", requestID)
 	record.Set("fetch_status", "pending")
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return fmt.Errorf("queueArtistRefreshFromSong: mark artist pending: %w", err)
+	}
+	if h.db != nil {
+		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("UPDATE artists SET fetch_status = 'pending' WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, record.Id)
+			_, err := stmt.Step()
+			return err
+		}); err != nil {
+			log.Printf("[handlers] Warning: failed to mirror fetch_status pending to SQLite for artist %s: %v", record.Id, err)
+		}
 	}
 	return nil
 }

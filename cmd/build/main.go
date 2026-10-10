@@ -1,20 +1,20 @@
-// Package main provides an embedded esbuild bundler for DaisyUI/JS assets.
-// It mirrors Northstar's cmd/web/build/main.go but adapts to ListenLedger's
-// layout: Tailwind CSS is still produced by gotailwind, while JS/TS libs
-// (if any) are bundled via the Go esbuild API with watch + hot-reload support.
+// Package main provides CSS and embedded esbuild bundling for assets.
+// CSS is copied directly from input.css to static/styles.css, while JS/TS
+// libs (if any) are bundled via the Go esbuild API with watch + hot-reload support.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -36,8 +36,8 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	// Always ensure CSS is built (via gotailwind) first.
-	if err := buildCSS(ctx); err != nil {
+	// Always ensure CSS is copied to static/styles.css first.
+	if err := buildCSS(); err != nil {
 		return err
 	}
 
@@ -46,7 +46,7 @@ func run(ctx context.Context) error {
 	if len(entries) == 0 {
 		slog.Info("no JS entrypoints found, CSS build complete")
 		if watch {
-			slog.Info("watching CSS for changes (JS watch idle)")
+			slog.Info("CSS copied, waiting for shutdown (JS watch idle)")
 			<-ctx.Done()
 		}
 		return nil
@@ -86,18 +86,38 @@ func run(ctx context.Context) error {
 
 		buildCtx, err := api.Context(opts)
 		if err != nil {
-			return err
+			return fmt.Errorf("create esbuild context: %w", err)
 		}
 		defer buildCtx.Dispose()
 
 		if err := buildCtx.Watch(api.WatchOptions{}); err != nil {
-			return err
+			return fmt.Errorf("start esbuild watch: %w", err)
 		}
 
 		slog.Info("watching JS and CSS...")
-		// Also watch CSS via gotailwind in watch mode would be handled by mise live:css.
-		<-ctx.Done()
-		return nil
+		// esbuild only watches JS entrypoints: poll input.css so edits
+		// rebuild styles.css without a restart (plain copy, no Tailwind step).
+		cssTick := time.NewTicker(1 * time.Second)
+		defer cssTick.Stop()
+		cssLast := cssModTime(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+					return fmt.Errorf("esbuild watch interrupted: %w", err)
+				}
+				return nil
+			case <-cssTick.C:
+				if mod := cssModTime(ctx); mod.After(cssLast) {
+					if err := buildCSS(); err != nil {
+						slog.Error("CSS rebuild failed", "error", err)
+					} else {
+						cssLast = mod
+						notifyHotReload(context.Background())
+					}
+				}
+			}
+		}
 	}
 
 	slog.Info("bundling JS entrypoints", "count", len(entries))
@@ -111,8 +131,19 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-func buildCSS(ctx context.Context) error {
-	slog.Info("building CSS via gotailwind")
+func cssModTime(ctx context.Context) time.Time {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}
+	}
+	fi, err := os.Stat("input.css")
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
+}
+
+func buildCSS() error {
+	slog.Info("copying input.css to static/styles.css")
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "static"
@@ -120,19 +151,17 @@ func buildCSS(ctx context.Context) error {
 	if err := os.MkdirAll(staticDir, 0750); err != nil {
 		return fmt.Errorf("create static dir: %w", err)
 	}
-	out := filepath.Join(staticDir, "styles.css")
-	args := []string{"tool", "gotailwind", "-i", "./input.css", "-o", out}
-	if !watch {
-		args = append(args, "--minify")
+	data, err := os.ReadFile("input.css")
+	if err != nil {
+		return fmt.Errorf("read input.css: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("CSS generation failed (gotailwind): %w", err)
+	out := filepath.Join(staticDir, "styles.css")
+	if err := os.WriteFile(out, data, 0640); err != nil {
+		return fmt.Errorf("write styles.css: %w", err)
 	}
 	return nil
 }
+
 
 func discoverEntries() []api.EntryPoint {
 	var entries []api.EntryPoint
@@ -142,7 +171,7 @@ func discoverEntries() []api.EntryPoint {
 		for _, m := range matches {
 			// web/libs uses directory-based output (libs/<name>), assets/js uses filename
 			output := "libs/" + filepath.Base(filepath.Dir(m))
-			if len(pat) >= 9 && pat[:9] == "assets/js" {
+			if strings.HasPrefix(pat, "assets/js") {
 				output = "libs/" + filepath.Base(m[:len(m)-len(filepath.Ext(m))])
 			}
 			entries = append(entries, api.EntryPoint{

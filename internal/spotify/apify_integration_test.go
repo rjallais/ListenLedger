@@ -28,6 +28,9 @@ import (
 //
 //	mise exec -- go test -v -timeout 180s -run TestApifyIntegration_FetchListenerCount ./internal/spotify/
 func TestApifyIntegration_FetchListenerCount(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Apify integration test in short mode")
+	}
 	token := os.Getenv("APIFY_TOKEN")
 	if token == "" {
 		t.Skip("APIFY_TOKEN not set — skipping Apify integration test")
@@ -197,6 +200,9 @@ func TestApifyIntegration_extractArtistIDFromSpotifyURL(t *testing.T) {
 //
 //	mise exec -- go test -v -timeout 180s -run TestApifyIntegration_RawResponse ./internal/spotify/
 func TestApifyIntegration_RawResponse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Apify integration test in short mode")
+	}
 	token := os.Getenv("APIFY_TOKEN")
 	if token == "" {
 		t.Skip("APIFY_TOKEN not set — skipping Apify raw-response diagnostic")

@@ -1,14 +1,16 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/a-h/templ"
-	"github.com/pocketbase/pocketbase/core"
+	"github.com/go-chi/chi/v5"
 	"github.com/starfederation/datastar-go/datastar"
 
 	"ListenLedger/config"
@@ -85,29 +87,117 @@ const (
 	playlistSortReleaseAsc = "release_asc"
 )
 
-// renderTempl renders a templ component to the HTTP response.
-func renderTempl(e *core.RequestEvent, component templ.Component) error {
-	e.Response.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return component.Render(e.Request.Context(), e.Response)
+// getRouteParam extracts a named URL parameter from the request, checking Chi's route context
+// first and falling back to standard library r.PathValue. Whitespace is trimmed.
+func getRouteParam(r *http.Request, key string) string {
+	if val := chi.URLParam(r, key); val != "" {
+		return strings.TrimSpace(val)
+	}
+	if key == "path" {
+		if val := chi.URLParam(r, "*"); val != "" {
+			return val
+		}
+	}
+	return strings.TrimSpace(r.PathValue(key))
 }
 
-func renderDatastar(e *core.RequestEvent, c templ.Component, opts ...datastar.PatchElementOption) error {
-	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
-	if err := sse.PatchElementTempl(c, opts...); err != nil {
+// getRouteParamInt extracts a named URL parameter and parses it as an integer.
+func getRouteParamInt(r *http.Request, key string) (int, error) {
+	val := getRouteParam(r, key)
+	if val == "" {
+		return 0, fmt.Errorf("missing route parameter %q", key)
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer for parameter %q: %w", key, err)
+	}
+	return n, nil
+}
+
+// getQueryParam extracts a query parameter from the URL, trimming whitespace and returning
+// fallback if empty.
+func getQueryParam(r *http.Request, key, fallback string) string {
+	val := strings.TrimSpace(r.URL.Query().Get(key))
+	if val == "" {
+		return fallback
+	}
+	return val
+}
+
+// parseBoundedInt parses an integer string, clamping it between minVal and maxVal.
+// If empty or invalid, fallback is returned. When maxVal <= 0, no upper bound is enforced.
+func parseBoundedInt(raw string, fallback, minVal, maxVal int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if parsed < minVal {
+		return minVal
+	}
+	if maxVal > 0 && parsed > maxVal {
+		return maxVal
+	}
+	return parsed
+}
+
+// getQueryParamInt parses an integer query parameter clamped within [minVal, maxVal].
+// If maxVal <= 0, no upper bound is enforced.
+func getQueryParamInt(r *http.Request, key string, fallback, minVal, maxVal int) int {
+	return parseBoundedInt(r.URL.Query().Get(key), fallback, minVal, maxVal)
+}
+
+// RenderTempl renders a templ component to the standard HTTP response writer.
+func RenderTempl(w http.ResponseWriter, r *http.Request, component templ.Component) error {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return component.Render(r.Context(), w)
+}
+
+// RenderDatastar renders a templ component patch via Datastar SSE using Handler configuration.
+func (h *Handler) RenderDatastar(w http.ResponseWriter, r *http.Request, c templ.Component, opts ...datastar.PatchElementOption) error {
+	var cfg *config.Config
+	if h != nil {
+		cfg = h.cfg
+	}
+	return RenderDatastarWithConfig(w, r, cfg, c, opts...)
+}
+
+// RenderDatastarWithConfig renders a templ component patch via Datastar SSE with explicit config options.
+func RenderDatastarWithConfig(w http.ResponseWriter, r *http.Request, cfg *config.Config, c templ.Component, opts ...datastar.PatchElementOption) error {
+	sse := datastar.NewSSE(w, r, sseOpts...)
+	allOpts := patchOpts(cfg, "", opts...)
+	if err := sse.PatchElementTempl(c, allOpts...); err != nil {
 		return fmt.Errorf("patch element via datastar: %w", err)
 	}
 	return nil
 }
 
-func formatBatchSignal(id string, total, completed int, done bool) []byte {
-	return fmt.Appendf(
-		nil,
-		`{"batchID":%q,"batchTotal":%d,"batchCompleted":%d,"batchDone":%t}`,
-		id,
-		total,
-		completed,
-		done,
-	)
+// patchFeedbackNotice resets the form-feedback visibility signal before
+// patching a modal notice: a previous Dismiss/Add-Another sets
+// _feedbackVisible false, and the fresh notice must show even then.
+func patchFeedbackNotice(sse *datastar.ServerSentEventGenerator, c templ.Component) error {
+	_ = sse.PatchSignals([]byte(`{"_feedbackVisible": true}`))
+	if err := sse.PatchElementTempl(c); err != nil {
+		return fmt.Errorf("patch feedback notice: %w", err)
+	}
+	return nil
+}
+
+// writeJSON writes a JSON response with status code and sets Content-Type.
+func writeJSON(w http.ResponseWriter, status int, data any) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	return json.NewEncoder(w).Encode(data)
+}
+
+// writeError writes a JSON error response with the provided status and error message.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func wantsJSONResponse(r *http.Request) bool {
@@ -145,19 +235,15 @@ func formatUpdatedAt(raw string) string {
 	if raw == "" {
 		return ""
 	}
-
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05.000Z",
-		"2006-01-02 15:04:05Z",
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t, err = time.Parse("2006-01-02 15:04:05.000Z", raw)
 	}
-
-	for _, layout := range layouts {
-		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.Local().Format("Jan 2, 2006 3:04 PM")
-		}
+	if err != nil {
+		t, err = time.Parse("2006-01-02 15:04:05", raw)
 	}
-
-	return raw
+	if err != nil {
+		return raw
+	}
+	return t.UTC().Format("02 Jan 2006 15:04:05 UTC")
 }

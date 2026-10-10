@@ -1,8 +1,22 @@
 package templates
 
+import "net/url"
+
 // ArtistsTable renders the artists data table.
-templ ArtistsTable(artists []Artist, currentGenre string) {
-	<div class="overflow-x-auto">
+//
+// The wrapper refetches its visible page slice whenever the genre's rank tick
+// signal is patched (server emits one tick per total_songs recalculation).
+// data-on-signal-patch fires only on actual signal patches — unlike
+// data-effect there is no refetch on page load and no refetch when unrelated
+// signals change. data-signals__ifmissing guarantees the tick signal exists
+// before the filter ever evaluates it.
+templ ArtistsTable(artists []Artist, currentGenre string, page, limit int) {
+	<div
+		class="overflow-x-auto"
+		data-signals__ifmissing={ "{ " + RanksTickSignal(currentGenre) + ": 0}" }
+		data-on-signal-patch={ "@get('/api/artists/tbody?genre=" + url.QueryEscape(currentGenre) + "&page=" + intString(page) + "&limit=" + intString(limit) + "&tick=' + $" + RanksTickSignal(currentGenre) + ")" }
+		data-on-signal-patch-filter={ "{include: /^" + RanksTickSignal(currentGenre) + "$/}" }
+	>
 		<table class="table table-zebra">
 			<thead>
 				<tr>
@@ -29,15 +43,24 @@ templ ArtistsTableBody(artists []Artist, currentGenre string) {
 
 // ArtistRow renders a single artist table row.
 templ ArtistRow(artist Artist) {
-	<tr id={ artistRowID(artist.ID) } data-signals={ artistSignalsJSON(artist) }>
+	<tr id={ artistRowID(artist.ID) }>
 		@ArtistRowContent(artist)
 	</tr>
 }
 
 templ ArtistRowContent(artist Artist) {
-	<td class="font-medium">{ artist.Name }</td>
+	<td class="font-medium">
+		<button
+			type="button"
+			class="hover:underline text-left cursor-pointer bg-transparent border-none p-0 text-foreground font-medium flex items-center gap-1.5"
+			data-on:click={ artistHistoryDrawerAction(artist.ID) }
+			title="View listener trajectory"
+		>
+			<span>{ artist.Name }</span>
+		</button>
+	</td>
 	<td class="text-right font-mono">
-		@ArtistSignalTextValue(artistListenerElementID(artist.ID), artistListenerSignal(artist.ID), FormatNumber(artist.MonthlyListeners))
+		<span id={ artistListenerElementID(artist.ID) }>{ FormatNumber(artist.MonthlyListeners) }</span>
 	</td>
 	<td class="text-center">
 		<div class="flex justify-center">
@@ -48,9 +71,9 @@ templ ArtistRowContent(artist Artist) {
 		@ArtistCollectionControls(artist)
 	</td>
 	<td>
-		@ArtistSignalTextValue(artistUpdatedElementID(artist.ID), artistUpdatedSignal(artist.ID), artist.LastUpdated)
+		<span id={ artistUpdatedElementID(artist.ID) }>{ artist.LastUpdated }</span>
 	</td>
 	<td class="text-center">
-		@ArtistRefreshAction(artist.ID)
+		@ArtistRefreshAction(artist)
 	</td>
 }

@@ -1,139 +1,161 @@
 package templates
 
 // AddSongModal renders the modal for adding a new song.
+//
+// Declarative open state: triggers set $_add_song_open; sb-modal reflects
+// the open attribute through its bool prop and resets the signal on sb-close
+// (button, backdrop, or Escape). The backend can drive it via patch-signals.
 templ AddSongModal() {
-	<input type="checkbox" id="add-song-modal" class="modal-toggle"/>
-	<div class="modal modal-bottom sm:modal-middle" role="dialog" aria-modal="true" aria-labelledby="add-song-title">
-		<div class="modal-box">
-			<div class="flex items-center justify-between mb-4">
-				<h2 id="add-song-title" class="font-bold text-lg">Add New Song</h2>
-				<label for="add-song-modal" class="btn btn-sm btn-circle btn-ghost">✕</label>
-			</div>
-			<form
-				id="add-song-form"
-				data-signals="{songInFlight:false}"
-				data-indicator:song-in-flight
-				data-on:submit__prevent="if ($songInFlight) { return; } @post('/api/songs', {contentType: 'form'})"
-			>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-name">
-						<span class="label-text">Song Name *</span>
-					</label>
-					<input
-						id="song-name"
-						type="text"
-						name="name"
-						placeholder="Enter song name"
-						class="input input-bordered w-full"
-						required
-					/>
-				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-album">
-						<span class="label-text">Album / EP / Single Name *</span>
-					</label>
-					<input
-						id="song-album"
-						type="text"
-						name="album"
-						placeholder="Enter release name"
-						class="input input-bordered w-full"
-						required
-					/>
-				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-release-type">
-						<span class="label-text">Release Type *</span>
-					</label>
-					<select
-						id="song-release-type"
-						name="release_type"
-						class="select select-bordered w-full"
-						required
-					>
-						<option value="" disabled selected>Select type</option>
-						<option value="album">Album</option>
-						<option value="ep">EP</option>
-						<option value="single">Single</option>
-					</select>
-				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-release-date">
-						<span class="label-text">Release Date *</span>
-					</label>
-					<input
-						id="song-release-date"
-						type="date"
-						name="release_date"
-						class="input input-bordered w-full"
-						required
-					/>
-				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-total-songs">
-						<span class="label-text">Total Songs on Release</span>
-						<span class="label-text-alt text-base-content/50">Track count for the album/EP/single</span>
-					</label>
-					<input
-						id="song-total-songs"
-						type="number"
-						name="total_songs"
-						placeholder="e.g., 12"
-						min="1"
-						max="999"
-						class="input input-bordered w-full"
-					/>
-				</div>
-				<div class="form-control w-full mb-4">
-					<label class="label" for="song-new-artist-genre">
-						<span class="label-text">Genre for New Artists</span>
-						<span class="label-text-alt text-base-content/50">Applied only when artist ID is not in PocketBase yet</span>
-					</label>
-					<select id="song-new-artist-genre" name="new_artist_genre" class="select select-bordered w-full">
-						<option value="rock_metal" selected>Rock & Metal</option>
-						<option value="everything_else">Everything Else</option>
-					</select>
-				</div>
-				<div class="form-control w-full mb-6">
-					<label class="label" for="song-artist-spotify-ids">
-						<span class="label-text">Artist Spotify IDs *</span>
-						<span class="label-text-alt text-base-content/50">Comma-separated for multiple</span>
-					</label>
-					<input
-						id="song-artist-spotify-ids"
-						type="text"
-						name="artist_spotify_ids"
-						placeholder="e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 06HL4z0CvFAxyc27GXpf02"
-						class="input input-bordered w-full font-mono"
-						pattern="^[A-Za-z0-9]{22}(\s*,\s*[A-Za-z0-9]{22})*$"
-						title="Each Spotify ID must be exactly 22 alphanumeric characters, separated by commas."
-						required
-					/>
-				</div>
-				<div class="modal-action">
-					<label for="add-song-modal" class="btn btn-ghost">Cancel</label>
-					<button type="submit" class="btn btn-primary gap-2" data-attr="{'disabled': $songInFlight}">
-						@IconPlus("h-5 w-5")
-						Add Song
-					</button>
-				</div>
-			</form>
-			<div id="add-song-feedback" class="mt-2"></div>
+	<sb-modal
+		data-signals="{_add_song_open: false}"
+		data-attr:open="$_add_song_open"
+		data-on:sb-close="$_add_song_open = false"
+		heading="Add New Song"
+	>
+		@AddSongForm()
+		<div id="add-song-feedback" class="mt-2"></div>
+		@AddSongModalActions()
+	</sb-modal>
+}
+
+// AddSongForm renders the form elements for adding a new song.
+templ AddSongForm() {
+	<form
+		id="add-song-form"
+		data-indicator:_add_song_loading
+		data-on:submit__prevent="!$_add_song_loading && @post('/api/songs', {contentType: 'form'})"
+	>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-name">
+				<span class="label-text">Song Name *</span>
+			</label>
+			<input
+				id="song-name"
+				type="text"
+				name="name"
+				placeholder="Enter song name"
+				class="input input-bordered w-full"
+				required
+			/>
 		</div>
-		<label class="modal-backdrop" for="add-song-modal">Close</label>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-album">
+				<span class="label-text">Album / EP / Single Name *</span>
+			</label>
+			<input
+				id="song-album"
+				type="text"
+				name="album"
+				placeholder="Enter release name"
+				class="input input-bordered w-full"
+				required
+			/>
+		</div>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-release-type">
+				<span class="label-text">Release Type *</span>
+			</label>
+			<select
+				id="song-release-type"
+				name="release_type"
+				class="select select-bordered w-full"
+				required
+			>
+				<option value="" disabled selected>Select type</option>
+				<option value="album">Album</option>
+				<option value="ep">EP</option>
+				<option value="single">Single</option>
+			</select>
+		</div>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-release-date">
+				<span class="label-text">Release Date *</span>
+			</label>
+			<input
+				id="song-release-date"
+				type="date"
+				name="release_date"
+				class="input input-bordered w-full"
+				required
+			/>
+		</div>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-total-songs">
+				<span class="label-text">Total Songs on Release</span>
+				<span class="label-text-alt text-base-content/50">Track count for the album/EP/single</span>
+			</label>
+			<input
+				id="song-total-songs"
+				type="number"
+				name="total_songs"
+				placeholder="e.g., 12"
+				min="1"
+				max="999"
+				class="input input-bordered w-full"
+			/>
+		</div>
+		<div class="form-control w-full mb-4">
+			<label class="label" for="song-new-artist-genre">
+				<span class="label-text">Genre for New Artists</span>
+				<span class="label-text-alt text-base-content/50">Applied only when artist ID is not in PocketBase yet</span>
+			</label>
+			<select id="song-new-artist-genre" name="new_artist_genre" class="select select-bordered w-full">
+				<option value="rock_metal" selected>Rock & Metal</option>
+				<option value="everything_else">Everything Else</option>
+			</select>
+		</div>
+		<div class="form-control w-full mb-6">
+			<label class="label" for="song-artist-spotify-ids">
+				<span class="label-text">Artist Spotify IDs *</span>
+				<span class="label-text-alt text-base-content/50">Comma-separated for multiple</span>
+			</label>
+			<input
+				id="song-artist-spotify-ids"
+				type="text"
+				name="artist_spotify_ids"
+				placeholder="e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 06HL4z0CvFAxyc27GXpf02"
+				class="input input-bordered w-full font-mono"
+				pattern="^[A-Za-z0-9]{22}(\s*,\s*[A-Za-z0-9]{22})*$"
+				title="Each Spotify ID must be exactly 22 alphanumeric characters, separated by commas."
+				required
+			/>
+		</div>
+	</form>
+}
+
+templ AddSongModalActions() {
+	<div slot="footer" class="flex justify-end gap-2">
+		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
+		<button type="submit" form="add-song-form" class="btn btn-primary" data-attr:disabled="$_add_song_loading">
+			<span data-show="$_add_song_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
+			Add Song
+		</button>
 	</div>
 }
 
 templ AddSongSuccessNotice(songTitle string) {
-	<div id="add-song-feedback" class="mt-2">
+	<div id="add-song-feedback" class="mt-2" data-signals="{ _feedbackVisible: true }" data-show="$_feedbackVisible">
 		<div class="alert alert-success">
 			@IconCheck("h-5 w-5")
 			<div class="flex-1">
 				<p class="font-semibold">Song added</p>
 				<p class="text-xs">{ songTitle }</p>
 			</div>
-			<button type="button" class="btn btn-success btn-sm" data-on:click="document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').innerHTML = ''">Add Another</button>
-			<label for="add-song-modal" class="btn btn-ghost btn-sm">Close</label>
+			<button type="reset" form="add-song-form" class="btn btn-success btn-sm" data-on:click="$_feedbackVisible = false">Add Another</button>
+			<button type="button" class="btn btn-ghost btn-sm" data-sb-close>Close</button>
+		</div>
+	</div>
+}
+
+templ AddSongErrorNotice(errMsg string) {
+	<div id="add-song-feedback" class="mt-2" data-signals="{ _feedbackVisible: true }" data-show="$_feedbackVisible">
+		<div class="alert alert-error">
+			<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+			<div class="flex-1">
+				<p class="font-semibold">Failed to add song</p>
+				<p class="text-xs">{ errMsg }</p>
+			</div>
+			<button type="button" class="btn btn-ghost btn-sm" data-on:click="$_feedbackVisible = false">Dismiss</button>
 		</div>
 	</div>
 }
@@ -141,4 +163,5 @@ templ AddSongSuccessNotice(songTitle string) {
 templ NewSongCreateResponse(songTitle string, currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount int, playlistSort string) {
 	@SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort)
 	@AddSongSuccessNotice(songTitle)
+	@AddSongForm()
 }

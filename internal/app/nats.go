@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -14,37 +15,144 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"ListenLedger/config"
 	"ListenLedger/internal/messaging"
 )
 
-func bootstrapNATS(ctx context.Context, dataDir string) (*natsserver.Server, *nats.Conn, jetstream.JetStream, error) {
-	natsStoreDir := filepath.Join(dataDir, "nats")
-	ns, err := startEmbeddedNATS(ctx, natsStoreDir)
+// EmbeddedNATS wraps an in-process NATS server, its client connection, and JetStream context,
+// providing resilient lifecycle management patterned after Delaney's Toolbelt.
+type EmbeddedNATS struct {
+	Server *natsserver.Server
+	Conn   *nats.Conn
+	JS     jetstream.JetStream
+}
+
+// Close gracefully drains client connections, flushes in-flight messages, shuts down the
+// embedded server, and blocks until the server has fully stopped (bounded by ctx).
+func (e *EmbeddedNATS) Close(ctx context.Context) error {
+	if e == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	drainErr := drainClientConn(ctx, e.Conn)
+	shutdownErr := shutdownServer(ctx, e.Server)
+	return errors.Join(drainErr, shutdownErr)
+}
+
+func drainClientConn(ctx context.Context, conn *nats.Conn) error {
+	if conn == nil || conn.IsClosed() {
+		return nil
+	}
+
+	// Drain flushes by itself; no separate Flush call is needed. Close the
+	// connection on every early return: with MaxReconnects(-1) an abandoned
+	// conn would otherwise redial the stopped server forever.
+	if err := conn.Drain(); err != nil {
+		conn.Close()
+		return fmt.Errorf("drain NATS client connection: %w", err)
+	}
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	for !conn.IsClosed() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return nil
+}
+
+func shutdownServer(ctx context.Context, server *natsserver.Server) error {
+	if server == nil {
+		return nil
+	}
+	server.Shutdown()
+	shutdownDone := make(chan struct{})
+	go func() {
+		server.WaitForShutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-shutdownDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("embedded NATS server shutdown interrupted: %w", ctx.Err())
+	}
+}
+
+func bootstrapNATS(ctx context.Context, dataDir string, cfg *config.Config) (*EmbeddedNATS, error) {
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+	natsStoreDir := cfg.NATSStoreDir
+	if natsStoreDir == "" {
+		natsStoreDir = filepath.Join(dataDir, "nats")
+	}
+
+	ns, err := startEmbeddedNATS(ctx, natsStoreDir, cfg)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to start embedded NATS: %w", err)
+		return nil, fmt.Errorf("failed to start embedded NATS: %w", err)
 	}
 	log.Printf("[nats] embedded NATS started at %s", ns.ClientURL())
 
-	nc, err := nats.Connect(ns.ClientURL())
+	nc, err := connectNATSWithRetry(ctx, ns.ClientURL())
 	if err != nil {
 		ns.Shutdown()
-		return nil, nil, nil, fmt.Errorf("failed to connect to NATS: %w", err)
+		ns.WaitForShutdown()
+		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
 	js, err := messaging.NewJetStream(nc)
 	if err != nil {
-		nc.Close()
+		_ = nc.Drain()
 		ns.Shutdown()
-		return nil, nil, nil, fmt.Errorf("failed to initialize JetStream: %w", err)
+		ns.WaitForShutdown()
+		return nil, fmt.Errorf("failed to initialize JetStream: %w", err)
 	}
 
 	if err := ensureJetStreamStreams(ctx, js); err != nil {
-		nc.Close()
+		_ = nc.Drain()
 		ns.Shutdown()
-		return nil, nil, nil, err
+		ns.WaitForShutdown()
+		return nil, err
 	}
 
-	return ns, nc, js, nil
+	return &EmbeddedNATS{
+		Server: ns,
+		Conn:   nc,
+		JS:     js,
+	}, nil
+}
+
+func connectNATSWithRetry(ctx context.Context, url string) (*nats.Conn, error) {
+	backoff := 50 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("nats connect canceled: %w", ctx.Err())
+		default:
+		}
+
+		nc, err := nats.Connect(url,
+			nats.Timeout(2*time.Second),
+			nats.MaxReconnects(-1),
+			nats.ReconnectWait(1*time.Second),
+		)
+		if err == nil {
+			return nc, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("nats connect retry canceled: %w", ctx.Err())
+		case <-time.After(backoff):
+			backoff = min(backoff*2, 500*time.Millisecond)
+		}
+	}
 }
 
 func ensureJetStreamStreams(ctx context.Context, js jetstream.JetStream) error {
@@ -57,6 +165,9 @@ func ensureJetStreamStreams(ctx context.Context, js jetstream.JetStream) error {
 	if err := ensureJetStreamStream(ctx, js, messaging.EnsureEventsStream); err != nil {
 		return fmt.Errorf("failed to ensure events stream: %w", err)
 	}
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureDomainEventsStream); err != nil {
+		return fmt.Errorf("failed to ensure domain events stream: %w", err)
+	}
 
 	return nil
 }
@@ -67,8 +178,8 @@ func ensureJetStreamStream(ctx context.Context, js jetstream.JetStream, ensure f
 	return ensure(streamCtx, js)
 }
 
-// startEmbeddedNATS launches an in-process NATS server.
-func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server, error) {
+// startEmbeddedNATS launches an in-process NATS server with exponential backoff readiness checks.
+func startEmbeddedNATS(ctx context.Context, storeDir string, cfg *config.Config) (*natsserver.Server, error) {
 	if err := os.MkdirAll(storeDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create NATS store dir: %w", err)
 	}
@@ -79,37 +190,66 @@ func startEmbeddedNATS(ctx context.Context, storeDir string) (*natsserver.Server
 	}
 
 	opts := &natsserver.Options{
-		Host:      "127.0.0.1",
-		Port:      port,
-		NoSigs:    true,
-		NoLog:     true,
-		JetStream: true,
-		StoreDir:  storeDir,
+		Host:               "127.0.0.1",
+		Port:               port,
+		NoSigs:             true,
+		JetStream:          true,
+		StoreDir:           storeDir,
+		JetStreamMaxMemory: cfg.NATSMaxMemoryStore,
+		JetStreamMaxStore:  cfg.NATSMaxFileStore,
+	}
+
+	if cfg.NATSLogging || cfg.NATSDebug {
+		opts.NoLog = false
+		opts.Debug = cfg.NATSDebug
+		opts.Logtime = true
+	} else {
+		opts.NoLog = true
 	}
 
 	ns, err := natsserver.NewServer(opts)
 	if err != nil {
 		return nil, fmt.Errorf("create embedded NATS server (store_dir=%s): %w", opts.StoreDir, err)
 	}
+	if !opts.NoLog {
+		ns.ConfigureLogger()
+	}
 
 	go ns.Start()
 
-	ready := make(chan bool, 1)
+	// Tie the server lifetime to ctx like toolbelt's embeddednats: if the
+	// context is canceled before Close runs (e.g. signal during startup),
+	// the server still shuts down instead of leaking.
 	go func() {
-		ready <- ns.ReadyForConnections(5 * time.Second)
+		<-ctx.Done()
+		ns.Shutdown()
 	}()
 
-	select {
-	case <-ctx.Done():
+	if err := waitForNATSServer(ctx, ns, 5*time.Second); err != nil {
 		ns.Shutdown()
-		return nil, fmt.Errorf("NATS server startup canceled: %w", ctx.Err())
-	case ok := <-ready:
-		if !ok {
-			ns.Shutdown()
-			return nil, fmt.Errorf("NATS server failed to become ready")
-		}
-		return ns, nil
+		ns.WaitForShutdown()
+		return nil, fmt.Errorf("embedded NATS failed readiness check: %w", err)
 	}
+
+	return ns, nil
+}
+
+func waitForNATSServer(ctx context.Context, ns *natsserver.Server, maxWait time.Duration) error {
+	deadline := time.Now().Add(maxWait)
+	step := 25 * time.Millisecond
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for NATS server canceled: %w", ctx.Err())
+		default:
+		}
+
+		if ns.ReadyForConnections(step) {
+			return nil
+		}
+		step = min(step*2, 250*time.Millisecond)
+	}
+	return fmt.Errorf("NATS server failed to become ready within %v", maxWait)
 }
 
 func resolveNATSPort(ctx context.Context) (int, error) {

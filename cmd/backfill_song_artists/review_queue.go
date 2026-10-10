@@ -103,7 +103,7 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 
 	missingArtists := extractMissingArtistNames(resolution.Notes)
 	selectedCandidate := selectCandidateForReview(resolution)
-	suggestedArtistNames := []string{}
+	var suggestedArtistNames []string
 	if selectedCandidate != nil {
 		suggestedArtistNames = append([]string(nil), selectedCandidate.ArtistNames...)
 	}
@@ -133,7 +133,7 @@ func buildReviewItem(resolution songbackfill.Resolution, artists []songbackfill.
 // classifyReviewItem assigns the Priority, Category, and RecommendedAction fields
 // of item based on the resolution outcome and available candidates.
 func extractMissingArtistNames(notes []string) []string {
-	names := []string{}
+	var names []string
 	seen := map[string]bool{}
 	for _, note := range notes {
 		matches := missingArtistNotePattern.FindStringSubmatch(note)

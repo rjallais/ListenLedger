@@ -3,6 +3,8 @@ package templates
 import (
 	"fmt"
 	"net/url"
+
+	"github.com/starfederation/datastar-go/datastar"
 )
 
 templ SongSortControls(playlistSort string) {
@@ -17,13 +19,16 @@ templ SongSortButton(sortValue, label, playlistSort string) {
 	<button
 		class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == sortValue), templ.KV("btn-outline", playlistSort != sortValue) }
 		aria-pressed={ fmt.Sprintf("%v", playlistSort == sortValue) }
+		data-indicator:_sorting
+		data-attr:disabled="$_sorting"
 		data-on:click={ songsSectionsSortURL(sortValue) }
 	>
+		<span data-show="$_sorting" class="loading loading-spinner loading-xs" style="display: none"></span>
 		{ label }
 	</button>
 }
 
 func songsSectionsSortURL(sortValue string) string {
 	query := url.Values{"playlist_sort": []string{sortValue}}.Encode()
-	return fmt.Sprintf("@get('/api/songs/sections?%s')", query)
+	return datastar.GetSSE("/api/songs/sections?%s", query)
 }

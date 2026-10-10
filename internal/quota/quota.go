@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sync"
 	"time"
 
 	"ListenLedger/config"
@@ -106,6 +107,12 @@ func (c *Checker) apifyAPIBase() string {
 }
 
 // CheckAll checks quota for all configured providers.
+//
+// The local checks are synchronous (no I/O); the three network checks
+// (ScrapingAnt, ScraperAPI, Apify) run concurrently so the total cost is the
+// slowest single call rather than the sum. Measured ~630ms sequential on the
+// refresh-click critical path; concurrency brings it near the single-call
+// floor while preserving exact per-provider behavior.
 func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 	results := make(map[string]Info)
 
@@ -119,20 +126,41 @@ func (c *Checker) CheckAll(ctx context.Context) map[string]Info {
 
 	results["mobile-ssr"] = c.CheckMobileSSR()
 
+	var mu sync.Mutex
+	put := func(name string, info Info) {
+		mu.Lock()
+		results[name] = info
+		mu.Unlock()
+	}
+
+	var wg sync.WaitGroup
 	if c.cfg.HasScrapingAnt() {
-		results["scrapingant"] = c.CheckScrapingAnt(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			put("scrapingant", c.CheckScrapingAnt(ctx))
+		}()
 	}
 
 	if c.cfg.HasScraperAPI() {
-		results["scraperapi"] = c.CheckScraperAPI(ctx)
-	}
-
-	if c.cfg.HasBrowserless() {
-		results["browserless"] = c.CheckBrowserless()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			put("scraperapi", c.CheckScraperAPI(ctx))
+		}()
 	}
 
 	if c.cfg.HasApify() {
-		results["apify"] = c.CheckApify(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			put("apify", c.CheckApify(ctx))
+		}()
+	}
+	wg.Wait()
+
+	if c.cfg.HasBrowserless() {
+		results["browserless"] = c.CheckBrowserless()
 	}
 
 	if c.cfg.HasBrowserbase() {
@@ -511,9 +539,18 @@ func (c *Checker) CheckBrowserbase() Info {
 }
 
 // HasAvailableQuota returns true if at least one provider has available quota.
-func (c *Checker) HasAvailableQuota(ctx context.Context) bool {
-	quotas := c.CheckAll(ctx)
-	return HasAvailableFrom(quotas)
+//
+// Free providers are evaluated with no network I/O: local headless,
+// self-hosted browserless, and mobile SSR need no quota API, and mobile SSR
+// is unconditionally available.
+func (c *Checker) HasAvailableQuota() bool {
+	if c.cfg.HasLocalHeadless() && c.CheckLocalHeadless().Available {
+		return true
+	}
+	if c.cfg.HasLocalBrowserless() && c.CheckLocalBrowserless().Available {
+		return true
+	}
+	return c.CheckMobileSSR().Available
 }
 
 // HasAvailableFrom returns true if at least one provider in quotas is available.
@@ -527,20 +564,20 @@ func HasAvailableFrom(quotas map[string]Info) bool {
 }
 
 // GetBestProvider returns the provider with the most remaining credits.
-// Priority order: Local headless (always free) -> Mobile SSR (always free, no
-// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
-// ScraperAPI -> Apify (if credits remain) ->
+// Priority order: Local headless (always free) -> local-browserless ->
+// Browserbase -> ScrapingAnt (if credits remain) -> ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
+// Note: Mobile SSR is handled by client fallback and is intentionally excluded from this priority list.
 func (c *Checker) GetBestProvider(ctx context.Context) string {
 	quotas := c.CheckAll(ctx)
 	return GetBestFrom(quotas)
 }
 
 // GetBestFrom returns the best available provider from a precomputed quota map.
-// Priority order: Local headless (always free) -> Mobile SSR (always free, no
-// config) -> local-browserless -> Browserbase -> ScrapingAnt (if credits remain) ->
-// ScraperAPI -> Apify (if credits remain) ->
+// Priority order: Local headless (always free) -> local-browserless ->
+// Browserbase -> ScrapingAnt (if credits remain) -> ScraperAPI -> Apify (if credits remain) ->
 // Browserless (assumed available when configured, no usage API).
+// Note: Mobile SSR is handled by client fallback and is intentionally excluded from this priority list.
 func GetBestFrom(quotas map[string]Info) string {
 	for _, name := range providerPriority {
 		if q, ok := quotas[name]; ok && isProviderReady(name, q) {

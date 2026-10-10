@@ -4,7 +4,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,9 +18,10 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
+	"zombiezen.com/go/sqlite"
 
-	"ListenLedger/internal/correlation"
-	"ListenLedger/internal/messaging"
+	"ListenLedger/config"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/priority"
 	"ListenLedger/internal/quota"
 	"ListenLedger/templates"
@@ -77,6 +80,33 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 		return &artistRankCache{genre: genre, totalCount: totalCount, ranks: make(map[string]int)}, nil
 	}
 
+	ranks := make(map[string]int, totalCount)
+	if h.db != nil {
+		err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT id FROM artists WHERE genre_group = ? AND list_status != 'waiting' ORDER BY monthly_listeners DESC, id ASC;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, genre)
+
+			rank := 1
+			for {
+				hasRow, err := stmt.Step()
+				if err != nil {
+					return err
+				}
+				if !hasRow {
+					break
+				}
+				ranks[stmt.ColumnText(0)] = rank
+				rank++
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch artists for rank map: %w", err)
+		}
+		return &artistRankCache{genre: genre, totalCount: totalCount, ranks: ranks}, nil
+	}
+
 	filterParams := nonWaitingArtistParams(genre)
 
 	records := make([]*core.Record, 0)
@@ -90,7 +120,6 @@ func (h *Handler) buildArtistRankMap(ctx context.Context, genre string) (*artist
 		return nil, fmt.Errorf("failed to fetch artists for rank map: %w", err)
 	}
 
-	ranks := make(map[string]int, len(records))
 	for i, record := range records {
 		ranks[record.Id] = i + 1 // 1-indexed rank
 	}
@@ -175,9 +204,9 @@ func parseArtistCreateInput(r *http.Request) (artistCreateInput, error) {
 
 func parseArtistListParams(r *http.Request) artistListParams {
 	return artistListParams{
-		page:  parsePositiveInt(r.URL.Query().Get("page"), defaultArtistPage),
-		limit: parseBoundedPositiveInt(r.URL.Query().Get("limit"), defaultArtistPageSize, maxArtistPageSize),
-		genre: normalizeArtistGenreFilter(r.URL.Query().Get("genre")),
+		page:  getQueryParamInt(r, "page", defaultArtistPage, 1, 0),
+		limit: getQueryParamInt(r, "limit", defaultArtistPageSize, 1, maxArtistPageSize),
+		genre: normalizeArtistGenreFilter(getQueryParam(r, "genre", "")),
 	}
 }
 
@@ -240,41 +269,12 @@ func normalizeArtistGenreFilter(raw string) string {
 	return defaultArtistGenreGroup
 }
 
-func parsePositiveInt(raw string, defaultValue int) int {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return defaultValue
-	}
-
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return defaultValue
-	}
-
-	return parsed
-}
-
 func parseBoundedPositiveInt(raw string, defaultValue, maxValue int) int {
-	parsed := parsePositiveInt(raw, defaultValue)
-	if parsed > maxValue {
-		return maxValue
-	}
-
-	return parsed
+	return parseBoundedInt(raw, defaultValue, 1, maxValue)
 }
 
 func parseNonNegativeInt(raw string) int {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return 0
-	}
-
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 {
-		return 0
-	}
-
-	return parsed
+	return parseBoundedInt(raw, 0, 0, 0)
 }
 
 func artistFromRecord(record *core.Record, totalSongs int) templates.Artist {
@@ -313,7 +313,10 @@ func artistsFromRankedRecords(records []*core.Record, totalCount, offset int) []
 }
 
 type artistStatusUpdateParams struct {
+	Writer       http.ResponseWriter
+	Request      *http.Request
 	Event        *core.RequestEvent
+	Cfg          *config.Config
 	OldStatus    string
 	NewStatus    string
 	CurrentGenre string
@@ -321,8 +324,18 @@ type artistStatusUpdateParams struct {
 }
 
 func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
+	w := params.Writer
+	r := params.Request
+	if (w == nil || r == nil) && params.Event != nil {
+		w = params.Event.Response
+		r = params.Event.Request
+	}
+	if w == nil || r == nil {
+		return errors.New("renderUpdatedArtistStatus: missing writer or request")
+	}
+
 	if isWaitingListStatusTransition(params.OldStatus, params.NewStatus) {
-		sse := datastar.NewSSE(params.Event.Response, params.Event.Request, sseOpts...)
+		sse := datastar.NewSSE(w, r, sseOpts...)
 
 		// 1. Remove the old element from the DOM cleanly using true Datastar remove mode
 		var removeID string
@@ -351,10 +364,10 @@ func renderUpdatedArtistStatus(params artistStatusUpdateParams) error {
 	}
 
 	if params.NewStatus == waitingArtistStatus {
-		return renderDatastar(params.Event, templates.WaitingArtistCard(params.Artist))
+		return RenderDatastarWithConfig(w, r, params.Cfg, templates.WaitingArtistCard(params.Artist))
 	}
 
-	return renderDatastar(params.Event, templates.ArtistRow(params.Artist))
+	return RenderDatastarWithConfig(w, r, params.Cfg, templates.ArtistRow(params.Artist))
 }
 
 func rankedArtistTotalSongs(totalCount, offset, index int) int {
@@ -380,6 +393,27 @@ func nonWaitingArtistCountExpr(genre string) dbx.Expression {
 }
 
 func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre string) (int, error) {
+	if h.db != nil {
+		var count int
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting';")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, genre)
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if hasRow {
+				count = int(stmt.ColumnInt64(0))
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("countArtistsByGenreExcludingWaiting SQLite: %w", err)
+		}
+		return count, nil
+	}
+
 	var count int64
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
@@ -394,6 +428,26 @@ func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre
 }
 
 func (h *Handler) countWaitingArtists(ctx context.Context) (int, error) {
+	if h.db != nil {
+		var count int
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT COUNT(*) FROM artists WHERE list_status = 'waiting';")
+			defer func() { _ = stmt.Reset() }()
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if hasRow {
+				count = int(stmt.ColumnInt64(0))
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, fmt.Errorf("countWaitingArtists SQLite: %w", err)
+		}
+		return count, nil
+	}
+
 	var count int64
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
@@ -407,9 +461,9 @@ func (h *Handler) countWaitingArtists(ctx context.Context) (int, error) {
 	return int(count), nil
 }
 
-func (h *Handler) hasAvailableQuota(ctx context.Context) bool {
+func (h *Handler) hasAvailableQuota() bool {
 	checker := quota.NewChecker(h.cfg)
-	return checker.HasAvailableQuota(ctx)
+	return checker.HasAvailableQuota()
 }
 
 func (h *Handler) findArtistRecord(ctx context.Context, artistID string) (*core.Record, error) {
@@ -419,16 +473,16 @@ func (h *Handler) findArtistRecord(ctx context.Context, artistID string) (*core.
 	})
 }
 
-func (h *Handler) resumableBatchRefreshSnapshot(requestedBatchID string) (batchProgressSnapshot, bool) {
+func (h *Handler) resumableBatchRefreshSnapshot(ctx context.Context, requestedBatchID string) (batchProgressSnapshot, bool) {
 	batchID := strings.TrimSpace(requestedBatchID)
 	if batchID != "" {
-		if snapshot, ok := h.getBatchSnapshot(batchID); ok {
+		if snapshot, ok := h.getBatchSnapshot(ctx, batchID); ok {
 			log.Printf("[batch] Resuming batch %s (%d/%d complete)", snapshot.ID, snapshot.Completed, snapshot.Total)
 			return snapshot, true
 		}
 	}
 
-	if snapshot, ok := h.getActiveBatchSnapshot(); ok {
+	if snapshot, ok := h.getActiveBatchSnapshot(ctx); ok {
 		log.Printf(
 			"[batch] Active batch %s already running (%d/%d complete); returning current state",
 			snapshot.ID,
@@ -478,122 +532,98 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priori
 	return prioritizeArtistJobs(records), nil
 }
 
-func (h *Handler) queueArtistRefresh(ctx context.Context, record *core.Record) (string, bool, error) {
-	requestID := strconv.FormatInt(time.Now().UnixNano(), 10)
-	previousFetchStatus := record.GetString("fetch_status")
-
-	if err := h.markArtistRefreshQueued(ctx, record); err != nil {
-		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
+// emitArtistFetchStatus folds a fetch-status fact into the artist stream and
+// projection (best-effort, warn-only). Read-model row writes below are compat
+// mirrors; the aggregate is the source of truth for isArtistRefreshPending.
+// requestID links the fact to its saga instance in metadata.
+func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) {
+	if h.artistRepo == nil || strings.TrimSpace(artistID) == "" {
+		return
 	}
-
-	correlation.Associate(record.Id, requestID)
-	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
-		h.rollbackQueueArtistRefresh(record, requestID, previousFetchStatus)
-		return "", false, fmt.Errorf("failed to create scrape job record: %w", err)
-	}
-
-	req := messaging.NewScrapeRequested(
-		record.Id,
-		record.GetString("spotify_id"),
-		record.GetString("name"),
-		requestID,
-	)
-
-	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	ack, err := h.publishScrapeRequest(pubCtx, req)
+	agg, err := h.artistRepo.Load(ctx, artistID)
 	if err != nil {
-		h.rollbackQueueArtistRefresh(record, requestID, previousFetchStatus)
-		return "", false, fmt.Errorf("queueArtistRefresh: publish scrape request: %w", err)
+		return
 	}
-
-	if ack != nil && ack.Duplicate {
-		h.handleDuplicateAck(record, requestID, previousFetchStatus)
-		return requestID, true, nil
+	if agg.FetchStatus == status {
+		return
 	}
-
-	return requestID, false, nil
-}
-
-func (h *Handler) rollbackQueueArtistRefresh(record *core.Record, requestID, previousFetchStatus string) {
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelCleanup()
-	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
-		log.Printf("[queueArtistRefresh] rollback failed for artist %s: %v", record.Id, rollbackErr)
+	if err := agg.SetFetchStatus(status, reason, eventsourcing.Correlation{RequestID: requestID}); err != nil {
+		return
 	}
-	correlation.Clear(record.Id)
-	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
-		log.Printf("[queueArtistRefresh] rollback cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
+	events, err := h.artistRepo.Save(ctx, agg)
+	if err != nil {
+		log.Printf("[handlers] Warning: fetch-status event %s for %s not saved: %v", status, artistID, err)
+		return
 	}
-}
-
-func (h *Handler) handleDuplicateAck(record *core.Record, requestID, previousFetchStatus string) {
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelCleanup()
-	correlation.Clear(record.Id)
-	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus); rollbackErr != nil {
-		log.Printf("[queueArtistRefresh] duplicate ack rollback failed for artist %s request %s: %v", record.Id, requestID, rollbackErr)
-	}
-	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
-		log.Printf("[queueArtistRefresh] duplicate ack cleanup failed for artist %s request %s: %v", record.Id, requestID, delErr)
-	}
-}
-
-func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
-	queuedArtistIDs := make([]string, 0, len(jobs))
-	stats := make(map[string]int)
-
-	for _, job := range jobs {
-		if len(queuedArtistIDs) >= count {
-			break
+	if h.artistProjection != nil && len(events) > 0 {
+		if err := h.artistProjection.Project(ctx, agg, events); err != nil {
+			log.Printf("[handlers] Warning: fetch-status projection %s for %s failed: %v", status, artistID, err)
 		}
-
-		record := job.Record
-		_, duplicate, err := h.queueArtistRefresh(ctx, record)
-		if err != nil {
-			log.Printf("[batch] Failed to queue %s: %v", record.GetString("name"), err)
-			continue
-		}
-		if duplicate {
-			log.Printf("[batch] Duplicate request for %s skipped", record.GetString("name"))
-			continue
-		}
-
-		queuedArtistIDs = append(queuedArtistIDs, record.Id)
-		stats[job.Priority.String()]++
 	}
-
-	return queuedArtistIDs, stats
 }
 
-func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record) error {
+func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) error {
+	// Event first: aggregate owns pending state, projection updates the
+	// SQLite read model. Direct row writes below are compat mirrors.
+	previousStatus := record.GetString("fetch_status")
+	h.emitArtistFetchStatus(ctx, record.Id, "pending", "queue refresh", requestID)
 	record.Set("fetch_status", "pending")
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
+		// Roll back the emitted fact so the aggregate does not stay pending
+		// forever (which would report every later refresh as already_queued).
+		if rbErr := h.unmarkArtistRefreshQueued(ctx, record, previousStatus, requestID); rbErr != nil {
+			return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w (rollback: %v)", err, rbErr)
+		}
 		return fmt.Errorf("markArtistRefreshQueued: save fetch_status: %w", err)
+	}
+	// SQLite-first: keep the SQLite read model in sync (source of truth for
+	// artists list/counts/getByID reads). PocketBase remains compat for now.
+	if h.db != nil {
+		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("UPDATE artists SET fetch_status = 'pending' WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, record.Id)
+			_, err := stmt.Step()
+			return err
+		}); err != nil {
+			log.Printf("[handlers] Warning: failed to mirror fetch_status pending to SQLite for artist %s: %v", record.Id, err)
+		}
 	}
 	return nil
 }
 
-func (h *Handler) unmarkArtistRefreshQueued(ctx context.Context, record *core.Record, previousStatus string) error {
+func (h *Handler) unmarkArtistRefreshQueued(ctx context.Context, record *core.Record, previousStatus, requestID string) error {
 	status := strings.TrimSpace(previousStatus)
 	if status == "" {
 		status = "idle"
 	}
 
+	h.emitArtistFetchStatus(ctx, record.Id, status, "queue rollback", requestID)
 	record.Set("fetch_status", status)
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return fmt.Errorf("unmarkArtistRefreshQueued: save fetch_status: %w", err)
 	}
+	if h.db != nil {
+		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("UPDATE artists SET fetch_status = ? WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, status)
+			stmt.BindText(2, record.Id)
+			_, err := stmt.Step()
+			return err
+		}); err != nil {
+			log.Printf("[handlers] Warning: failed to mirror fetch_status %s to SQLite for artist %s: %v", status, record.Id, err)
+		}
+	}
 	return nil
 }
 
-func respondArtistRefreshQueued(e *core.RequestEvent, artistID, status string) error {
-	if wantsJSONResponse(e.Request) {
-		return e.JSON(http.StatusOK, map[string]string{"status": status})
+func respondArtistRefreshQueuedHTTP(w http.ResponseWriter, r *http.Request, artistID, status string) error {
+	if wantsJSONResponse(r) {
+		return writeJSON(w, http.StatusOK, map[string]string{"status": status})
 	}
 
-	sse := datastar.NewSSE(e.Response, e.Request, sseOpts...)
+	sse := datastar.NewSSE(w, r, sseOpts...)
 	payload, err := json.Marshal(map[string]map[string]string{"artistFetchStatus": {artistID: status}})
 	if err != nil {
 		return fmt.Errorf("marshal artistFetchStatus payload: %w", err)
@@ -645,4 +675,55 @@ func (h *Handler) dynamicArtistTotalSongs(ctx context.Context, record *core.Reco
 	}
 
 	return collectionSongs
+}
+
+// getArtistByID fetches a single artist by ID from SQLite or PocketBase.
+func (h *Handler) getArtistByID(ctx context.Context, artistID string) (templates.Artist, error) {
+	if h.db != nil {
+		var artist templates.Artist
+		var found bool
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT id, name, spotify_id, monthly_listeners, genre_group, list_status, fetch_status, collection_songs, total_songs, last_updated FROM artists WHERE id = ? LIMIT 1;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, artistID)
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if !hasRow {
+				return nil
+			}
+			found = true
+			artist = templates.Artist{
+				ID:               stmt.ColumnText(0),
+				Name:             stmt.ColumnText(1),
+				SpotifyID:        stmt.ColumnText(2),
+				MonthlyListeners: int(stmt.ColumnInt64(3)),
+				GenreGroup:       stmt.ColumnText(4),
+				ListStatus:       stmt.ColumnText(5),
+				FetchStatus:      stmt.ColumnText(6),
+				CollectionSongs:  int(stmt.ColumnInt64(7)),
+				TotalSongs:       int(stmt.ColumnInt64(8)),
+				LastUpdated:      formatUpdatedAt(stmt.ColumnText(9)),
+			}
+			return nil
+		})
+		if err != nil {
+			return templates.Artist{}, err
+		}
+		if !found {
+			return templates.Artist{}, sql.ErrNoRows
+		}
+		return artist, nil
+	}
+
+	if h.app != nil {
+		record, err := h.app.FindRecordById("artists", artistID)
+		if err != nil {
+			return templates.Artist{}, err
+		}
+		return artistFromRecord(record, record.GetInt("total_songs")), nil
+	}
+
+	return templates.Artist{}, sql.ErrNoRows
 }

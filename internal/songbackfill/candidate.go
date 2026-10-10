@@ -16,8 +16,8 @@ func (l ChainTrackLookup) Lookup(ctx context.Context, song SongInput, primaryArt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	allCandidates := []TrackCandidate{}
-	errorsSeen := []error{}
+	var allCandidates []TrackCandidate
+	var errorsSeen []error
 
 	for _, lookup := range l.Lookups {
 		candidates, err := l.executeSingleLookup(ctx, lookup, song, primaryArtistPrefix)
@@ -228,18 +228,6 @@ func normalizedArtistListKey(names []string) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "|")
-}
-
-func distinctCandidateGroupCount(candidates []TrackCandidate) int {
-	groups := map[string]bool{}
-	for _, candidate := range candidates {
-		key := normalizedArtistListKey(candidate.ArtistNames)
-		if key == "" {
-			continue
-		}
-		groups[key] = true
-	}
-	return len(groups)
 }
 
 func dedupeTrackCandidates(candidates []TrackCandidate) []TrackCandidate {

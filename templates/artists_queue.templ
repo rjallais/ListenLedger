@@ -3,7 +3,7 @@ package templates
 // ArtistQueueSection renders the waiting artists queue with lazy loading.
 templ ArtistQueueSection(count int) {
 	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
-		<input type="checkbox" class="artist-queue-toggle" aria-label="Toggle artists queue"/>
+		<input type="checkbox" class="artist-queue-toggle" data-preserve-attr="checked" aria-label="Toggle artists queue"/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-warning">Queue</span>
 			<span>{ artistQueueTitle(count) }</span>
@@ -19,9 +19,12 @@ templ ArtistQueueSection(count int) {
 			<div id="load-more-artists" class="mt-4">
 				<button
 					class="btn btn-warning btn-sm gap-2"
+					data-indicator:_showing_first
+					data-attr:disabled="$_showing_first"
 					data-on:click="@get('/api/artists/waiting?offset=0&limit=1')"
 				>
-					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<span data-show="$_showing_first" class="loading loading-spinner loading-xs" style="display: none"></span>
+					<svg data-show="!$_showing_first" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
 					</svg>
@@ -50,9 +53,12 @@ templ WaitingArtistsLoadMore(nextOffset int) {
 	<div id="load-more-artists">
 		<button
 			class="btn btn-warning btn-sm gap-2"
+			data-indicator:_loading_more_artists
+			data-attr:disabled="$_loading_more_artists"
 			data-on:click={ artistQueueLoadMoreAction(nextOffset) }
 		>
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<span data-show="$_loading_more_artists" class="loading loading-spinner loading-xs" style="display: none"></span>
+			<svg data-show="!$_loading_more_artists" xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path>
 			</svg>
 			{ artistQueueLoadMoreLabel(nextOffset) }
@@ -68,7 +74,7 @@ templ WaitingArtistsCompleteNotice() {
 
 // WaitingArtistCard renders a waiting artist as a card with actions.
 templ WaitingArtistCard(artist Artist) {
-	<div id={ artistCardID(artist.ID) } class="card bg-base-200 shadow-sm border border-base-300" data-signals={ artistSignalsJSON(artist) }>
+	<div id={ artistCardID(artist.ID) } class="card bg-base-200 shadow-sm border border-base-300">
 		<div class="card-body py-4 px-5">
 			<div class="flex justify-between items-start gap-4">
 				<div class="flex-1">
@@ -77,7 +83,7 @@ templ WaitingArtistCard(artist Artist) {
 				</div>
 				<div class="flex flex-col gap-2 items-end">
 					@ListStatusDropdown(artist.ID, artist.ListStatus)
-					@ArtistRefreshAction(artist.ID)
+					@ArtistRefreshAction(artist)
 				</div>
 			</div>
 		</div>
@@ -87,17 +93,17 @@ templ WaitingArtistCard(artist Artist) {
 templ WaitingArtistMeta(artist Artist) {
 	<div class="flex flex-wrap gap-2 mt-2 text-sm text-base-content/70">
 		<span class="flex items-center gap-1">
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path>
 			</svg>
-			@ArtistSignalTextValue(artistCardListenerElementID(artist.ID), artistListenerSignal(artist.ID), FormatNumber(artist.MonthlyListeners))
+			<span id={ artistCardListenerElementID(artist.ID) }>{ FormatNumber(artist.MonthlyListeners) }</span>
 			monthly listeners
 		</span>
 		<span class="flex items-center gap-1">
-			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
 			</svg>
-			@ArtistSignalTextValue(artistCardUpdatedElementID(artist.ID), artistUpdatedSignal(artist.ID), artist.LastUpdated)
+			<span id={ artistCardUpdatedElementID(artist.ID) }>{ artist.LastUpdated }</span>
 		</span>
 		<span class="badge badge-ghost badge-sm">{ artist.GenreGroup }</span>
 	</div>
@@ -106,7 +112,7 @@ templ WaitingArtistMeta(artist Artist) {
 // RemovedArtistCard replaces a card in the queue when the artist is moved to the main list.
 templ RemovedArtistCard(artistID string) {
 	<div id={ artistCardID(artistID) } class="alert alert-success py-2">
-		<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+		<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
 			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
 		</svg>
 		<span class="text-sm">Moved to main list</span>

@@ -14,7 +14,7 @@ templ SongsSections(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentC
 // CurrentPlaylistSection renders the top playlist section and sort controls.
 templ CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) {
 	<div id="songs-current-playlist-section" class="collapse collapse-arrow border bg-success/10 border-success">
-		<input type="checkbox" checked aria-label="Toggle current playlist section"/>
+		<input type="checkbox" checked data-preserve-attr="checked" aria-label="Toggle current playlist section"/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-success">Current Playlist</span>
 			<span>{ fmt.Sprintf("Newest 500 (%d)", len(currentPlaylistSongs)) }</span>
@@ -28,7 +28,7 @@ templ CurrentPlaylistSection(currentPlaylistSongs []Song, playlistSort string) {
 
 templ SongWaitingRemovalSection(waitingRemovalSongs []Song, playlistSort string) {
 	<div class="collapse collapse-arrow border bg-warning/10 border-warning">
-		<input type="checkbox" aria-label="Toggle waiting for removal section"/>
+		<input type="checkbox" data-preserve-attr="checked" aria-label="Toggle waiting for removal section"/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-warning">Waiting For Removal</span>
 			<span>{ fmt.Sprintf("Older recent songs (%d)", len(waitingRemovalSongs)) }</span>
@@ -42,7 +42,7 @@ templ SongWaitingRemovalSection(waitingRemovalSongs []Song, playlistSort string)
 
 templ SongNotRecentSection(notRecentCount int, playlistSort string) {
 	<div class="collapse collapse-arrow border bg-base-100 border-base-300">
-		<input type="checkbox" class="songs-not-recent-toggle" aria-label="Toggle not recent songs section"/>
+		<input type="checkbox" class="songs-not-recent-toggle" data-preserve-attr="checked" aria-label="Toggle not recent songs section"/>
 		<div class="collapse-title text-xl font-medium flex items-center gap-2">
 			<span class="badge badge-ghost">Not Recent</span>
 			<span>{ fmt.Sprintf("Archived songs (%d)", notRecentCount) }</span>
@@ -63,7 +63,15 @@ templ SongNotRecentSection(notRecentCount int, playlistSort string) {
 templ SongNotRecentLoadControl(notRecentCount int, playlistSort string) {
 	<div id="load-more-songs-not-recent" class="mt-4 text-center">
 		if notRecentCount > 0 {
-			<button class="btn btn-outline btn-sm" data-on:click={ songsNotRecentURL(0, playlistSort) }>Load Songs</button>
+			<button
+				class="btn btn-outline btn-sm"
+				data-indicator:_loading_not_recent
+				data-attr:disabled="$_loading_not_recent"
+				data-on:click={ songsNotRecentURL(0, playlistSort) }
+			>
+				<span data-show="$_loading_not_recent" class="loading loading-spinner loading-xs" style="display: none"></span>
+				<span>Load Songs</span>
+			</button>
 		} else {
 			<p class="text-sm text-success">✓ No archived songs</p>
 		}

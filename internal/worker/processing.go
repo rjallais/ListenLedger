@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +10,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"ListenLedger/internal/domain/scrapejob"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/spotify"
 )
@@ -36,7 +36,7 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 	item.dispatchProgress.Stop()
 
-	if w.isRequestAlreadySucceeded(env.req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, env.req.RequestID) {
 		return w.handleDedupSkip(ctx, env)
 	}
 
@@ -229,29 +229,6 @@ func (w *Worker) handleRetryableError(ctx context.Context, env msgEnvelope, err 
 	return msgOK
 }
 
-// handleDLQ publishes the message to the dead-letter queue after retries are
-// exhausted and terminates it from the JetStream consumer.
-func (w *Worker) handleDLQ(ctx context.Context, env msgEnvelope, err error) msgResult {
-	reason := "retry_exhausted: " + err.Error()
-	if dlqErr := w.publishScrapeDLQ(ctx, env, reason); dlqErr != nil {
-		log.Printf("[worker] Failed to publish retry-exhausted message to DLQ: %v", dlqErr)
-		if nakErr := env.msg.Nak(); nakErr != nil {
-			log.Printf("[worker] Failed to NAK retry-exhausted message after DLQ publish failure: %v", nakErr)
-		}
-		return msgOK
-	}
-	if termErr := env.msg.Term(); termErr != nil {
-		log.Printf("[worker] Failed to terminate retry-exhausted message: %v", termErr)
-		return msgOK
-	}
-	if statusErr := w.updateArtistStatus(ctx, env.req.ArtistID, "failed"); statusErr != nil {
-		log.Printf("[worker] Failed to mark retry-exhausted artist %s as failed: %v", env.req.ArtistID, statusErr)
-	}
-	w.setScrapeJobFinished(env.req.RequestID, "failed", "retry_exhausted")
-	w.recordDLQ(env.label)
-	return msgOK
-}
-
 // isContextError reports whether err is a context cancellation or deadline
 // that applies to the current processing context.
 func isContextError(ctx context.Context, err error) bool {
@@ -333,7 +310,9 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 		return
 	}
 
-	msg.InProgress()
+	if err := msg.InProgress(); err != nil {
+		log.Printf("[worker] Failed to send initial InProgress heartbeat: %v", err)
+	}
 
 	t := time.NewTicker(w.progress)
 	defer t.Stop()
@@ -347,7 +326,9 @@ func (w *Worker) inProgressLoop(msg jetstream.Msg, done <-chan struct{}) {
 		case <-w.allGroupsDead:
 			return
 		case <-t.C:
-			msg.InProgress()
+			if err := msg.InProgress(); err != nil {
+				log.Printf("[worker] Failed to send InProgress heartbeat: %v", err)
+			}
 		}
 	}
 }
@@ -383,42 +364,6 @@ func (w *Worker) ackRetryDelay(ctx context.Context, attempt int) {
 }
 
 // ---------------------------------------------------------------------------
-// DLQ
-// ---------------------------------------------------------------------------
-
-func (w *Worker) publishScrapeDLQ(ctx context.Context, env msgEnvelope, reason string) error {
-	payload := map[string]any{
-		"reason":      reason,
-		"at":          time.Now().Format(time.RFC3339),
-		"subject":     env.msg.Subject(),
-		"payload_b64": base64.StdEncoding.EncodeToString(env.msg.Data()),
-		"request_id":  env.req.RequestID,
-		"artist_id":   env.req.ArtistID,
-		"spotify_id":  env.req.SpotifyID,
-	}
-	if env.meta != nil {
-		payload["num_delivered"] = env.meta.NumDelivered
-		payload["stream_seq"] = env.meta.Sequence.Stream
-		payload["consumer_seq"] = env.meta.Sequence.Consumer
-		payload["stream"] = env.meta.Stream
-		payload["consumer"] = env.meta.Consumer
-	}
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal DLQ envelope: %w", err)
-	}
-
-	pubCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	if _, err := w.js.Publish(pubCtx, messaging.SubjectScrapeDLQ, data); err != nil {
-		return fmt.Errorf("publish DLQ message: %w", err)
-	}
-
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // Core processing
 // ---------------------------------------------------------------------------
 
@@ -426,15 +371,22 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 	startedAt := time.Now()
 	req := env.req
 
-	if w.isRequestAlreadySucceeded(req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale redelivery for already-succeeded request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}
 
 	w.logProcessingStart(req, env.meta, env.label)
-	w.setScrapeJobProcessing(req.RequestID)
+	// Event first: the Started fact owns the attempt count, the row flip
+	// below is its projection. Row-only callers (sweeper, UI) converge via
+	// the stream on restart.
+	w.recordJobEventWarn(ctx, req.RequestID, req.ArtistID, "started", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordStarted(eventsourcing.Correlation{RequestID: req.RequestID})
+		return err
+	})
+	w.setScrapeJobProcessing(ctx, req.RequestID)
 
-	if err := w.updateArtistStatus(ctx, req.ArtistID, "pending"); err != nil {
+	if err := w.updateArtistStatus(ctx, req.ArtistID, "pending", req.RequestID); err != nil {
 		return fmt.Errorf("set pending: %w", err)
 	}
 
@@ -447,7 +399,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 		return err
 	}
 
-	if w.isRequestAlreadySucceeded(req.RequestID) {
+	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale duplicate completion for request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}
@@ -482,10 +434,14 @@ func (w *Worker) logProcessingStart(req messaging.ScrapeRequested, meta *jetstre
 // handleFetcherUnavailable marks the artist as failed when no fetcher is configured.
 func (w *Worker) handleFetcherUnavailable(ctx context.Context, req messaging.ScrapeRequested) error {
 	log.Printf("[worker] Fetcher not available, marking as failed")
-	if err := w.updateArtistStatus(ctx, req.ArtistID, "failed"); err != nil {
+	if err := w.updateArtistStatus(ctx, req.ArtistID, "failed", req.RequestID); err != nil {
 		return fmt.Errorf("set failed: %w", err)
 	}
-	w.setScrapeJobFinished(req.RequestID, "failed", "fetcher_unavailable")
+	w.recordJobEventWarn(ctx, req.RequestID, req.ArtistID, "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed("fetcher_unavailable", eventsourcing.Correlation{RequestID: req.RequestID})
+		return err
+	})
+	w.setScrapeJobFinished(ctx, req.RequestID, "failed", "fetcher_unavailable")
 	return errTerminalFailure
 }
 
@@ -506,7 +462,7 @@ func (w *Worker) fetchListeners(ctx context.Context, req messaging.ScrapeRequest
 			return 0, fmt.Errorf("fetch failed for %s via %s: %w", req.SpotifyID, label, err)
 		}
 
-		if w.isRequestAlreadySucceeded(req.RequestID) {
+		if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 			log.Printf("[worker] Ignoring stale fetch error for already-succeeded request_id=%s", req.RequestID)
 			return 0, errRequestAlreadySucceeded
 		}
@@ -527,17 +483,22 @@ func (w *Worker) persistListeners(ctx context.Context, params listenerPersistPar
 	persistCtx, persistCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer persistCancel()
 
-	if err := w.updateArtistListeners(persistCtx, params.Req.ArtistID, params.Listeners); err != nil {
+	durationMs := time.Since(params.StartedAt).Milliseconds()
+	if err := w.updateArtistListeners(persistCtx, params.Req.ArtistID, params.Listeners, params.Label, durationMs, params.Req.RequestID); err != nil {
 		return fmt.Errorf("update listeners: %w", err)
 	}
 
 	log.Printf("[worker] Successfully updated %s with %d monthly listeners via %s", params.Req.ArtistName, params.Listeners, params.Label)
+	w.recordJobEventWarn(ctx, params.Req.RequestID, params.Req.ArtistID, "succeeded", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordSucceeded(params.Label, durationMs, eventsourcing.Correlation{RequestID: params.Req.RequestID})
+		return err
+	})
 	if err := w.setScrapeJobFinishedWithContext(persistCtx, params.Req.RequestID, "succeeded", ""); err != nil {
 		return fmt.Errorf("mark scrape job succeeded: %w", err)
 	}
 	w.markRequestSucceeded(params.Req.RequestID)
 	w.recordSucceeded(params.Label, time.Since(params.StartedAt))
-	w.queueTotalSongsRecalc(params.Req.ArtistID)
+	w.queueRankRefresh(params.Req.ArtistID)
 	w.clearFailedJobsForArtist(persistCtx, params.Req.ArtistID, params.Req.RequestID)
 	return nil
 }

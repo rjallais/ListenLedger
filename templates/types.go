@@ -1,52 +1,23 @@
 package templates
 
-import "fmt"
+import (
+	"fmt"
+
+	"ListenLedger/config"
+)
 
 const StatusWaiting = "waiting"
 
-// Theme represents a DaisyUI theme
+// IsDevEnvironment reports whether hot-reload dev affordances should render.
+func IsDevEnvironment() bool {
+	return config.IsDevEnvironment()
+}
+
+// Theme represents a UI theme
 type Theme struct {
 	Name  string
 	Icon  string
 	Value string
-}
-
-var DarkThemes = []Theme{
-	{Name: "Dark", Icon: "🌙", Value: "dark"},
-	{Name: "Synthwave", Icon: "🌆", Value: "synthwave"},
-	{Name: "Halloween", Icon: "🎃", Value: "halloween"},
-	{Name: "Forest", Icon: "🌲", Value: "forest"},
-	{Name: "Black", Icon: "⬛", Value: "black"},
-	{Name: "Luxury", Icon: "💎", Value: "luxury"},
-	{Name: "Dracula", Icon: "🧛", Value: "dracula"},
-	{Name: "Business", Icon: "💼", Value: "business"},
-	{Name: "Night", Icon: "🌃", Value: "night"},
-	{Name: "Coffee", Icon: "☕", Value: "coffee"},
-	{Name: "Dim", Icon: "🔅", Value: "dim"},
-	{Name: "Sunset", Icon: "🌅", Value: "sunset"},
-}
-
-var LightThemes = []Theme{
-	{Name: "Light", Icon: "☀️", Value: "light"},
-	{Name: "Cupcake", Icon: "🧁", Value: "cupcake"},
-	{Name: "Bumblebee", Icon: "🐝", Value: "bumblebee"},
-	{Name: "Emerald", Icon: "💚", Value: "emerald"},
-	{Name: "Corporate", Icon: "🏢", Value: "corporate"},
-	{Name: "Retro", Icon: "📺", Value: "retro"},
-	{Name: "Cyberpunk", Icon: "🤖", Value: "cyberpunk"},
-	{Name: "Valentine", Icon: "💕", Value: "valentine"},
-	{Name: "Garden", Icon: "🌷", Value: "garden"},
-	{Name: "Lofi", Icon: "🎵", Value: "lofi"},
-	{Name: "Pastel", Icon: "🎨", Value: "pastel"},
-	{Name: "Fantasy", Icon: "🏰", Value: "fantasy"},
-	{Name: "Wireframe", Icon: "📐", Value: "wireframe"},
-	{Name: "CMYK", Icon: "🖨️", Value: "cmyk"},
-	{Name: "Autumn", Icon: "🍂", Value: "autumn"},
-	{Name: "Acid", Icon: "🧪", Value: "acid"},
-	{Name: "Lemonade", Icon: "🍋", Value: "lemonade"},
-	{Name: "Winter", Icon: "❄️", Value: "winter"},
-	{Name: "Nord", Icon: "🏔️", Value: "nord"},
-	{Name: "Aqua", Icon: "💧", Value: "aqua"},
 }
 
 // NavItem represents a navigation menu item

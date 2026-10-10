@@ -289,7 +289,7 @@ func (c *Client) buildProviderTable() []providerEntry {
 		{ProviderMobileSSR, func() bool { return true }, c.semMobileSSR, c.fetchViaMobileSSR, "mobile-ssr", noCtx},
 		{ProviderLocalHeadless, c.useLocal.Load, c.semLocal, c.fetchViaLocalHeadless, "local", noCtx},
 		{ProviderLocalBrowserless, func() bool { return c.useLocalBrowserless }, c.semLocalBrowserless, c.fetchViaLocalBrowserless, "local-browserless", localBrowserCtx},
-		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", noCtx},
+		{ProviderBrowserbase, func() bool { return c.useBrowserbase }, c.semBrowserbase, c.fetchViaBrowserbase, "browserbase", browserbaseCtx},
 		{ProviderBrowserless, func() bool { return c.useBrowserless }, c.semBrowserless, c.fetchViaBrowserless, "browserless", noCtx},
 		{ProviderScrapingAnt, func() bool { return c.useScrapingAnt }, c.semScrapingAnt, c.fetchViaScrapingAnt, "scrapingant", noCtx},
 		{ProviderScraperAPI, func() bool { return c.useScraperAPI }, c.semScraperAPI, c.fetchViaScraperAPI, "scraperapi", noCtx},
@@ -316,10 +316,15 @@ func noCtx(parent context.Context) (context.Context, context.CancelFunc) {
 }
 
 // localBrowserCtx bounds self-hosted Browserless content requests; they
-// regularly exceed the shared HTTP timeout under load, and this is the only
-// provider whose attempts carry a dedicated sub-timeout.
+// regularly exceed the shared HTTP timeout under load.
 func localBrowserCtx(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, 60*time.Second)
+}
+
+// browserbaseCtx bounds Browserbase session creation, CDP operations, navigation,
+// and extraction to 90 seconds.
+func browserbaseCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, 90*time.Second)
 }
 
 // FetchListenerCount fetches the monthly listener count for an artist.
@@ -343,10 +348,7 @@ func (c *Client) FetchListenerCount(ctx context.Context, artistID string, provid
 // providerSlots() mirrors this list for concurrency accounting — keep the two
 // in sync when adding a provider.
 func (c *Client) providerRegistry() []providerEntry {
-	if c.providerTable != nil {
-		return c.providerTable
-	}
-	return c.buildProviderTable()
+	return c.providerTable
 }
 
 // resolveProvider selects an enabled provider from the registry by identity.
@@ -592,7 +594,7 @@ func extractMonthlyListenersFromJSON(html string) (int, bool) {
 }
 
 func extractMonthlyListenersFromText(html, source string) (int, error) {
-	re := regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
+	re := regexp.MustCompile(`(?i)([\d,.]+)\s*([mMkK]?)\s*monthly listeners`)
 	matches := re.FindAllStringSubmatch(html, -1)
 	if len(matches) == 0 {
 		if strings.Contains(html, `"artistUnion"`) {

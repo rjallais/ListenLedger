@@ -48,9 +48,11 @@ func TestFetchViaScraperAPIFallsBackOnServerError(t *testing.T) {
 					Header:     make(http.Header),
 					Request:    r,
 				}, nil
-			default:
-				t.Fatalf("unexpected extra request #%d", call)
-				return nil, fmt.Errorf("unexpected request")
+		default:
+			// No Fatalf here: the request-count assertion below fails the
+			// test on any unexpected extra request. (A Fatalf would make
+			// this return unreachable.)
+			return nil, fmt.Errorf("unexpected extra request #%d", call)
 			}
 		}),
 	}

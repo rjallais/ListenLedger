@@ -31,9 +31,6 @@ import (
 const (
 	BrowserRotationThreshold = 25 // Restart browser after this many jobs
 	NetworkTimeout           = 40 * time.Second
-	NavigationTimeout        = 40 * time.Second
-	TimeoutRetryLimit        = 0 // Rely on longer timeouts instead of immediate retries which just hammer the page
-	TimeoutRetryDelay        = 1 * time.Second
 )
 
 type Job struct {
@@ -55,6 +52,17 @@ func main() {
 
 	if err := app.Bootstrap(); err != nil {
 		log.Fatal(err)
+	}
+
+	// Event log beside the PocketBase data dir: standalone scrape results
+	// fold in as facts (best-effort). Missing/unavailable log only warns —
+	// PocketBase writes below still proceed.
+	elog, err := openEventLog(context.Background(), appdir.ResolveDataDir())
+	if err != nil {
+		log.Printf("[events] Warning: event log unavailable, PocketBase-only mode: %v", err)
+		elog = nil
+	} else {
+		defer elog.close()
 	}
 
 	// 1. Fetch and Prioritize
@@ -90,7 +98,7 @@ func main() {
 
 	for i := range *concurrency {
 		wg.Go(func() {
-			runWorker(workerCtx, app, i, chromePath, *headless, jobChan)
+			runWorker(workerCtx, app, elog, i, chromePath, *headless, jobChan)
 		})
 	}
 
@@ -128,9 +136,9 @@ func fetchAndPrioritize(app *pocketbase.PocketBase) []Job {
 		stats[j.Priority]++
 	}
 	log.Printf("Priority Stats: P0=%d, P1=%d, P2=%d, P3=%d, P4=%d, P5=%d, P6=%d",
-		stats[priority.P0_Queued], stats[priority.P1_RockRecent], stats[priority.P2_OtherRecent],
-		stats[priority.P3_RockNotAdded], stats[priority.P4_OtherNotAdded],
-		stats[priority.P5_RockIncluded], stats[priority.P6_OtherIncluded])
+		stats[priority.P0Queued], stats[priority.P1RockRecent], stats[priority.P2OtherRecent],
+		stats[priority.P3RockNotAdded], stats[priority.P4OtherNotAdded],
+		stats[priority.P5RockIncluded], stats[priority.P6OtherIncluded])
 
 	return jobs
 }
@@ -155,15 +163,20 @@ func launchBrowser(chromePath string, headless bool) (*rod.Browser, error) {
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
 	}
 
+	// Ownership transfers to the caller, which closes the browser after its
+	// batch (see the _ = browser.Close() calls in runWorker).
+	// noinspection GoResourceLeak
 	browser := rod.New().ControlURL(controlURL)
 	if err := browser.Connect(); err != nil {
+		l.Kill()
+		l.Cleanup()
 		return nil, fmt.Errorf("failed to connect to browser: %w", err)
 	}
 	_ = browser.IgnoreCertErrors(true)
 	return browser, nil
 }
 
-func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePath string, headless bool, jobs <-chan Job) {
+func runWorker(ctx context.Context, app *pocketbase.PocketBase, elog *eventLog, id int, chromePath string, headless bool, jobs <-chan Job) {
 	for {
 		var (
 			job Job
@@ -204,7 +217,7 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 
 			log.Printf("[Worker %d] Processing %s (P%d) [%d/%d in rotation]", id, job.Record.GetString("name"), job.Priority, count+1, BrowserRotationThreshold)
 
-			processJob(ctx, browser, app, job)
+			processJob(ctx, browser, app, elog, job)
 
 			count++
 			if count >= BrowserRotationThreshold {
@@ -241,20 +254,27 @@ func runWorker(ctx context.Context, app *pocketbase.PocketBase, id int, chromePa
 
 }
 
-func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.PocketBase, job Job) {
+func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.PocketBase, elog *eventLog, job Job) {
 	rec := job.Record
 	spotifyID := rec.GetString("spotify_id")
 
 	var listeners int
 	var err error
 
+	startedAt := time.Now()
 	listeners, err = extractListeners(ctx, browser, spotifyID)
+	durationMs := time.Since(startedAt).Milliseconds()
 
 	if err != nil {
 		log.Printf("  [Err] %s: %v", rec.GetString("name"), err)
 		rec.Set("fetch_status", "failed")
-		if err := app.SaveWithContext(ctx, rec); err != nil {
-			log.Printf("  [DB Err] Failed to save error status for %s: %v", rec.GetString("name"), err)
+		if saveErr := app.SaveWithContext(ctx, rec); saveErr != nil {
+			log.Printf("  [DB Err] Failed to save error status for %s: %v", rec.GetString("name"), saveErr)
+			return
+		}
+		if elog != nil {
+			elog.recordFetchFailed(context.WithoutCancel(ctx), rec.Id, rec.GetString("name"), spotifyID,
+				rec.GetString("genre_group"), rec.GetString("list_status"), err.Error())
 		}
 		return
 	}
@@ -266,6 +286,11 @@ func processJob(ctx context.Context, browser *rod.Browser, app *pocketbase.Pocke
 
 	if err := app.SaveWithContext(ctx, rec); err != nil {
 		log.Printf("  [DB Err] Failed to save %s: %v", rec.GetString("name"), err)
+		return
+	}
+	if elog != nil {
+		elog.recordListeners(context.WithoutCancel(ctx), rec.Id, rec.GetString("name"), spotifyID,
+			rec.GetString("genre_group"), rec.GetString("list_status"), int64(listeners), durationMs)
 	}
 }
 

@@ -338,7 +338,7 @@ func resolveArtistNames(index *artistIndex, names []string, allowPartial bool) m
 	}
 
 	matches := make([]ArtistMatch, 0, len(names))
-	notes := []string{}
+	var notes []string
 	seenSpotifyIDs := map[string]bool{}
 	missing := false
 

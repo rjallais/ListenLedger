@@ -9,6 +9,10 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 // AddSongModal renders the modal for adding a new song.
+//
+// Declarative open state: triggers set $_add_song_open; sb-modal reflects
+// the open attribute through its bool prop and resets the signal on sb-close
+// (button, backdrop, or Escape). The backend can drive it via patch-signals.
 func AddSongModal() templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -30,15 +34,82 @@ func AddSongModal() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<input type=\"checkbox\" id=\"add-song-modal\" class=\"modal-toggle\"><div class=\"modal modal-bottom sm:modal-middle\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"add-song-title\"><div class=\"modal-box\"><div class=\"flex items-center justify-between mb-4\"><h2 id=\"add-song-title\" class=\"font-bold text-lg\">Add New Song</h2><label for=\"add-song-modal\" class=\"btn btn-sm btn-circle btn-ghost\">✕</label></div><form id=\"add-song-form\" data-signals=\"{songInFlight:false}\" data-indicator:song-in-flight data-on:submit__prevent=\"if ($songInFlight) { return; } @post('/api/songs', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-name\"><span class=\"label-text\">Song Name *</span></label> <input id=\"song-name\" type=\"text\" name=\"name\" placeholder=\"Enter song name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-album\"><span class=\"label-text\">Album / EP / Single Name *</span></label> <input id=\"song-album\" type=\"text\" name=\"album\" placeholder=\"Enter release name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-release-type\"><span class=\"label-text\">Release Type *</span></label> <select id=\"song-release-type\" name=\"release_type\" class=\"select select-bordered w-full\" required><option value=\"\" disabled selected>Select type</option> <option value=\"album\">Album</option> <option value=\"ep\">EP</option> <option value=\"single\">Single</option></select></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-release-date\"><span class=\"label-text\">Release Date *</span></label> <input id=\"song-release-date\" type=\"date\" name=\"release_date\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-total-songs\"><span class=\"label-text\">Total Songs on Release</span> <span class=\"label-text-alt text-base-content/50\">Track count for the album/EP/single</span></label> <input id=\"song-total-songs\" type=\"number\" name=\"total_songs\" placeholder=\"e.g., 12\" min=\"1\" max=\"999\" class=\"input input-bordered w-full\"></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-new-artist-genre\"><span class=\"label-text\">Genre for New Artists</span> <span class=\"label-text-alt text-base-content/50\">Applied only when artist ID is not in PocketBase yet</span></label> <select id=\"song-new-artist-genre\" name=\"new_artist_genre\" class=\"select select-bordered w-full\"><option value=\"rock_metal\" selected>Rock & Metal</option> <option value=\"everything_else\">Everything Else</option></select></div><div class=\"form-control w-full mb-6\"><label class=\"label\" for=\"song-artist-spotify-ids\"><span class=\"label-text\">Artist Spotify IDs *</span> <span class=\"label-text-alt text-base-content/50\">Comma-separated for multiple</span></label> <input id=\"song-artist-spotify-ids\" type=\"text\" name=\"artist_spotify_ids\" placeholder=\"e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 06HL4z0CvFAxyc27GXpf02\" class=\"input input-bordered w-full font-mono\" pattern=\"^[A-Za-z0-9]{22}(\\s*,\\s*[A-Za-z0-9]{22})*$\" title=\"Each Spotify ID must be exactly 22 alphanumeric characters, separated by commas.\" required></div><div class=\"modal-action\"><label for=\"add-song-modal\" class=\"btn btn-ghost\">Cancel</label> <button type=\"submit\" class=\"btn btn-primary gap-2\" data-attr=\"{'disabled': $songInFlight}\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-signals=\"{_add_song_open: false}\" data-attr:open=\"$_add_song_open\" data-on:sb-close=\"$_add_song_open = false\" heading=\"Add New Song\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = IconPlus("h-5 w-5").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = AddSongForm().Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "Add Song</button></div></form><div id=\"add-song-feedback\" class=\"mt-2\"></div></div><label class=\"modal-backdrop\" for=\"add-song-modal\">Close</label></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div id=\"add-song-feedback\" class=\"mt-2\"></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = AddSongModalActions().Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</sb-modal>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+// AddSongForm renders the form elements for adding a new song.
+func AddSongForm() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var2 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var2 == nil {
+			templ_7745c5c3_Var2 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<form id=\"add-song-form\" data-indicator:_loading data-on:submit__prevent=\"!$_loading && @post('/api/songs', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-name\"><span class=\"label-text\">Song Name *</span></label> <input id=\"song-name\" type=\"text\" name=\"name\" placeholder=\"Enter song name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-album\"><span class=\"label-text\">Album / EP / Single Name *</span></label> <input id=\"song-album\" type=\"text\" name=\"album\" placeholder=\"Enter release name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-release-type\"><span class=\"label-text\">Release Type *</span></label> <select id=\"song-release-type\" name=\"release_type\" class=\"select select-bordered w-full\" required><option value=\"\" disabled selected>Select type</option> <option value=\"album\">Album</option> <option value=\"ep\">EP</option> <option value=\"single\">Single</option></select></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-release-date\"><span class=\"label-text\">Release Date *</span></label> <input id=\"song-release-date\" type=\"date\" name=\"release_date\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-total-songs\"><span class=\"label-text\">Total Songs on Release</span> <span class=\"label-text-alt text-base-content/50\">Track count for the album/EP/single</span></label> <input id=\"song-total-songs\" type=\"number\" name=\"total_songs\" placeholder=\"e.g., 12\" min=\"1\" max=\"999\" class=\"input input-bordered w-full\"></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"song-new-artist-genre\"><span class=\"label-text\">Genre for New Artists</span> <span class=\"label-text-alt text-base-content/50\">Applied only when artist ID is not in PocketBase yet</span></label> <select id=\"song-new-artist-genre\" name=\"new_artist_genre\" class=\"select select-bordered w-full\"><option value=\"rock_metal\" selected>Rock & Metal</option> <option value=\"everything_else\">Everything Else</option></select></div><div class=\"form-control w-full mb-6\"><label class=\"label\" for=\"song-artist-spotify-ids\"><span class=\"label-text\">Artist Spotify IDs *</span> <span class=\"label-text-alt text-base-content/50\">Comma-separated for multiple</span></label> <input id=\"song-artist-spotify-ids\" type=\"text\" name=\"artist_spotify_ids\" placeholder=\"e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 06HL4z0CvFAxyc27GXpf02\" class=\"input input-bordered w-full font-mono\" pattern=\"^[A-Za-z0-9]{22}(\\s*,\\s*[A-Za-z0-9]{22})*$\" title=\"Each Spotify ID must be exactly 22 alphanumeric characters, separated by commas.\" required></div></form>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+func AddSongModalActions() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var3 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var3 == nil {
+			templ_7745c5c3_Var3 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"add-song-form\" class=\"btn btn-primary\" data-attr:disabled=\"$_loading\"><span data-show=\"$_loading\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> Add Song</button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -62,12 +133,12 @@ func AddSongSuccessNotice(songTitle string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var2 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var2 == nil {
-			templ_7745c5c3_Var2 = templ.NopComponent
+		templ_7745c5c3_Var4 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var4 == nil {
+			templ_7745c5c3_Var4 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div id=\"add-song-feedback\" class=\"mt-2\"><div class=\"alert alert-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div id=\"add-song-feedback\" class=\"mt-2\" data-signals=\"{ _feedbackVisible: true }\" data-show=\"$_feedbackVisible\"><div class=\"alert alert-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -75,20 +146,62 @@ func AddSongSuccessNotice(songTitle string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"flex-1\"><p class=\"font-semibold\">Song added</p><p class=\"text-xs\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<div class=\"flex-1\"><p class=\"font-semibold\">Song added</p><p class=\"text-xs\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var3 string
-		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(songTitle)
+		var templ_7745c5c3_Var5 string
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(songTitle)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_modal.templ`, Line: 133, Col: 34}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_modal.templ`, Line: 142, Col: 34}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "</p></div><button type=\"button\" class=\"btn btn-success btn-sm\" data-on:click=\"document.getElementById('add-song-form').reset(); document.getElementById('add-song-feedback').innerHTML = ''\">Add Another</button> <label for=\"add-song-modal\" class=\"btn btn-ghost btn-sm\">Close</label></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</p></div><button type=\"reset\" form=\"add-song-form\" class=\"btn btn-success btn-sm\" data-on:click=\"$_feedbackVisible = false\">Add Another</button> <button type=\"button\" class=\"btn btn-ghost btn-sm\" data-sb-close>Close</button></div></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+func AddSongErrorNotice(errMsg string) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var6 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var6 == nil {
+			templ_7745c5c3_Var6 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<div id=\"add-song-feedback\" class=\"mt-2\" data-signals=\"{ _feedbackVisible: true }\" data-show=\"$_feedbackVisible\"><div class=\"alert alert-error\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"stroke-current shrink-0 h-6 w-6\" fill=\"none\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z\"></path></svg><div class=\"flex-1\"><p class=\"font-semibold\">Failed to add song</p><p class=\"text-xs\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var7 string
+		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(errMsg)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs_modal.templ`, Line: 156, Col: 31}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</p></div><button type=\"button\" class=\"btn btn-ghost btn-sm\" data-on:click=\"$_feedbackVisible = false\">Dismiss</button></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -112,9 +225,9 @@ func NewSongCreateResponse(songTitle string, currentPlaylistSongs, waitingRemova
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var4 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var4 == nil {
-			templ_7745c5c3_Var4 = templ.NopComponent
+		templ_7745c5c3_Var8 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var8 == nil {
+			templ_7745c5c3_Var8 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		templ_7745c5c3_Err = SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort).Render(ctx, templ_7745c5c3_Buffer)
@@ -122,6 +235,10 @@ func NewSongCreateResponse(songTitle string, currentPlaylistSongs, waitingRemova
 			return templ_7745c5c3_Err
 		}
 		templ_7745c5c3_Err = AddSongSuccessNotice(songTitle).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = AddSongForm().Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

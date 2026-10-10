@@ -1,7 +1,8 @@
-// apify.go provides Apify Actor-based scraping for Spotify artist listener data.
+package spotify
+
+// Apify Actor-based scraping for Spotify artist listener data.
 // It uses the apify~puppeteer-scraper Actor, which exposes the raw Puppeteer page object
 // in the pageFunction context — required for waitForFunction and evaluate calls.
-package spotify
 
 import (
 	"bytes"
@@ -15,7 +16,7 @@ import (
 	"strings"
 )
 
-var listenersRe = regexp.MustCompile(`(?i)([\d,\.]+)\s*([mMkK]?)\s*monthly listeners`)
+var listenersRe = regexp.MustCompile(`(?i)([\d,.]+)\s*([mMkK]?)\s*monthly listeners`)
 
 type apifyRunInput struct {
 	StartURLs []apifyURL `json:"startUrls"`
@@ -264,7 +265,7 @@ func (c *Client) buildApifyBatchInput(artistIDs []string) (apifyRunInput, apifyB
 
 func checkApifyHTTPStatusWithPrefix(resp *http.Response, prefix string) error {
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("%s: authentication failed (status %d) — check APIFY_TOKEN", prefix, resp.StatusCode)
+		return fmt.Errorf("%s: authentication/quota failed (status %d) — check APIFY_TOKEN: %w", prefix, resp.StatusCode, ErrQuotaExhausted)
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
 		return fmt.Errorf("%s: quota exceeded (status 402): %w", prefix, ErrQuotaExhausted)

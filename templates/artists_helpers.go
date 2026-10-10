@@ -4,22 +4,9 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"github.com/starfederation/datastar-go/datastar"
 )
-
-type artistStatusOption struct {
-	Label       string
-	DotClass    string
-	ButtonClass string
-	ItemClass   string
-	Action      string
-}
-
-type artistBadgeProps struct {
-	Classes  string
-	Label    string
-	IconPath string
-	ShowIcon bool
-}
 
 type paginationNavButton struct {
 	Label    string
@@ -59,6 +46,37 @@ func artistsTBodyID(genre string) string {
 	return "artists-tbody-" + genre
 }
 
+// RanksTickSignal returns the Datastar signal name bumped when total_songs
+// ranks are recalculated for genre. Table wrappers watch it via data-effect
+// to refetch their visible page slice exactly once per recalc.
+func RanksTickSignal(genre string) string {
+	switch genre {
+	case "rock_metal":
+		return "ranksTickRockMetal"
+	case "everything_else":
+		return "ranksTickEverythingElse"
+	default:
+		sanitized := make([]rune, 0, len(genre))
+		upperNext := true
+		for _, r := range genre {
+			switch {
+			case r >= 'a' && r <= 'z':
+				if upperNext {
+					r -= 'a' - 'A'
+				}
+				upperNext = false
+				sanitized = append(sanitized, r)
+			case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				upperNext = false
+				sanitized = append(sanitized, r)
+			default:
+				upperNext = true
+			}
+		}
+		return "ranksTick" + string(sanitized)
+	}
+}
+
 func artistRowID(artistID string) string {
 	return "artist-" + artistID
 }
@@ -84,15 +102,15 @@ func artistCardUpdatedElementID(artistID string) string {
 }
 
 func artistCollectionDecAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/dec')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/artists/%s/collection/dec", url.PathEscape(artistID))
 }
 
 func artistCollectionIncAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/collection/inc')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/artists/%s/collection/inc", url.PathEscape(artistID))
 }
 
 func artistRefreshPostAction(artistID string) string {
-	return fmt.Sprintf("@post('/api/refresh/%s')", url.PathEscape(artistID))
+	return datastar.PostSSE("/api/refresh/%s", url.PathEscape(artistID))
 }
 
 func artistCollectionText(artist Artist) string {
@@ -100,100 +118,6 @@ func artistCollectionText(artist Artist) string {
 		return fmt.Sprintf("%d/%d", artist.CollectionSongs, artist.TotalSongs)
 	}
 	return intString(artist.CollectionSongs)
-}
-
-func listStatusOptions(artistID, currentStatus string) []artistStatusOption {
-	return []artistStatusOption{
-		{
-			Label:       "Included",
-			DotClass:    "badge badge-success badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "included"),
-			Action:      artistStatusPostAction(artistID, "included"),
-		},
-		{
-			Label:       "Recently Added",
-			DotClass:    "badge badge-info badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "recently_added"),
-			Action:      artistStatusPostAction(artistID, "recently_added"),
-		},
-		{
-			Label:       "Not Added",
-			DotClass:    "badge badge-ghost badge-xs",
-			ButtonClass: statusOptionButtonClass(false, currentStatus == "not_added"),
-			Action:      artistStatusPostAction(artistID, "not_added"),
-		},
-		{
-			Label:       "Move to Queue",
-			DotClass:    "badge badge-warning badge-xs",
-			ButtonClass: statusOptionButtonClass(true, currentStatus == StatusWaiting),
-			ItemClass:   "border-t border-base-300 mt-1 pt-1",
-			Action:      artistStatusPostAction(artistID, StatusWaiting),
-		},
-	}
-}
-
-func statusOptionButtonClass(warning, active bool) string {
-	className := "text-left"
-	if warning {
-		className += " text-warning"
-	}
-	if active {
-		className += " active"
-	}
-	return className
-}
-
-func artistStatusPostAction(artistID, status string) string {
-	return fmt.Sprintf("@post('/api/artists/%s/status/%s')", url.PathEscape(artistID), url.PathEscape(status))
-}
-
-func listStatusBadgeProps(status string) artistBadgeProps {
-	switch status {
-	case "included":
-		return artistBadgeProps{
-			Classes:  "badge badge-success badge-sm gap-1",
-			Label:    "included",
-			IconPath: "M5 13l4 4L19 7",
-			ShowIcon: true,
-		}
-	case "recently_added":
-		return artistBadgeProps{
-			Classes:  "badge badge-info badge-sm gap-1",
-			Label:    "recently added",
-			IconPath: "M12 6v6m0 0v6m0-6h6m-6 0H6",
-			ShowIcon: true,
-		}
-	case "not_added":
-		return artistBadgeProps{
-			Classes:  "badge badge-ghost badge-sm gap-1",
-			Label:    "not added",
-			IconPath: "M6 18L18 6M6 6l12 12",
-			ShowIcon: true,
-		}
-	case StatusWaiting:
-		return artistBadgeProps{
-			Classes:  "badge badge-warning badge-sm gap-1",
-			Label:    "queued",
-			IconPath: "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
-			ShowIcon: true,
-		}
-	default:
-		return artistBadgeProps{
-			Classes: "badge badge-ghost badge-sm",
-			Label:   "unknown",
-		}
-	}
-}
-
-func fetchStatusBadgeProps(status string) artistBadgeProps {
-	switch status {
-	case "pending":
-		return artistBadgeProps{Classes: "badge badge-warning", Label: "pending"}
-	case "failed":
-		return artistBadgeProps{Classes: "badge badge-error", Label: "failed"}
-	default:
-		return artistBadgeProps{Classes: "badge badge-ghost", Label: "idle"}
-	}
 }
 
 func paginationURL(genre string, page int) string {
@@ -262,7 +186,7 @@ func artistQueueTitle(count int) string {
 }
 
 func artistQueueLoadMoreAction(nextOffset int) string {
-	return fmt.Sprintf("@get('/api/artists/waiting?offset=%d&limit=1')", nextOffset)
+	return datastar.GetSSE("/api/artists/waiting?offset=%d&limit=1", nextOffset)
 }
 
 func artistQueueLoadMoreLabel(nextOffset int) string {
@@ -303,39 +227,26 @@ func batchQueuedSummary(queued int) string {
 
 func batchPriorityStats(stats map[string]int) []batchPriorityStat {
 	return []batchPriorityStat{
-		{Label: "P0 (queued)", Count: intString(stats["P0_Queued"])},
-		{Label: "P1-P2 (recent)", Count: intString(stats["P1_RockRecent"] + stats["P2_OtherRecent"])},
-		{Label: "P3-P4 (not added)", Count: intString(stats["P3_RockNotAdded"] + stats["P4_OtherNotAdded"])},
-		{Label: "P5-P6 (included)", Count: intString(stats["P5_RockIncluded"] + stats["P6_OtherIncluded"])},
+		{Label: "P0 (queued)", Count: intString(prioCount(stats, "P0Queued", "P0_Queued"))},
+		{Label: "P1-P2 (recent)", Count: intString(prioCount(stats, "P1RockRecent", "P1_RockRecent") + prioCount(stats, "P2OtherRecent", "P2_OtherRecent"))},
+		{Label: "P3-P4 (not added)", Count: intString(prioCount(stats, "P3RockNotAdded", "P3_RockNotAdded") + prioCount(stats, "P4OtherNotAdded", "P4_OtherNotAdded"))},
+		{Label: "P5-P6 (included)", Count: intString(prioCount(stats, "P5RockIncluded", "P5_RockIncluded") + prioCount(stats, "P6OtherIncluded", "P6_OtherIncluded"))},
 	}
+}
+
+// prioCount reads a persisted priority-bucket count accepting both the
+// compact key (P0Queued) written since the Tier rename and the legacy
+// underscore key (P0_Queued) in rows persisted before it. Prefers the compact
+// key when both are present so a batch is never double-counted.
+func prioCount(stats map[string]int, compact, legacy string) int {
+	if v, ok := stats[compact]; ok {
+		return v
+	}
+	return stats[legacy]
 }
 
 func batchIDText(batchID string) string {
 	return "Batch ID: " + batchID
-}
-
-func artistSignalsJSON(artist Artist) string {
-	return fmt.Sprintf(
-		`{"artistListeners":{%q:%d},"artistUpdated":{%q:%q},"artistFetchStatus":{%q:%q}}`,
-		artist.ID,
-		artist.MonthlyListeners,
-		artist.ID,
-		artist.LastUpdated,
-		artist.ID,
-		artist.FetchStatus,
-	)
-}
-
-func artistListenerSignal(artistID string) string {
-	return fmt.Sprintf("($artistListeners[%q] ?? 0).toLocaleString('en-US')", artistID)
-}
-
-func artistUpdatedSignal(artistID string) string {
-	return fmt.Sprintf("$artistUpdated[%q]", artistID)
-}
-
-func artistFetchStatusSignal(artistID string) string {
-	return fmt.Sprintf("$artistFetchStatus[%q]", artistID)
 }
 
 func ArtistRowID(artistID string) string {
@@ -348,4 +259,8 @@ func ArtistCardID(artistID string) string {
 
 func ArtistsTBodyID(genre string) string {
 	return artistsTBodyID(genre)
+}
+
+func artistHistoryDrawerAction(artistID string) string {
+	return datastar.GetSSE("/api/artists/%s/history/drawer", url.PathEscape(artistID))
 }

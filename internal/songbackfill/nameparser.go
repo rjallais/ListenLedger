@@ -8,10 +8,10 @@ import (
 )
 
 type parsedArtists struct {
-	Names         []string
 	PrimaryPrefix string
-	HasEllipsis   bool
 	EllipsisMode  string
+	Names         []string
+	HasEllipsis   bool
 	PreserveWhole bool
 }
 
