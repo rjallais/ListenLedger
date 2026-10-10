@@ -38,14 +38,21 @@ var _ Store = (*JetStreamStore)(nil)
 // and MsgID dedup on the event ID. A CAS miss surfaces as
 // ErrConcurrencyConflict, same contract as SQLite.
 //
-// OCC is scoped to the aggregate: a lookup of the aggregate's latest
-// persisted event (via the wildcard subject domain.events.<type>.<id>.*)
-// both rejects a stale expectedVersion and anchors the publishes with
+// OCC is scoped to the aggregate ID across all stream types (wildcard
+// domain.events.*.<id>.*), matching the Load replay scope: SQLite keys
+// history by stream ID with a type-consistency guard, so the JetStream check
+// must too. A lookup of the aggregate's latest persisted event both rejects
+// a stale expectedVersion and anchors the publishes with
 // WithExpectLastSequenceForSubject, so a concurrent append to this aggregate
 // between the reload and the publish fails the batch. Concurrent appends to
 // *other* aggregates share nothing in this scope (the old stream-wide anchor
 // false-conflicted on those). The wildcard check is server-enforced —
 // verified against the pinned server sources, not assumed.
+//
+// Each publish in a multi-event batch anchors to the preceding publish's
+// acknowledgement Sequence, not to base+i: scope sequences are not
+// consecutive within one aggregate when other aggregates interleave, so
+// base+i would false-conflict after the first event persisted.
 //
 // Partial-write contract: publishes are per-event (JetStream has no
 // multi-publish transaction in this client), so a mid-batch failure can
@@ -60,19 +67,32 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 		return nil
 	}
 	// Validate the whole batch before publishing anything: a version skew
-	// must fail without mutating the stream.
+	// must fail without mutating the stream. Batch identity matches SQLite
+	// (one stream ID, one aggregate type, consecutive versions).
+	streamType := events[0].StreamType
+	if streamType == "" {
+		return fmt.Errorf("jetstream store: event %s has an empty stream type", events[0].ID)
+	}
 	for i, evt := range events {
 		want := expectedVersion + int64(i) + 1
 		if evt.Version != want {
 			return fmt.Errorf("%w: stream %s event %d has version %d, want %d",
 				ErrConcurrencyConflict, streamID, i, evt.Version, want)
 		}
+		if evt.StreamID != streamID {
+			return fmt.Errorf("%w: event %s belongs to stream %s, want %s",
+				ErrConcurrencyConflict, evt.ID, evt.StreamID, streamID)
+		}
+		if evt.StreamType != streamType {
+			return fmt.Errorf("jetstream store: stream %s has mixed aggregate types %q and %q",
+				streamID, streamType, evt.StreamType)
+		}
 	}
 	stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
 	if err != nil {
 		return fmt.Errorf("jetstream store: stream: %w", err)
 	}
-	scope := messaging.SubjectDomainEventScope(events[0].StreamType, streamID)
+	scope := messaging.SubjectDomainEventScope(streamID)
 	// Layer 1: reject a stale reader. Reload the aggregate's latest
 	// persisted event and compare its version against expectedVersion. Fail
 	// closed on read errors — an unreadable log must not accept writes.
@@ -80,25 +100,31 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 	if err != nil && !errors.Is(err, jetstream.ErrMsgNotFound) {
 		return fmt.Errorf("jetstream store: reload %s: %w", streamID, err)
 	}
-	var base uint64
+	var anchor uint64
 	var maxVersion int64
+	var existingType string
 	if err == nil && last != nil {
 		lastEvt, err := UnmarshalEvent(last.Data)
 		if err != nil {
 			return fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
 		}
-		base = last.Sequence
+		anchor = last.Sequence
 		maxVersion = lastEvt.Version
+		existingType = lastEvt.StreamType
 	}
 	if maxVersion != expectedVersion {
 		return fmt.Errorf("%w: stream %s expected version %d, but found %d",
 			ErrConcurrencyConflict, streamID, expectedVersion, maxVersion)
 	}
-	// Layer 2: publish under the per-aggregate anchor. A concurrent append
-	// to this aggregate between the reload and now moved its latest
-	// sequence, so the publish misses and the batch fails without partial
-	// writes from a stale view.
-	var published uint64
+	// Same order as SQLite: version first, then the aggregate-type guard.
+	if existingType != "" && existingType != streamType {
+		return fmt.Errorf("jetstream store: stream %s has aggregate type %q, cannot append type %q",
+			streamID, existingType, streamType)
+	}
+	// Layer 2: publish under the per-aggregate anchor, advancing it from
+	// each acknowledgement. A concurrent append to this aggregate between
+	// the reload and now moved its latest sequence, so the publish misses
+	// and the batch fails without partial writes from a stale view.
 	for _, evt := range events {
 		subject := messaging.SubjectDomainEvent(evt.StreamType, evt.StreamID, evt.EventType)
 		data, err := evt.Bytes()
@@ -107,15 +133,18 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 		}
 		opts := []jetstream.PublishOpt{
 			jetstream.WithMsgID(evt.ID),
-			jetstream.WithExpectLastSequenceForSubject(base+published, scope),
+			jetstream.WithExpectLastSequenceForSubject(anchor, scope),
 		}
-		if _, err := s.js.Publish(ctx, subject, data, opts...); err != nil {
+		ack, err := s.js.Publish(ctx, subject, data, opts...)
+		if err != nil {
 			if isWrongLastSeq(err) {
 				return fmt.Errorf("%w: stream %s: %w", ErrConcurrencyConflict, streamID, err)
 			}
 			return fmt.Errorf("jetstream store: publish %s: %w", evt.ID, err)
 		}
-		published++
+		if ack != nil {
+			anchor = ack.Sequence
+		}
 	}
 	return nil
 }
@@ -124,6 +153,13 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 // consumer: the server transfers only this aggregate's subjects, so the cost
 // is O(stream), not O(log). (The prior GetMsg walk over FirstSeq..LastSeq
 // transferred every aggregate on every load.)
+//
+// The replay is bounded by the stream's LastSeq captured before consuming:
+// events published after Load starts (sequence past the cutoff) are skipped
+// and stop the replay, so a continuously-written aggregate cannot extend the
+// loop until the context expires. Draining uses FetchNoWait — persisted
+// history is already available, so there is no reason to burn a MaxWait
+// expiry on the short final batch (or on an absent aggregate).
 func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, error) {
 	if s.js == nil {
 		return nil, fmt.Errorf("jetstream store: JetStream not configured")
@@ -139,6 +175,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	if info.State.Msgs == 0 {
 		return nil, nil // empty stream: nothing to replay
 	}
+	cutoff := info.State.LastSeq
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		FilterSubject:     messaging.SubjectDomainEventFilter(streamID),
 		AckPolicy:         jetstream.AckNonePolicy,
@@ -155,15 +192,24 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		batch, err := cons.Fetch(100, jetstream.FetchMaxWait(2*time.Second))
+		batch, err := cons.FetchNoWait(100)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrNoMessages) {
 				break // caught up: no more matching messages
 			}
 			return nil, fmt.Errorf("jetstream store: fetch %s: %w", streamID, err)
 		}
+		pastCutoff := false
 		got := 0
 		for msg := range batch.Messages() {
+			meta, err := msg.Metadata()
+			if err != nil {
+				return nil, fmt.Errorf("jetstream store: metadata %s: %w", streamID, err)
+			}
+			if meta.Sequence.Stream > cutoff {
+				pastCutoff = true // live arrival: stop, don't error
+				continue
+			}
 			evt, err := UnmarshalEvent(msg.Data())
 			if err != nil {
 				return nil, fmt.Errorf("jetstream store: decode %s: %w", streamID, err)
@@ -180,8 +226,11 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 			}
 			return nil, fmt.Errorf("jetstream store: batch %s: %w", streamID, err)
 		}
+		if pastCutoff {
+			break
+		}
 		if got == 0 {
-			break // empty batch with no error: caught up
+			break // drained: no more available within the cutoff
 		}
 	}
 	return out, nil

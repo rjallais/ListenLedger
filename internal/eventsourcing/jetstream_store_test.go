@@ -192,3 +192,53 @@ func TestJetStreamStore_NoCrossAggregateContention(t *testing.T) {
 		t.Fatalf("Append x1 v2: %v", err)
 	}
 }
+
+func TestJetStreamStore_MultiEventBatchWithInterleaving(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Seed another aggregate first so scope sequences are non-consecutive
+	// within the target aggregate: base+i anchoring would false-conflict on
+	// the second event after the first persisted.
+	if err := store.Append(ctx, "ar_m_other", 0, mustTestEvent(t, "ar_m_other", 1)); err != nil {
+		t.Fatalf("Append other: %v", err)
+	}
+	v1 := mustTestEvent(t, "ar_m_main", 1)
+	v2 := mustTestEvent(t, "ar_m_main", 2)
+	if err := store.Append(ctx, "ar_m_main", 0, v1, v2); err != nil {
+		t.Fatalf("multi-event Append with interleaving: %v", err)
+	}
+	loaded, err := store.Load(ctx, "ar_m_main")
+	if err != nil || len(loaded) != 2 {
+		t.Fatalf("Load = %d, %v; want 2", len(loaded), err)
+	}
+	if loaded[0].Version != 1 || loaded[1].Version != 2 {
+		t.Fatalf("Load order = v%d,v%d; want v1,v2", loaded[0].Version, loaded[1].Version)
+	}
+}
+
+func TestJetStreamStore_SameIDAcrossTypesRejected(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_shared", 0, mustTestEvent(t, "ar_shared", 1)); err != nil {
+		t.Fatalf("Append artist v1: %v", err)
+	}
+	// Same ID, different aggregate type, same version: the OCC scope covers
+	// the ID across types (like Load), so the double-mint must conflict.
+	albumV1, err := NewEvent("ar_shared", "album", 1, "AlbumCreated",
+		map[string]any{"title": "X"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_shared", 0, albumV1); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("cross-type Append = %v; want ErrConcurrencyConflict", err)
+	}
+	// Correct version but wrong type: the aggregate-type guard fires.
+	albumV2, err := NewEvent("ar_shared", "album", 2, "AlbumCreated",
+		map[string]any{"title": "X"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_shared", 1, albumV2); err == nil || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("wrong-type Append = %v; want non-conflict type error", err)
+	}
+}

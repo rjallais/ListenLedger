@@ -117,10 +117,28 @@ func TestSubjectDomainEvent(t *testing.T) {
 	if got != want {
 		t.Fatalf("SubjectDomainEvent() = %q, want %q", got, want)
 	}
-	// Dots in IDs are sanitized since NATS uses dots as token separators.
+	// Dots in IDs are escaped since NATS uses dots as token separators.
 	got = SubjectDomainEvent("artist", "ar.123", "ArtistCreated")
-	if got != "domain.events.artist.ar_123.ArtistCreated" {
+	if got != "domain.events.artist.ar-d-123.ArtistCreated" {
 		t.Fatalf("SubjectDomainEvent(dotted) = %q", got)
+	}
+}
+
+func TestSubjectTokenEncodingInjective(t *testing.T) {
+	// "a.b" and "a_b" must not share a scope or filter: the old "_" mapping
+	// conflated them and Append for one ID would read the other's history.
+	if SubjectDomainEventScope("a.b") == SubjectDomainEventScope("a_b") {
+		t.Fatalf("Scope conflates a.b and a_b: %q", SubjectDomainEventScope("a.b"))
+	}
+	if SubjectDomainEventFilter("a.b") == SubjectDomainEventFilter("a_b") {
+		t.Fatalf("Filter conflates a.b and a_b: %q", SubjectDomainEventFilter("a.b"))
+	}
+	if SubjectDomainEvent("artist", "a.b", "E") == SubjectDomainEvent("artist", "a_b", "E") {
+		t.Fatal("Subject conflates a.b and a_b")
+	}
+	// Dashes escape too: "-" (empty marker) vs "--" (encoded literal).
+	if SubjectDomainEventScope("-") == SubjectDomainEventScope("--") {
+		t.Fatal("Scope conflates - and --")
 	}
 }
 
