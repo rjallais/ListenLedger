@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -116,13 +117,10 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 	return nil
 }
 
-// Load replays one stream oldest-to-newest by walking the log with GetMsg
-// and keeping this stream's events.
-//
-// ponytail: O(stream) scan; fine while Load is test-only (Phase 1 runtime
-// still loads from SQLite). Upgrade path for Phase 2 reads: durable
-// filtered pull consumers per stream. (Ordered-consumer FetchNoWait hangs
-// in consumer creation here, so Load avoids the consumer API entirely.)
+// Load replays one stream oldest-to-newest via an ephemeral filtered pull
+// consumer: the server transfers only this aggregate's subjects, so the cost
+// is O(stream), not O(log). (The prior GetMsg walk over FirstSeq..LastSeq
+// transferred every aggregate on every load.)
 func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, error) {
 	if s.js == nil {
 		return nil, fmt.Errorf("jetstream store: JetStream not configured")
@@ -138,24 +136,49 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	if info.State.Msgs == 0 {
 		return nil, nil // empty stream: nothing to replay
 	}
+	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		FilterSubject:     messaging.SubjectDomainEventFilter(streamID),
+		AckPolicy:         jetstream.AckNonePolicy,
+		InactiveThreshold: 30 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("jetstream store: consumer for %s: %w", streamID, err)
+	}
+	// Ephemeral consumer: delete explicitly; the inactivity threshold reaps
+	// stragglers if the context is already dead here.
+	defer func() { _ = stream.DeleteConsumer(ctx, cons.CachedInfo().Name) }()
 	var out []Event
-	for seq := info.State.FirstSeq; seq <= info.State.LastSeq; seq++ {
+	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		raw, err := stream.GetMsg(ctx, seq)
+		batch, err := cons.Fetch(100, jetstream.FetchMaxWait(2*time.Second))
 		if err != nil {
-			if errors.Is(err, jetstream.ErrMsgNotFound) {
-				continue // deleted/expired slot: skip
+			if errors.Is(err, jetstream.ErrNoMessages) {
+				break // caught up: no more matching messages
 			}
-			return nil, fmt.Errorf("jetstream store: get seq %d: %w", seq, err)
+			return nil, fmt.Errorf("jetstream store: fetch %s: %w", streamID, err)
 		}
-		evt, err := UnmarshalEvent(raw.Data)
-		if err != nil {
-			return nil, fmt.Errorf("jetstream store: decode seq %d: %w", seq, err)
-		}
-		if evt.StreamID == streamID {
+		got := 0
+		for msg := range batch.Messages() {
+			evt, err := UnmarshalEvent(msg.Data())
+			if err != nil {
+				return nil, fmt.Errorf("jetstream store: decode %s: %w", streamID, err)
+			}
+			if evt.StreamID != streamID {
+				continue // defensive: filter is exact, trust the data
+			}
 			out = append(out, evt)
+			got++
+		}
+		if err := batch.Error(); err != nil {
+			if errors.Is(err, jetstream.ErrNoMessages) {
+				break
+			}
+			return nil, fmt.Errorf("jetstream store: batch %s: %w", streamID, err)
+		}
+		if got == 0 {
+			break // empty batch with no error: caught up
 		}
 	}
 	return out, nil

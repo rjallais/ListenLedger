@@ -175,23 +175,36 @@ func SubjectRanksUpdatedForGenre(genre string) string {
 
 // SubjectDomainEvent returns the durable domain-event subject for an
 // aggregate event, e.g. "domain.events.artist.<artistID>.ArtistCreated".
+// sanitizeSubjectToken maps one subject token to its publish-safe form:
+// trimmed, with NATS-reserved and whitespace runes replaced by underscores.
+// Empty input becomes "-". Mirrors the per-token mapping in
+// SubjectDomainEvent; keep the two in sync.
+func sanitizeSubjectToken(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '.', '*', '>', ' ', '\t', '\n', '\r':
+			return '_'
+		}
+		return r
+	}, s)
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // Dots in IDs are sanitized since NATS treats dots as token separators.
 func SubjectDomainEvent(streamType, streamID, eventType string) string {
-	sanitize := func(s string) string {
-		s = strings.TrimSpace(s)
-		s = strings.Map(func(r rune) rune {
-			switch r {
-			case '.', '*', '>', ' ', '\t', '\n', '\r':
-				return '_'
-			}
-			return r
-		}, s)
-		if s == "" {
-			return "-"
-		}
-		return s
-	}
-	return SubjectDomainEventsPrefix + "." + sanitize(streamType) + "." + sanitize(streamID) + "." + sanitize(eventType)
+	return SubjectDomainEventsPrefix + "." + sanitizeSubjectToken(streamType) + "." + sanitizeSubjectToken(streamID) + "." + sanitizeSubjectToken(eventType)
+}
+
+// SubjectDomainEventFilter returns the JetStream filter subject matching one
+// aggregate's events across all types: domain.events.*.<id>.>. The wildcard
+// covers the stream-type token; the ID is sanitized exactly as at publish
+// time so the filter aligns with stored subjects.
+func SubjectDomainEventFilter(streamID string) string {
+	return SubjectDomainEventsPrefix + ".*." + sanitizeSubjectToken(streamID) + ".>"
 }
 
 // RanksGenreFromSubject decodes the genre group from a ranks.updated subject,

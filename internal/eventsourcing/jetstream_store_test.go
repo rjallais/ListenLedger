@@ -146,3 +146,33 @@ func TestUnmarshalEvent_RoundTrip(t *testing.T) {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 }
+
+func TestJetStreamStore_LoadFiltersByStream(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_filter_a", 0, mustTestEvent(t, "ar_filter_a", 1)); err != nil {
+		t.Fatalf("Append a: %v", err)
+	}
+	if err := store.Append(ctx, "ar_filter_b", 0, mustTestEvent(t, "ar_filter_b", 1)); err != nil {
+		t.Fatalf("Append b: %v", err)
+	}
+	if err := store.Append(ctx, "ar_filter_a", 1, mustTestEvent(t, "ar_filter_a", 2)); err != nil {
+		t.Fatalf("Append a v2: %v", err)
+	}
+
+	loaded, err := store.Load(ctx, "ar_filter_a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("Load = %d events, want 2", len(loaded))
+	}
+	for _, evt := range loaded {
+		if evt.StreamID != "ar_filter_a" {
+			t.Fatalf("Load leaked event from stream %q", evt.StreamID)
+		}
+	}
+	if loaded[0].Version != 1 || loaded[1].Version != 2 {
+		t.Fatalf("Load order = v%d,v%d; want v1,v2", loaded[0].Version, loaded[1].Version)
+	}
+}
