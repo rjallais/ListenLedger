@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"zombiezen.com/go/sqlite"
@@ -238,5 +239,47 @@ func TestAuditClean(t *testing.T) {
 	}
 	if rep.hasMismatch() {
 		t.Fatalf("clean audit should have no mismatch: %+v", rep.Artists)
+	}
+}
+
+func TestAuditReportsStreamSizes(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	var evts []eventsourcing.Event
+	for v := int64(1); v <= artist.SnapshotInterval+5; v++ {
+		e, err := eventsourcing.NewEvent("ar_long", artist.StreamTypeArtist, v, "ArtistMonthlyListenersScraped",
+			map[string]any{"monthly_listeners": v}, nil)
+		if err != nil {
+			t.Fatalf("NewEvent v%d: %v", v, err)
+		}
+		evts = append(evts, e)
+	}
+	if err := store.Append(ctx, "ar_long", 0, evts...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+
+	selected := map[string]struct{}{artist.StreamTypeArtist: {}}
+	rep, err := audit(ctx, dataDir, selected, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if got := rep.MaxStreamVersions[artist.StreamTypeArtist]; got != artist.SnapshotInterval+5 {
+		t.Fatalf("max artist version = %d, want %d", got, artist.SnapshotInterval+5)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "snapshot interval") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want long-stream snapshot warning, got warnings=%v", rep.Warnings)
 	}
 }

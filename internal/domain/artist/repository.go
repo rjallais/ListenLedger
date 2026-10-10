@@ -10,11 +10,13 @@ import (
 	"ListenLedger/internal/eventsourcing"
 )
 
-// snapshotInterval bounds artist stream replay: every Nth version stores a
+// SnapshotInterval bounds artist stream replay: every Nth version stores a
 // freeze-frame so loaders replay at most N-1 events after it. Artist streams
 // are the only long-lived aggregates (one listener/status fact per scrape);
 // scrapejob/batch/album/song streams stay tiny and replay directly.
-const snapshotInterval = 200
+// Exported for the audit tool's long-stream warning: snapshot degradation
+// matters to the event-store flip (JetStream reads replay full streams).
+const SnapshotInterval = 200
 
 // Repository handles loading and persisting Artist aggregates.
 type Repository struct {
@@ -92,7 +94,7 @@ func (r *Repository) loadFromSnapshot(ctx context.Context, snapStore eventsourci
 }
 
 // Save commits any uncommitted events on the aggregate to the event store.
-// Every snapshotInterval-th version also stores a freeze-frame (best-effort:
+// Every SnapshotInterval-th version also stores a freeze-frame (best-effort:
 // a snapshot failure never fails the save; the next interval retries).
 func (r *Repository) Save(ctx context.Context, agg *Artist) ([]eventsourcing.Event, error) {
 	uncommitted := agg.UncommittedEvents()
@@ -111,13 +113,13 @@ func (r *Repository) Save(ctx context.Context, agg *Artist) ([]eventsourcing.Eve
 }
 
 // maybeSnapshot stores a freeze-frame whenever a save crosses a
-// snapshotInterval boundary, even when the final version does not land
+// snapshot-interval boundary, even when the final version does not land
 // exactly on one (multi-event saves would otherwise skip snapshots).
 func (r *Repository) maybeSnapshot(ctx context.Context, agg *Artist, committed int64) {
 	if committed <= 0 || agg.Version() <= 0 {
 		return
 	}
-	if agg.Version()/snapshotInterval == (agg.Version()-committed)/snapshotInterval {
+	if agg.Version()/SnapshotInterval == (agg.Version()-committed)/SnapshotInterval {
 		return
 	}
 	snapStore, ok := r.store.(eventsourcing.SnapshotStore)

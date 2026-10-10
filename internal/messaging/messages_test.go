@@ -182,3 +182,44 @@ func TestScrapeRequestMsgID(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSubjectDomainEventRoundTrip(t *testing.T) {
+	adversarial := []string{
+		"", "-", "--", "---", "a", "ar_123", "a.b", "a_b", "-d-", "a-d-b",
+		"a*d", "a>d", "a d", "a\td", "a\nd", "a\rd", "a\fd", "_", "-w-",
+		"caf\u00e9", "a/b", "a=b", "UPPER", "0123",
+	}
+	for _, id := range adversarial {
+		subject := SubjectDomainEvent("artist", id, "ArtistCreated")
+		gotType, gotID, gotEvent, err := ParseSubjectDomainEvent(subject)
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", subject, err)
+		}
+		if gotType != "artist" || gotID != id || gotEvent != "ArtistCreated" {
+			t.Fatalf("Parse(%q) = (%q,%q,%q), want (artist,%q,ArtistCreated)",
+				subject, gotType, gotID, gotEvent, id)
+		}
+	}
+	// Tricky values in the other positions round-trip too.
+	subject := SubjectDomainEvent("a.b", "x", "E*F")
+	if typ, id, evt, err := ParseSubjectDomainEvent(subject); err != nil || typ != "a.b" || id != "x" || evt != "E*F" {
+		t.Fatalf("Parse(%q) = (%q,%q,%q,%v)", subject, typ, id, evt, err)
+	}
+}
+
+func TestParseSubjectDomainEventRejects(t *testing.T) {
+	for _, subject := range []string{
+		"",
+		"domain.events.artist",              // too few tokens
+		"domain.events.artist.id.Evt.Extra", // too many tokens
+		"other.events.artist.id.Evt",        // wrong prefix
+		"domain.events.artist.id.-x-",       // bad escape letter
+		"domain.events.artist.id.Evt-",      // dangling dash
+		"domain.events.artist..Evt",         // empty token
+		"domain.events.artist.-d.Evt",       // truncated escape
+	} {
+		if _, _, _, err := ParseSubjectDomainEvent(subject); err == nil {
+			t.Fatalf("Parse(%q) should fail", subject)
+		}
+	}
+}

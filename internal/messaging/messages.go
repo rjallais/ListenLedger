@@ -219,6 +219,79 @@ func SubjectDomainEvent(streamType, streamID, eventType string) string {
 	return SubjectDomainEventsPrefix + "." + sanitizeSubjectToken(streamType) + "." + sanitizeSubjectToken(streamID) + "." + sanitizeSubjectToken(eventType)
 }
 
+// ParseSubjectDomainEvent inverts SubjectDomainEvent, decoding each token's
+// dash escapes back to the raw stream type, ID, and event type. Encoded
+// tokens never contain literal dots, so a plain dot-split is safe. It
+// rejects wrong prefixes, wrong token counts, and malformed escapes —
+// fail-closed, since replay and tooling must never read a stranger's stream.
+// The single token "-" decodes to "" (the empty-input marker).
+func ParseSubjectDomainEvent(subject string) (streamType, streamID, eventType string, err error) {
+	tokens := strings.Split(subject, ".")
+	if len(tokens) != 5 || tokens[0] != "domain" || tokens[1] != "events" {
+		return "", "", "", fmt.Errorf("not a domain event subject: %q", subject)
+	}
+	if streamType, err = decodeSubjectToken(tokens[2]); err != nil {
+		return "", "", "", fmt.Errorf("decoding stream type in %q: %w", subject, err)
+	}
+	if streamID, err = decodeSubjectToken(tokens[3]); err != nil {
+		return "", "", "", fmt.Errorf("decoding stream ID in %q: %w", subject, err)
+	}
+	if eventType, err = decodeSubjectToken(tokens[4]); err != nil {
+		return "", "", "", fmt.Errorf("decoding event type in %q: %w", subject, err)
+	}
+	return streamType, streamID, eventType, nil
+}
+
+// decodeSubjectToken inverts sanitizeSubjectToken's dash escapes.
+func decodeSubjectToken(token string) (string, error) {
+	if token == "" {
+		return "", fmt.Errorf("empty subject token")
+	}
+	if token == "-" {
+		return "", nil // empty-input marker
+	}
+	var b strings.Builder
+	b.Grow(len(token))
+	for i := 0; i < len(token); {
+		if token[i] != '-' {
+			b.WriteByte(token[i])
+			i++
+			continue
+		}
+		// Dash escape: "--" is a literal dash, "-x-" maps one reserved rune.
+		if i+1 < len(token) && token[i+1] == '-' {
+			b.WriteByte('-')
+			i += 2
+			continue
+		}
+		if i+2 >= len(token) || token[i+2] != '-' {
+			return "", fmt.Errorf("malformed escape in %q", token)
+		}
+		switch token[i+1] {
+		case 'd':
+			b.WriteByte('.')
+		case 's':
+			b.WriteByte('*')
+		case 'g':
+			b.WriteByte('>')
+		case 'w':
+			b.WriteByte(' ')
+		case 't':
+			b.WriteByte('\t')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 'f':
+			b.WriteByte('\f')
+		default:
+			return "", fmt.Errorf("malformed escape in %q", token)
+		}
+		i += 3
+	}
+	return b.String(), nil
+}
+
 // SubjectDomainEventScope returns the wildcard subject covering one
 // aggregate's events across all stream types: domain.events.*.<id>.*. Used
 // for per-aggregate sequence checks (GetLastMsgForSubject, expected-subject

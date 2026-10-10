@@ -61,6 +61,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Event source routes first: in jetstream mode the SQLite log is frozen
+	// pre-flip history, so both dry-run and apply read DOMAIN_EVENTS instead.
+	// (The SQLite dry-run below must not run in jetstream mode.)
+	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
+		logger.Error("invalid event store mode", "error", err)
+		os.Exit(2)
+	} else if mode == eventsourcing.EventStoreJetStream {
+		runJetStreamReplay(logger, dataDir, selectedStreams, apply, liveOK, sinceCheckpoint)
+		return
+	}
+
 	if !apply {
 		logger.Info("dry run: no changes will be made (pass --apply to rebuild)",
 			"data_dir", dataDir, "streams", streams)
@@ -74,18 +85,6 @@ func main() {
 	if !liveOK && os.Getenv("LISTENLEDGER_REPLAY_LIVE_OK") != "1" && isLiveDataDir(dataDir) {
 		logger.Error("refusing --apply against the live data dir: stop the app or replay a backup copy",
 			"data_dir", dataDir, "hint", "go run ./cmd/safebackup, then go run ./cmd/replay --data-dir <backup> --apply; or pass --live-ok")
-		os.Exit(2)
-	}
-
-	// In jetstream mode the SQLite log is frozen pre-flip history: rebuilding
-	// read models from it would erase post-flip facts. Dry-run inspection
-	// stays available; --apply must run against a JetStream-sourced rebuild.
-	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
-		logger.Error("invalid event store mode", "error", err)
-		os.Exit(2)
-	} else if mode == eventsourcing.EventStoreJetStream {
-		logger.Error("refusing --apply in jetstream mode: SQLite holds only pre-flip history",
-			"hint", "rebuild from the JetStream log instead")
 		os.Exit(2)
 	}
 
@@ -350,8 +349,9 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 
 // projectStream folds one stream through its projector and records its
 // frontier. It returns the number of events folded (0 when the stream is
-// empty). Projectors are idempotent, so re-folding is always safe.
-func projectStream(ctx context.Context, logger *slog.Logger, store *eventsourcing.SQLiteStore, artistProj *projections.ArtistProjection, catalogProj *projections.CatalogProjection, batchProj *batchprogress.Store, stream eventsourcing.StreamInfo, frontiers map[string]int64) (int, error) {
+// empty). Projectors are idempotent, so re-folding is always safe. The event
+// source is any Store: SQLite in sqlite mode, JetStream in jetstream mode.
+func projectStream(ctx context.Context, logger *slog.Logger, store eventsourcing.Store, artistProj *projections.ArtistProjection, catalogProj *projections.CatalogProjection, batchProj *batchprogress.Store, stream eventsourcing.StreamInfo, frontiers map[string]int64) (int, error) {
 	streamID := stream.ID
 	events, err := store.Load(ctx, streamID)
 	if err != nil {
