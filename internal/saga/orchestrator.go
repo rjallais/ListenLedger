@@ -51,12 +51,12 @@ const (
 // Orchestrator refreshes saga_instances from job streams.
 type Orchestrator struct {
 	db    *toolbeltdb.Database
-	store *eventsourcing.SQLiteStore
+	store eventsourcing.Store
 }
 
 // NewOrchestrator creates an Orchestrator. A nil db disables Tick (fail-open).
 func NewOrchestrator(db *toolbeltdb.Database) *Orchestrator {
-	var store *eventsourcing.SQLiteStore
+	var store eventsourcing.Store
 	if db != nil {
 		store = eventsourcing.NewSQLiteStore(db)
 	}

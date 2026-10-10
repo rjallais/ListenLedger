@@ -129,7 +129,7 @@ type Worker struct {
 	db               *toolbeltdb.Database
 	artistRepo       *artist.Repository
 	artistProjection *projections.ArtistProjection
-	jobStore         *eventsourcing.SQLiteStore
+	jobStore         eventsourcing.Store
 	jobRepo          *scrapejob.Repository
 
 	// groups holds per-provider goroutine pool metadata. Used during shutdown to

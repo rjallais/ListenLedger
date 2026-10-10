@@ -44,12 +44,12 @@ type History struct {
 // + scrape_jobs rows plus the event log are the index.
 type Loader struct {
 	db    *toolbeltdb.Database
-	store *eventsourcing.SQLiteStore
+	store eventsourcing.Store
 }
 
 // NewLoader creates a Loader. Either may be nil (command lookup / event
 // loading degrade gracefully to what is available).
-func NewLoader(db *toolbeltdb.Database, store *eventsourcing.SQLiteStore) *Loader {
+func NewLoader(db *toolbeltdb.Database, store eventsourcing.Store) *Loader {
 	if store == nil && db != nil {
 		store = eventsourcing.NewSQLiteStore(db)
 	}
