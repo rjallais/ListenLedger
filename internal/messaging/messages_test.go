@@ -1,6 +1,9 @@
 package messaging
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestScrapeRequestedRoundTrip(t *testing.T) {
 	in := NewScrapeRequested("artist-1", "spotify-1", "Artist Name", "req-1")
@@ -83,5 +86,74 @@ func TestScrapeProviderFromSubject(t *testing.T) {
 	}
 	if got := ScrapeProviderFromSubject(SubjectScrapeRequest); got != ScrapeProviderAny {
 		t.Fatalf("ScrapeProviderFromSubject(scrape.request) = %q, want %q", got, ScrapeProviderAny)
+	}
+}
+
+func TestRanksSubjectRoundTrip(t *testing.T) {
+	for genre, wantSubject := range map[string]string{
+		"rock_metal":      "ranks.updated.rock_metal",
+		"everything_else": "ranks.updated.everything_else",
+	} {
+		if got := SubjectRanksUpdatedForGenre(genre); got != wantSubject {
+			t.Fatalf("SubjectRanksUpdatedForGenre(%q) = %q, want %q", genre, got, wantSubject)
+		}
+		if got := RanksGenreFromSubject(wantSubject); got != genre {
+			t.Fatalf("RanksGenreFromSubject(%q) = %q, want %q", wantSubject, got, genre)
+		}
+	}
+	if got := SubjectRanksUpdatedForGenre(""); got != SubjectRanksUpdated {
+		t.Fatalf("SubjectRanksUpdatedForGenre(\"\") = %q, want %q", got, SubjectRanksUpdated)
+	}
+	for _, subject := range []string{SubjectRanksUpdated, SubjectArtistUpdated, "ranks.updated.", "other.subject"} {
+		if got := RanksGenreFromSubject(subject); got != "" {
+			t.Fatalf("RanksGenreFromSubject(%q) = %q, want empty", subject, got)
+		}
+	}
+}
+
+func TestSubjectDomainEvent(t *testing.T) {
+	got := SubjectDomainEvent("artist", "ar_123", "ArtistCreated")
+	want := "domain.events.artist.ar_123.ArtistCreated"
+	if got != want {
+		t.Fatalf("SubjectDomainEvent() = %q, want %q", got, want)
+	}
+	// Dots in IDs are sanitized since NATS uses dots as token separators.
+	got = SubjectDomainEvent("artist", "ar.123", "ArtistCreated")
+	if got != "domain.events.artist.ar_123.ArtistCreated" {
+		t.Fatalf("SubjectDomainEvent(dotted) = %q", got)
+	}
+}
+
+func TestUnknownMessageVersionsRejected(t *testing.T) {
+	scrape, err := MarshalScrapeRequested(NewScrapeRequested("a", "s", "N", "r"))
+	if err != nil {
+		t.Fatalf("MarshalScrapeRequested() error = %v", err)
+	}
+	// Rewrite version to an unknown v2: must fail fast, never misread.
+	v2scrape := bytes.Replace(scrape, []byte(`"version":"v1"`), []byte(`"version":"v2"`), 1)
+	if _, err := UnmarshalScrapeRequested(v2scrape); err == nil {
+		t.Fatal("UnmarshalScrapeRequested(v2) should error")
+	}
+
+	updated, err := MarshalArtistUpdated(NewArtistUpdated("a", "N", 1, "idle", "r"))
+	if err != nil {
+		t.Fatalf("MarshalArtistUpdated() error = %v", err)
+	}
+	v2updated := bytes.Replace(updated, []byte(`"version":"v1"`), []byte(`"version":"v2"`), 1)
+	if _, err := UnmarshalArtistUpdated(v2updated); err == nil {
+		t.Fatal("UnmarshalArtistUpdated(v2) should error")
+	}
+}
+
+func TestScrapeRequestMsgID(t *testing.T) {
+	if got := ScrapeRequestMsgID("req-1"); got != "scrape.request:req-1" {
+		t.Fatalf("ScrapeRequestMsgID(req-1) = %q, want scrape.request:req-1", got)
+	}
+	// Empty IDs must not share a fallback MsgID: distinct requests would
+	// wrongly dedup against each other within the duplicates window.
+	for _, empty := range []string{"", "   "} {
+		if got := ScrapeRequestMsgID(empty); got != "" {
+			t.Fatalf("ScrapeRequestMsgID(%q) = %q, want empty (publish without MsgID)", empty, got)
+		}
 	}
 }

@@ -1,0 +1,2 @@
+DELETE FROM commands;
+DROP TABLE IF EXISTS commands;

@@ -1,0 +1,2 @@
+DELETE FROM outbox;
+DROP TABLE IF EXISTS outbox;

@@ -113,7 +113,7 @@ func linuxInstallCandidates() []string {
 }
 
 func windowsInstallCandidates() []string {
-	candidates := []string{}
+	var candidates []string
 
 	if pf := strings.TrimSpace(os.Getenv("ProgramFiles")); pf != "" {
 		candidates = append(candidates,
