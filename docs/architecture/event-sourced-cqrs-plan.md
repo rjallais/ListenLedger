@@ -81,7 +81,7 @@ Envelope (RON for domain events): `event_id, aggregate_type, aggregate_id, seq, 
 
 ### Phase 4 — Reads + SSE cutover
 * `internal/query/`: replace `app.RecordQuery("artists"/"scrape_jobs")` in `handlers/*`, `sse.go:73`, `batch_progress.go:180`, `queue.go:505` with view queries.
-* SSE: `Replay(aggregate_id from SQLite) + Subscribe(domain.events.*)` -> `PatchElementTempl` (bee `ReplayAndSubscribe` shape, our storage). Handoff is gap-free: activate the live subscription before replay, buffer live events during replay, then apply the buffer from the replay cursor forward so events committed mid-replay are not missed. `batch_progress.go` maps -> `Batch` aggregate (restart-safe).
+* SSE: `Replay(aggregate_id from SQLite) + Subscribe(domain.events.>)` -> `PatchElementTempl` (bee `ReplayAndSubscribe` shape, our storage). Handoff is gap-free: activate the live subscription before replay, buffer live events during replay, then apply the buffer from the replay cursor forward so events committed mid-replay are not missed. `batch_progress.go` maps -> `Batch` aggregate (restart-safe).
 * `cmd/update_listeners|seed|backfill_song_artists`: go through commands or direct appends.
 
 ### Phase 5 — PB retirement
