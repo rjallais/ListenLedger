@@ -49,7 +49,10 @@ type Artist struct {
 	GenreGroup  string
 	ListStatus  string
 	FetchStatus string
-	LastUpdated string
+	// LastUpdated is the compact display form ("02 Jan 15:04");
+	// LastUpdatedFull is the exact timestamp for the title tooltip.
+	LastUpdated     string
+	LastUpdatedFull string
 
 	MonthlyListeners int
 	CollectionSongs  int

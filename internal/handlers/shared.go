@@ -231,9 +231,25 @@ func currentGenreFromRequest(r *http.Request) string {
 	return defaultGenre
 }
 
+// formatUpdatedAt renders the compact display form of a stored timestamp,
+// discarding the full form (see formatUpdatedAtFull).
 func formatUpdatedAt(raw string) string {
+	short, _ := formatUpdatedAtFull(raw)
+	return short
+}
+
+// formatUpdatedFull renders only the exact full form of a stored timestamp,
+// for title tooltips next to the compact display form.
+func formatUpdatedFull(raw string) string {
+	_, full := formatUpdatedAtFull(raw)
+	return full
+}
+
+// formatUpdatedAtFull renders the compact display form and the exact full
+// form (for title tooltips) of a stored timestamp.
+func formatUpdatedAtFull(raw string) (short, full string) {
 	if raw == "" {
-		return ""
+		return "", ""
 	}
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
@@ -243,7 +259,7 @@ func formatUpdatedAt(raw string) string {
 		t, err = time.Parse("2006-01-02 15:04:05", raw)
 	}
 	if err != nil {
-		return raw
+		return raw, raw
 	}
-	return t.UTC().Format("02 Jan 2006 15:04:05 UTC")
+	return t.UTC().Format("02 Jan 15:04"), t.UTC().Format("02 Jan 2006 15:04:05 UTC")
 }

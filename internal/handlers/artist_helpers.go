@@ -289,6 +289,7 @@ func artistFromRecord(record *core.Record, totalSongs int) templates.Artist {
 		CollectionSongs:  record.GetInt("collection_songs"),
 		TotalSongs:       totalSongs,
 		LastUpdated:      formatUpdatedAt(record.GetString("last_updated")),
+		LastUpdatedFull:  formatUpdatedFull(record.GetString("last_updated")),
 	}
 }
 
@@ -705,6 +706,7 @@ func (h *Handler) getArtistByID(ctx context.Context, artistID string) (templates
 				CollectionSongs:  int(stmt.ColumnInt64(7)),
 				TotalSongs:       int(stmt.ColumnInt64(8)),
 				LastUpdated:      formatUpdatedAt(stmt.ColumnText(9)),
+				LastUpdatedFull:  formatUpdatedFull(stmt.ColumnText(9)),
 			}
 			return nil
 		})

@@ -625,7 +625,7 @@ func QueueJobsWidgetContent(stats QueueStats) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "</span></span> <button type=\"button\" class=\"btn btn-xs btn-warning gap-1\" title=\"Force retries until queued and failed are zero\" data-indicator:_retrying data-attr:disabled=\"$_retrying\" data-on:click=\"@post('/api/queue/retry')\"><span data-show=\"$_retrying\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> <span>Force Retry</span></button> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "</span></span> <button type=\"button\" class=\"btn btn-xs btn-warning gap-1\" title=\"Run one reconcile and retry pass\" data-indicator:_retrying data-attr:disabled=\"$_retrying\" data-on:click=\"@post('/api/queue/retry')\"><span data-show=\"$_retrying\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> <span>Force Retry</span></button> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -12,7 +12,7 @@ import "net/url"
 // before the filter ever evaluates it.
 templ ArtistsTable(artists []Artist, currentGenre string, page, limit int) {
 	<div
-		class="overflow-x-auto"
+		class="overflow-x-auto ledger-frame"
 		data-signals__ifmissing={ "{ " + RanksTickSignal(currentGenre) + ": 0}" }
 		data-on-signal-patch={ "@get('/api/artists/tbody?genre=" + url.QueryEscape(currentGenre) + "&page=" + intString(page) + "&limit=" + intString(limit) + "&tick=' + $" + RanksTickSignal(currentGenre) + ")" }
 		data-on-signal-patch-filter={ "{include: /^" + RanksTickSignal(currentGenre) + "$/}" }
@@ -71,7 +71,7 @@ templ ArtistRowContent(artist Artist) {
 		@ArtistCollectionControls(artist)
 	</td>
 	<td>
-		<span id={ artistUpdatedElementID(artist.ID) }>{ artist.LastUpdated }</span>
+		<span id={ artistUpdatedElementID(artist.ID) } title={ artist.LastUpdatedFull }>{ artist.LastUpdated }</span>
 	</td>
 	<td class="text-center">
 		@ArtistRefreshAction(artist)

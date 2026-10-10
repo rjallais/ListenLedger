@@ -25,7 +25,7 @@ templ ArtistRefreshAction(artist Artist) {
 		@FetchStatusDot(artist.FetchStatus)
 		<button
 			type="button"
-			class="btn btn-xs btn-primary btn-square"
+			class="btn btn-xs btn-ghost btn-square"
 			data-indicator={ ind }
 			data-attr:disabled={ isDisabledExpr }
 			data-on:click={ artistRefreshPostAction(artist.ID) }
