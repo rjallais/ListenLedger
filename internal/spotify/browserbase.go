@@ -142,7 +142,7 @@ func decodeBrowserbaseSession(resp *http.Response) (bbCreateSessionResponse, err
 func dialBrowserbaseCDP(ctx context.Context, connectURL string) (*rod.Browser, error) {
 	d := *gorilla.DefaultDialer
 	d.HandshakeTimeout = 15 * time.Second
-	gorillaConn, _, err := (&d).Dial(connectURL, http.Header{
+	gorillaConn, _, err := (&d).DialContext(ctx, connectURL, http.Header{
 		"Origin": {"https://www.browserbase.com"},
 	})
 	if err != nil {
