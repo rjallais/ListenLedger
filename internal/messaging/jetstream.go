@@ -34,9 +34,11 @@ const (
 	EventsStreamName = "EVENTS"
 
 	// DomainEventsStreamName is the durable JetStream stream for domain events
-	// (domain.events.>"). Per the Datastar YouTube canon the append-only log
-	// is the source of truth; SQLite projections are rebuildable indexes.
-	// Legacy artist.updated stays in EVENTS as an ephemeral UI hint alias.
+	// (domain.events.>). It is a catch-up buffer for new subscribers and
+	// replays — not the system of record. The SQLite events table is the
+	// permanent, unbounded log; this stream must always carry an explicit
+	// MaxAge/MaxBytes so a runaway producer degrades to oldest-dropped
+	// instead of filling the disk. See DomainEventsRetention.
 	DomainEventsStreamName = "DOMAIN_EVENTS"
 
 	// DomainEventsRetention bounds the DOMAIN_EVENTS log. At the observed rate
@@ -46,6 +48,12 @@ const (
 	// SCRAPE_REQUESTS deliberately stays at 24h (WorkQueue semantics: rows
 	// older than that are phantoms per queuedJobExpiry).
 	DomainEventsRetention = 90 * 24 * time.Hour
+
+	// DomainEventsMaxBytes caps the DOMAIN_EVENTS file store well above the
+	// ~32 MB the 90-day retention implies at the observed rate. With
+	// DiscardOld, breaching the cap drops the oldest messages first — safe
+	// because nothing rebuilds state from this stream.
+	DomainEventsMaxBytes = 256 * 1024 * 1024
 )
 
 // ScrapeWorkerConsumerNames returns all known scrape consumer durables.
@@ -71,6 +79,7 @@ type streamConfig struct {
 	Retention  jetstream.RetentionPolicy
 	MaxAge     time.Duration
 	MaxMsgs    int64
+	MaxBytes   int64
 	Duplicates time.Duration
 }
 
@@ -83,6 +92,7 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 		Discard:    jetstream.DiscardOld,
 		MaxAge:     sc.MaxAge,
 		MaxMsgs:    sc.MaxMsgs,
+		MaxBytes:   sc.MaxBytes,
 		Duplicates: sc.Duplicates,
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
@@ -127,7 +137,8 @@ func EnsureEventsStream(ctx context.Context, js jetstream.JetStream) error {
 }
 
 // EnsureDomainEventsStream creates or updates the durable DOMAIN_EVENTS stream
-// for domain.events.> subjects (LimitsPolicy, 90d retention, file storage).
+// for domain.events.> subjects (LimitsPolicy, 90d retention, 256MB cap with
+// oldest-dropped overflow, file storage).
 func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       DomainEventsStreamName,
@@ -135,6 +146,7 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 		Retention:  jetstream.LimitsPolicy,
 		MaxAge:     DomainEventsRetention,
 		MaxMsgs:    1_000_000,
+		MaxBytes:   DomainEventsMaxBytes,
 		Duplicates: 10 * time.Minute,
 	}, "domain events")
 }
