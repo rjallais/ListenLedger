@@ -33,6 +33,17 @@ func openEventLog(ctx context.Context, dataDir string) (*eventLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening event log: %w", err)
 	}
+	// This CLI has no NATS client, so it can only append to the SQLite log.
+	// Under LISTENLEDGER_EVENT_STORE=jetstream those writes would diverge
+	// from the JetStream authority unread: refuse instead of corrupting.
+	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
+		_ = database.Close()
+		return nil, err
+	} else if mode == eventsourcing.EventStoreJetStream {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: %s=%q needs a JetStream writer; run with %q",
+			eventsourcing.EventStoreEnv, eventsourcing.EventStoreJetStream, eventsourcing.EventStoreSQLite)
+	}
 	store := eventsourcing.NewSQLiteStore(database)
 	return &eventLog{
 		database: database,

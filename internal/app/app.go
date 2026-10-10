@@ -15,6 +15,7 @@ import (
 	"ListenLedger/config"
 	"ListenLedger/internal/appdir"
 	"ListenLedger/internal/db"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/handlers"
 	"ListenLedger/internal/outbox"
 	"ListenLedger/internal/saga"
@@ -61,6 +62,17 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("setup SQLite database: %w", err)
 		}
 
+		// Authoritative event log selection fails fast on a typo: worker
+		// and handler wiring falls back to SQLite defensively, so the
+		// invalid value must be rejected here, before anything starts.
+		mode, err := eventsourcing.SelectedStoreName()
+		if err != nil {
+			_ = sqliteDB.Close()
+			_ = embeddedNATS.Close(ctx)
+			return fmt.Errorf("invalid event store mode: %w", err)
+		}
+		slog.Info("event store authority", "mode", mode)
+
 		registerArtistUpdateFanout(ctx, app, embeddedNATS.JS)
 		registerQueueUpdateFanout(ctx, app, embeddedNATS.Conn)
 
@@ -94,11 +106,20 @@ func Run(ctx context.Context) error {
 		// Saga orchestrator: refreshes durable saga_instances states from
 		// job streams (observability for scrapejob→artist sagas). Like the
 		// relay it is crash-safe: Tick derives everything, so restarts just
-		// re-converge on the next pass.
+		// re-converge on the next pass. Reads follow the event-store flip.
+		eventStore, err := eventsourcing.SelectedStore(sqliteDB, embeddedNATS.JS)
+		if err != nil {
+			w.Stop()
+			cancelBG()
+			bgWG.Wait()
+			_ = sqliteDB.Close()
+			_ = embeddedNATS.Close(ctx)
+			return fmt.Errorf("select event store: %w", err)
+		}
 		bgWG.Add(1)
 		go func() {
 			defer bgWG.Done()
-			saga.NewOrchestrator(sqliteDB).Run(bgCtx, 30*time.Second)
+			saga.NewOrchestrator(sqliteDB, eventStore).Run(bgCtx, 30*time.Second)
 		}()
 
 		// Batch saga reconciler: converges durable batch progress without UI

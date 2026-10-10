@@ -182,16 +182,22 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 	return func(w *Worker) {
 		w.db = db
 		if db != nil {
-			store := eventsourcing.NewSQLiteStore(db)
-			w.artistRepo = artist.NewRepository(store)
+			// Authoritative event log: SQLite by default, JetStream when
+			// LISTENLEDGER_EVENT_STORE=jetstream (see SelectedStore).
+			events, err := eventsourcing.SelectedStore(db, w.js)
+			if err != nil {
+				slog.Error("event store selection failed, staying on SQLite", "error", err)
+				events = eventsourcing.NewSQLiteStore(db)
+			}
+			w.artistRepo = artist.NewRepository(events)
 			w.artistProjection = projections.NewArtistProjection(slog.Default(), db, w.nc)
 			// Durable domain.events.> publishing (append-only log = source of truth).
 			// Core-NATS fanout for live SSE stays as the ephemeral UI hint.
 			if w.js != nil {
 				w.artistProjection.SetJetStream(w.js)
 			}
-			w.jobStore = store
-			w.jobRepo = scrapejob.NewRepository(store)
+			w.jobStore = events
+			w.jobRepo = scrapejob.NewRepository(events)
 		}
 	}
 }

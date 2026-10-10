@@ -93,7 +93,7 @@ func (w *Worker) recordJobEvent(ctx context.Context, requestID, artistID string,
 	if len(uncommitted) == 0 {
 		return nil
 	}
-	if err := w.jobStore.Append(ctx, requestID, base, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, w.jobStore, requestID, base, uncommitted...); err != nil {
 		return fmt.Errorf("append job stream %s: %w", requestID, err)
 	}
 	return nil

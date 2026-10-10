@@ -265,7 +265,9 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 	store := eventsourcing.NewSQLiteStore(database)
 	artistProj := projections.NewArtistProjection(logger, database, nil)
 	catalogProj := projections.NewCatalogProjection(logger, database)
-	batchProj := batchprogress.NewStore(database)
+	// Replay tooling always reads the SQLite log (the permanent record in
+	// sqlite mode; a frozen pre-flip record in jetstream mode).
+	batchProj := batchprogress.NewStore(database, store)
 
 	streamInfos, err := store.Streams(ctx)
 	if err != nil {

@@ -150,7 +150,7 @@ func (h *Handler) appendJobRequested(ctx context.Context, requestID, artistID, c
 		log.Printf("[scrapejob] NewScrapeJob(%s) failed: %v", requestID, err)
 		return
 	}
-	if err := h.store.Append(ctx, requestID, 0, agg.UncommittedEvents()...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, h.store, requestID, 0, agg.UncommittedEvents()...); err != nil {
 		if isJobStreamConflict(err) {
 			return
 		}
@@ -193,7 +193,7 @@ func (h *Handler) appendJobTransition(ctx context.Context, requestID, artistID s
 	if len(uncommitted) == 0 {
 		return
 	}
-	if err := h.store.Append(ctx, requestID, base, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, h.store, requestID, base, uncommitted...); err != nil {
 		log.Printf("[scrapejob] append %s failed: %v", requestID, err)
 	}
 }

@@ -67,15 +67,23 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 		if db != nil {
 			store := eventsourcing.NewSQLiteStore(db)
 			h.store = store
-			h.artistRepo = artist.NewRepository(store)
+			// Authoritative event log: SQLite by default, JetStream when
+			// LISTENLEDGER_EVENT_STORE=jetstream. h.store stays SQLite for
+			// admin introspection (outbox lag, checkpoints).
+			events, err := eventsourcing.SelectedStore(db, h.js)
+			if err != nil {
+				slog.Error("event store selection failed, staying on SQLite", "error", err)
+				events = store
+			}
+			h.artistRepo = artist.NewRepository(events)
 			h.artistProjection = projections.NewArtistProjection(slog.Default(), db, h.nc)
 			if h.js != nil {
 				h.artistProjection.SetJetStream(h.js)
 			}
-			h.albumRepo = album.NewRepository(store)
-			h.songRepo = song.NewRepository(store)
+			h.albumRepo = album.NewRepository(events)
+			h.songRepo = song.NewRepository(events)
 			h.catalogProjection = projections.NewCatalogProjection(slog.Default(), db)
-			h.batchStore = batchprogress.NewStore(db)
+			h.batchStore = batchprogress.NewStore(db, events)
 		}
 	}
 }

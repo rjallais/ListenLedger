@@ -8,6 +8,7 @@ import (
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/batch"
+	"ListenLedger/internal/eventsourcing"
 
 	"zombiezen.com/go/sqlite"
 )
@@ -22,7 +23,7 @@ func setupTestStore(t *testing.T) (*Store, context.Context) {
 		t.Fatalf("SetupDB: %v", err)
 	}
 	t.Cleanup(func() { _ = sqliteDB.Close() })
-	return NewStore(sqliteDB), ctx
+	return NewStore(sqliteDB, eventsourcing.NewSQLiteStore(sqliteDB)), ctx
 }
 
 func seedArtist(t *testing.T, ctx context.Context, s *Store, id, fetchStatus string) {
