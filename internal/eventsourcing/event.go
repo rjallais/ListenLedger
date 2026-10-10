@@ -155,6 +155,48 @@ func (e Event) Bytes() ([]byte, error) {
 	return data, nil
 }
 
+// UnmarshalEvent decodes an event envelope serialized by Event.Bytes.
+// Envelopes are RON; payload/metadata stay opaque encoded values.
+func UnmarshalEvent(data []byte) (Event, error) {
+	jsonData, err := ron.ToJSON(data, ron.Mode(ron.Compact))
+	if err != nil {
+		return Event{}, fmt.Errorf("converting event envelope to JSON: %w", err)
+	}
+	var env struct {
+		ID         string         `json:"id"`
+		StreamID   string         `json:"stream_id"`
+		StreamType string         `json:"stream_type"`
+		Version    int64          `json:"version"`
+		EventType  string         `json:"event_type"`
+		Payload    jsontext.Value `json:"payload"`
+		Metadata   jsontext.Value `json:"metadata"`
+		CreatedAt  jsontext.Value `json:"created_at"`
+	}
+	if err := json.Unmarshal(jsonData, &env); err != nil {
+		return Event{}, fmt.Errorf("unmarshaling event envelope: %w", err)
+	}
+	// RON instants arrive as {"#utc": ...} objects; reuse the payload
+	// normalizer so CreatedAt decodes to a plain RFC3339 string first.
+	createdAtJSON, err := normalizeRONTimeValues(env.CreatedAt)
+	if err != nil {
+		return Event{}, fmt.Errorf("normalizing event created_at: %w", err)
+	}
+	var createdAt time.Time
+	if err := json.Unmarshal(createdAtJSON, &createdAt); err != nil {
+		return Event{}, fmt.Errorf("decoding event created_at: %w", err)
+	}
+	return Event{
+		ID:         env.ID,
+		StreamID:   env.StreamID,
+		StreamType: env.StreamType,
+		Version:    env.Version,
+		EventType:  env.EventType,
+		Payload:    []byte(env.Payload),
+		Metadata:   []byte(env.Metadata),
+		CreatedAt:  createdAt,
+	}, nil
+}
+
 type eventEnvelope struct {
 	ID         string    `json:"id"`
 	StreamID   string    `json:"stream_id"`
