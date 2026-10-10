@@ -142,7 +142,7 @@ func (h *Handler) isArtistRefreshPending(ctx context.Context, artistID string) (
 // the stream already opened (re-queue/redrive of the same request_id) and
 // are not errors. Warn-only: dispatch already succeeded.
 func (h *Handler) appendJobRequested(ctx context.Context, requestID, artistID, cmdType string) {
-	if h.store == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(artistID) == "" {
+	if h.events == nil || strings.TrimSpace(requestID) == "" || strings.TrimSpace(artistID) == "" {
 		return
 	}
 	agg, err := scrapejob.NewScrapeJob(requestID, artistID, cmdType)
@@ -150,7 +150,7 @@ func (h *Handler) appendJobRequested(ctx context.Context, requestID, artistID, c
 		log.Printf("[scrapejob] NewScrapeJob(%s) failed: %v", requestID, err)
 		return
 	}
-	if err := eventsourcing.AppendWithRetry(ctx, h.store, requestID, 0, agg.UncommittedEvents()...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, h.events, requestID, 0, agg.UncommittedEvents()...); err != nil {
 		if isJobStreamConflict(err) {
 			return
 		}
@@ -161,10 +161,10 @@ func (h *Handler) appendJobRequested(ctx context.Context, requestID, artistID, c
 // appendJobTransition folds a fact into a request stream, seeding pre-log
 // streams from (requestID, artistID) first. Warn-only like appendJobRequested.
 func (h *Handler) appendJobTransition(ctx context.Context, requestID, artistID string, record func(*scrapejob.Job) error) {
-	if h.store == nil || strings.TrimSpace(requestID) == "" {
+	if h.events == nil || strings.TrimSpace(requestID) == "" {
 		return
 	}
-	evts, err := h.store.Load(ctx, requestID)
+	evts, err := h.events.Load(ctx, requestID)
 	if err != nil {
 		log.Printf("[scrapejob] load %s failed: %v", requestID, err)
 		return
@@ -193,7 +193,7 @@ func (h *Handler) appendJobTransition(ctx context.Context, requestID, artistID s
 	if len(uncommitted) == 0 {
 		return
 	}
-	if err := eventsourcing.AppendWithRetry(ctx, h.store, requestID, base, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, h.events, requestID, base, uncommitted...); err != nil {
 		log.Printf("[scrapejob] append %s failed: %v", requestID, err)
 	}
 }

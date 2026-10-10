@@ -77,6 +77,18 @@ func main() {
 		os.Exit(2)
 	}
 
+	// In jetstream mode the SQLite log is frozen pre-flip history: rebuilding
+	// read models from it would erase post-flip facts. Dry-run inspection
+	// stays available; --apply must run against a JetStream-sourced rebuild.
+	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
+		logger.Error("invalid event store mode", "error", err)
+		os.Exit(2)
+	} else if mode == eventsourcing.EventStoreJetStream {
+		logger.Error("refusing --apply in jetstream mode: SQLite holds only pre-flip history",
+			"hint", "rebuild from the JetStream log instead")
+		os.Exit(2)
+	}
+
 	if err := replay(context.Background(), logger, dataDir, selectedStreams, sinceCheckpoint); err != nil {
 		logger.Error("replay failed", "error", err)
 		os.Exit(1)

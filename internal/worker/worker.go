@@ -183,11 +183,12 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 		w.db = db
 		if db != nil {
 			// Authoritative event log: SQLite by default, JetStream when
-			// LISTENLEDGER_EVENT_STORE=jetstream (see SelectedStore).
+			// LISTENLEDGER_EVENT_STORE=jetstream (see SelectedStore). A
+			// selection error means JetStream was requested but is unwirable;
+			// falling back to SQLite would split the log, so fail fast.
 			events, err := eventsourcing.SelectedStore(db, w.js)
 			if err != nil {
-				slog.Error("event store selection failed, staying on SQLite", "error", err)
-				events = eventsourcing.NewSQLiteStore(db)
+				panic(fmt.Sprintf("worker: event store selection failed: %v", err))
 			}
 			w.artistRepo = artist.NewRepository(events)
 			w.artistProjection = projections.NewArtistProjection(slog.Default(), db, w.nc)

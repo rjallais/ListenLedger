@@ -38,7 +38,7 @@ func openEventLog(ctx context.Context, dataDir string) (*eventLog, error) {
 	// from the JetStream authority unread: refuse instead of corrupting.
 	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
 		_ = database.Close()
-		return nil, err
+		return nil, fmt.Errorf("update_listeners: selecting event store: %w", err)
 	} else if mode == eventsourcing.EventStoreJetStream {
 		_ = database.Close()
 		return nil, fmt.Errorf("update_listeners: %s=%q needs a JetStream writer; run with %q",
