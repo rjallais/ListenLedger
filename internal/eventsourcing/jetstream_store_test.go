@@ -176,3 +176,19 @@ func TestJetStreamStore_LoadFiltersByStream(t *testing.T) {
 		t.Fatalf("Load order = v%d,v%d; want v1,v2", loaded[0].Version, loaded[1].Version)
 	}
 }
+
+func TestJetStreamStore_NoCrossAggregateContention(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Interleaved appends to different aggregates must not conflict: the
+	// OCC scope is per-aggregate, not stream-wide.
+	if err := store.Append(ctx, "ar_x_1", 0, mustTestEvent(t, "ar_x_1", 1)); err != nil {
+		t.Fatalf("Append x1: %v", err)
+	}
+	if err := store.Append(ctx, "ar_x_2", 0, mustTestEvent(t, "ar_x_2", 1)); err != nil {
+		t.Fatalf("Append x2: %v", err)
+	}
+	if err := store.Append(ctx, "ar_x_1", 1, mustTestEvent(t, "ar_x_1", 2)); err != nil {
+		t.Fatalf("Append x1 v2: %v", err)
+	}
+}

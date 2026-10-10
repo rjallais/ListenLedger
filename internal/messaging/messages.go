@@ -199,6 +199,15 @@ func SubjectDomainEvent(streamType, streamID, eventType string) string {
 	return SubjectDomainEventsPrefix + "." + sanitizeSubjectToken(streamType) + "." + sanitizeSubjectToken(streamID) + "." + sanitizeSubjectToken(eventType)
 }
 
+// SubjectDomainEventScope returns the wildcard subject covering one
+// aggregate's events across all types: domain.events.<type>.<id>.*. Used for
+// per-aggregate sequence checks (GetLastMsgForSubject, expected-subject
+// publish anchors); the server resolves the wildcard to the latest matching
+// message. The ID is sanitized exactly as at publish time.
+func SubjectDomainEventScope(streamType, streamID string) string {
+	return SubjectDomainEventsPrefix + "." + sanitizeSubjectToken(streamType) + "." + sanitizeSubjectToken(streamID) + ".*"
+}
+
 // SubjectDomainEventFilter returns the JetStream filter subject matching one
 // aggregate's events across all types: domain.events.*.<id>.>. The wildcard
 // covers the stream-type token; the ID is sanitized exactly as at publish

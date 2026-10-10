@@ -34,23 +34,23 @@ func NewJetStreamStore(js jetstream.JetStream) *JetStreamStore {
 // Compile-time: JetStreamStore satisfies the write-path read contract.
 var _ Store = (*JetStreamStore)(nil)
 
-// Append publishes events to their per-type subjects with stream-wide OCC
+// Append publishes events to their per-type subjects with per-aggregate OCC
 // and MsgID dedup on the event ID. A CAS miss surfaces as
 // ErrConcurrencyConflict, same contract as SQLite.
 //
-// OCC is two-layered: (1) reload the stream's current max version and
-// reject a stale expectedVersion before publishing; (2) publish under a
-// stream-wide WithExpectLastSequence anchor so a concurrent append between
-// the reload and the publish fails the batch. JetStream subjects are per
-// (type, id, event-type), so no subject primitive enforces one aggregate's
-// version — the reload is the version check, the anchor is the race guard.
-// True single-round-trip per-aggregate CAS needs a Phase 2 version anchor
-// (e.g. KV streamID->version with revision-conditional update).
+// OCC is scoped to the aggregate: a lookup of the aggregate's latest
+// persisted event (via the wildcard subject domain.events.<type>.<id>.*)
+// both rejects a stale expectedVersion and anchors the publishes with
+// WithExpectLastSequenceForSubject, so a concurrent append to this aggregate
+// between the reload and the publish fails the batch. Concurrent appends to
+// *other* aggregates share nothing in this scope (the old stream-wide anchor
+// false-conflicted on those). The wildcard check is server-enforced —
+// verified against the pinned server sources, not assumed.
 //
 // Partial-write contract: publishes are per-event (JetStream has no
-// multi-publish transaction), so a mid-batch failure can leave a prefix
-// persisted. On any error the caller must reload the stream and retry only
-// the unwritten tail; already-persisted versions resurface as
+// multi-publish transaction in this client), so a mid-batch failure can
+// leave a prefix persisted. On any error the caller must reload the stream
+// and retry only the unwritten tail; already-persisted versions resurface as
 // ErrConcurrencyConflict, never as silent duplicates.
 func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
 	if s.js == nil {
@@ -72,29 +72,32 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 	if err != nil {
 		return fmt.Errorf("jetstream store: stream: %w", err)
 	}
-	info, err := stream.Info(ctx)
-	if err != nil {
-		return fmt.Errorf("jetstream store: read stream state: %w", err)
-	}
-	floor := info.State.LastSeq // stream-wide CAS anchor; 0 on empty stream
-	// Layer 1: reject a stale reader. Reload the aggregate's current max
-	// version from the log and compare against expectedVersion. Fail closed
-	// on read errors — an unreadable log must not accept writes.
-	current, err := s.Load(ctx, streamID)
-	if err != nil {
+	scope := messaging.SubjectDomainEventScope(events[0].StreamType, streamID)
+	// Layer 1: reject a stale reader. Reload the aggregate's latest
+	// persisted event and compare its version against expectedVersion. Fail
+	// closed on read errors — an unreadable log must not accept writes.
+	last, err := stream.GetLastMsgForSubject(ctx, scope)
+	if err != nil && !errors.Is(err, jetstream.ErrMsgNotFound) {
 		return fmt.Errorf("jetstream store: reload %s: %w", streamID, err)
 	}
+	var base uint64
 	var maxVersion int64
-	for _, evt := range current {
-		maxVersion = max(maxVersion, evt.Version)
+	if err == nil && last != nil {
+		lastEvt, err := UnmarshalEvent(last.Data)
+		if err != nil {
+			return fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
+		}
+		base = last.Sequence
+		maxVersion = lastEvt.Version
 	}
 	if maxVersion != expectedVersion {
 		return fmt.Errorf("%w: stream %s expected version %d, but found %d",
 			ErrConcurrencyConflict, streamID, expectedVersion, maxVersion)
 	}
-	// Layer 2: publish under the CAS anchor. A concurrent append between
-	// the reload and now moved LastSeq, so the first publish misses and
-	// the batch fails without partial writes from a stale view.
+	// Layer 2: publish under the per-aggregate anchor. A concurrent append
+	// to this aggregate between the reload and now moved its latest
+	// sequence, so the publish misses and the batch fails without partial
+	// writes from a stale view.
 	var published uint64
 	for _, evt := range events {
 		subject := messaging.SubjectDomainEvent(evt.StreamType, evt.StreamID, evt.EventType)
@@ -104,7 +107,7 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 		}
 		opts := []jetstream.PublishOpt{
 			jetstream.WithMsgID(evt.ID),
-			jetstream.WithExpectLastSequence(floor + published),
+			jetstream.WithExpectLastSequenceForSubject(base+published, scope),
 		}
 		if _, err := s.js.Publish(ctx, subject, data, opts...); err != nil {
 			if isWrongLastSeq(err) {
