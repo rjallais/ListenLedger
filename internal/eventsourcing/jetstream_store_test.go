@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 
+	"ListenLedger/internal/db"
 	"ListenLedger/internal/messaging"
 )
 
@@ -315,5 +317,76 @@ func TestAppendWithRetry_ValidationPassesThrough(t *testing.T) {
 	other := mustTestEvent(t, "ar_retry_other", 1)
 	if err := AppendWithRetry(ctx, store, "ar_retry_4", 0, other); err == nil || errors.Is(err, ErrConcurrencyConflict) {
 		t.Fatalf("AppendWithRetry = %v; want plain validation error", err)
+	}
+}
+
+func TestCheckJetStreamParity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
+
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: storeDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+
+	sqliteStore := NewSQLiteStore(sqliteDB)
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("empty parity = %v; want nil", err)
+	}
+
+	v1 := mustTestEvent(t, "ar_par_1", 1)
+	v2 := mustTestEvent(t, "ar_par_1", 2)
+	if err := sqliteStore.Append(ctx, "ar_par_1", 0, v1, v2); err != nil {
+		t.Fatalf("SQLite Append: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("parity with unpublished outbox rows should fail")
+	}
+
+	// Mirror the outbox set to JetStream and mark published: parity holds.
+	jsStore := NewJetStreamStore(js)
+	if err := jsStore.Append(ctx, "ar_par_1", 0, v1, v2); err != nil {
+		t.Fatalf("JS Append: %v", err)
+	}
+	if err := sqliteStore.MarkPublished(ctx, []string{v1.ID, v2.ID}); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("mirrored parity = %v; want nil", err)
+	}
+
+	// A foreign event in JetStream breaks count equality with zero lag.
+	if _, err := js.Publish(ctx, messaging.SubjectDomainEvent("artist", "ar_par_x", "ArtistCreated"), []byte(`{}`)); err != nil {
+		t.Fatalf("foreign Publish: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("parity with extra JetStream event should fail")
 	}
 }

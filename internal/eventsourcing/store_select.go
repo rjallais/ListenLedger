@@ -14,12 +14,15 @@
 package eventsourcing
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"ListenLedger/internal/messaging"
 )
 
 // EventStoreMode selects the authoritative event store.
@@ -65,4 +68,46 @@ func SelectedStore(db *toolbeltdb.Database, js jetstream.JetStream) (Store, erro
 	default:
 		return NewSQLiteStore(db), nil
 	}
+}
+
+// CheckJetStreamParity verifies the JetStream log mirrors the SQLite log
+// before jetstream mode serves reads and writes from it. Two O(1) checks:
+//
+//  1. Outbox lag is zero: every logged event was handed to JetStream at
+//     least once (the outbox migration backfilled pre-outbox history).
+//  2. Stream message count equals the SQLite event count: nothing expired
+//     or went missing, and nothing extra was published.
+//
+// Soundness: the only DOMAIN_EVENTS publishers (outbox relay, projection
+// sync path) both use MsgID=event ID, so redeliveries dedup and the stream
+// holds exactly the published ID set. A subset of the SQLite IDs with equal
+// size is the full set. Returns nil on parity, descriptive error otherwise.
+func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetstream.JetStream) error {
+	if js == nil {
+		return fmt.Errorf("eventsourcing: parity check needs JetStream, got nil")
+	}
+	store := NewSQLiteStore(db)
+	lag, err := store.UnpublishedCount(ctx)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: parity check outbox lag: %w", err)
+	}
+	if lag != 0 {
+		return fmt.Errorf("eventsourcing: parity check failed: %d unpublished outbox rows (let the relay drain, then flip)", lag)
+	}
+	want, err := store.EventCount(ctx)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: parity check event count: %w", err)
+	}
+	stream, err := js.Stream(ctx, messaging.DomainEventsStreamName)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: parity check stream: %w", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: parity check stream info: %w", err)
+	}
+	if got := info.State.Msgs; got != uint64(want) {
+		return fmt.Errorf("eventsourcing: parity check failed: SQLite holds %d events, JetStream holds %d (backfill or retention gap — do not flip)", want, got)
+	}
+	return nil
 }

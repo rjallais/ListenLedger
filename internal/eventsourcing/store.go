@@ -409,6 +409,28 @@ func (s *SQLiteStore) UnpublishedCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// EventCount returns the total number of events in the SQLite log.
+// Powers the JetStream parity gate (every logged event must be mirrored).
+func (s *SQLiteStore) EventCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT COUNT(*) FROM events;")
+		defer func() { _ = stmt.Reset() }()
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if hasRow {
+			count = stmt.ColumnInt64(0)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("counting events: %w", err)
+	}
+	return count, nil
+}
+
 // LoadFromGlobalPosition loads events across all streams starting after afterPosition (exclusive), ordered by global sequence.
 func (s *SQLiteStore) LoadFromGlobalPosition(ctx context.Context, afterPosition int64, limit int) ([]Event, error) {
 	if limit <= 0 {

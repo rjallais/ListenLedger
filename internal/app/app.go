@@ -72,6 +72,18 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("invalid event store mode: %w", err)
 		}
 		slog.Info("event store authority", "mode", mode)
+		// Parity gate: jetstream mode serves reads and writes from
+		// DOMAIN_EVENTS, so refuse to boot unless it mirrors the SQLite log
+		// (relay drained, nothing expired). Flip-day order is audit first,
+		// then env, then boot — this gate enforces it.
+		if mode == eventsourcing.EventStoreJetStream {
+			if err := eventsourcing.CheckJetStreamParity(ctx, sqliteDB, embeddedNATS.JS); err != nil {
+				_ = sqliteDB.Close()
+				_ = embeddedNATS.Close(ctx)
+				return fmt.Errorf("jetstream parity gate: %w", err)
+			}
+			slog.Info("jetstream parity gate passed")
+		}
 
 		registerArtistUpdateFanout(ctx, app, embeddedNATS.JS)
 		registerQueueUpdateFanout(ctx, app, embeddedNATS.Conn)
