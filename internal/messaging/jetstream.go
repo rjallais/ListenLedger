@@ -160,8 +160,8 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 
 // EnsureDomainEventsStreamAsTruth creates or updates DOMAIN_EVENTS as the
 // authority: same subjects, 3y retention + 2GB cap (see truth constants).
-// CreateOrUpdate keeps existing messages; run once at startup behind the
-// flip flag. Not wired yet (Phase 1: dual-write only, SQLite stays truth).
+// CreateOrUpdate keeps existing messages. Called at every startup by
+// ensureJetStreamStreams; SQLite remains the read source in Phase 1.
 func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       DomainEventsStreamName,

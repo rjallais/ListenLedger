@@ -93,6 +93,15 @@ func bootstrapNATS(ctx context.Context, dataDir string, cfg *config.Config) (*Em
 		natsStoreDir = filepath.Join(dataDir, "nats")
 	}
 
+	// DOMAIN_EVENTS as truth reserves DomainEventsTruthMaxBytes of file
+	// store: a smaller NATS_MAX_FILE_STORE override makes the embedded
+	// server reject the stream config, so fail fast with the knob named
+	// instead of dying mid-bootstrap.
+	if cfg.NATSMaxFileStore > 0 && cfg.NATSMaxFileStore < messaging.DomainEventsTruthMaxBytes {
+		return nil, fmt.Errorf("NATS_MAX_FILE_STORE (%d bytes) is below the %d bytes DOMAIN_EVENTS requires as truth stream; raise the override or unset it",
+			cfg.NATSMaxFileStore, int64(messaging.DomainEventsTruthMaxBytes))
+	}
+
 	ns, err := startEmbeddedNATS(ctx, natsStoreDir, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start embedded NATS: %w", err)
