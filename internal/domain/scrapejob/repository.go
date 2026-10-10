@@ -9,11 +9,11 @@ import (
 
 // Repository loads and persists Job aggregates.
 type Repository struct {
-	store *eventsourcing.SQLiteStore
+	store eventsourcing.Store
 }
 
 // NewRepository creates a Repository.
-func NewRepository(store *eventsourcing.SQLiteStore) *Repository {
+func NewRepository(store eventsourcing.Store) *Repository {
 	return &Repository{store: store}
 }
 

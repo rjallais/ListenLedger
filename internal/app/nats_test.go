@@ -3,11 +3,29 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"ListenLedger/config"
 )
+
+func TestBootstrapNATSRejectsSmallFileStore(t *testing.T) {
+	tempDir := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	cfg := config.DefaultConfig()
+	cfg.NATSStoreDir = filepath.Join(tempDir, "nats")
+	cfg.NATSMaxFileStore = 512 * 1024 * 1024 // old default: below the 2GB truth stream
+
+	if _, err := bootstrapNATS(ctx, tempDir, cfg); err == nil {
+		t.Fatal("bootstrapNATS with 512MB file store: want clear NATS_MAX_FILE_STORE error, got nil")
+	} else if got := err.Error(); !strings.Contains(got, "NATS_MAX_FILE_STORE") {
+		t.Fatalf("bootstrapNATS error = %q; want it to name NATS_MAX_FILE_STORE", got)
+	}
+}
 
 func TestEmbeddedNATSLifecycle(t *testing.T) {
 	tempDir := t.TempDir()
@@ -19,7 +37,7 @@ func TestEmbeddedNATSLifecycle(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.NATSStoreDir = natsDir
 	cfg.NATSMaxMemoryStore = 32 * 1024 * 1024
-	cfg.NATSMaxFileStore = 64 * 1024 * 1024
+	cfg.NATSMaxFileStore = 3 * 1024 * 1024 * 1024
 
 	en, err := bootstrapNATS(ctx, tempDir, cfg)
 	if err != nil {

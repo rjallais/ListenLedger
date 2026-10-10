@@ -54,6 +54,13 @@ const (
 	// DiscardOld, breaching the cap drops the oldest messages first — safe
 	// because nothing rebuilds state from this stream.
 	DomainEventsMaxBytes = 256 * 1024 * 1024
+
+	// DomainEventsTruthRetention/MaxBytes size DOMAIN_EVENTS as the authority
+	// (Delaney flip). 3y/2GB at the observed rate (~1800 events/day) holds the
+	// full history with headroom; DiscardOld still degrades to oldest-dropped
+	// instead of filling the disk. Monitor stream bytes; grow before it fills.
+	DomainEventsTruthRetention = 3 * 365 * 24 * time.Hour
+	DomainEventsTruthMaxBytes  = 2 * 1024 * 1024 * 1024
 )
 
 // ScrapeWorkerConsumerNames returns all known scrape consumer durables.
@@ -149,6 +156,22 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 		MaxBytes:   DomainEventsMaxBytes,
 		Duplicates: 10 * time.Minute,
 	}, "domain events")
+}
+
+// EnsureDomainEventsStreamAsTruth creates or updates DOMAIN_EVENTS as the
+// authority: same subjects, 3y retention + 2GB cap (see truth constants).
+// CreateOrUpdate keeps existing messages. Called at every startup by
+// ensureJetStreamStreams; SQLite remains the read source in Phase 1.
+func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream) error {
+	return ensureStreamFromConfig(ctx, js, streamConfig{
+		Name:       DomainEventsStreamName,
+		Subjects:   []string{SubjectDomainEventsWildcard},
+		Retention:  jetstream.LimitsPolicy,
+		MaxAge:     DomainEventsTruthRetention,
+		MaxMsgs:    10_000_000,
+		MaxBytes:   DomainEventsTruthMaxBytes,
+		Duplicates: 10 * time.Minute,
+	}, "domain events (truth)")
 }
 
 // PublishDomainEvent publishes one domain event to JetStream with the event ID

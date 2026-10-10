@@ -35,7 +35,7 @@ type Store struct {
 	// appended here first (past-tense events on one bounded stream per batch);
 	// projection writes follow. If the projection write fails, replay rebuilds
 	// it — the log, never the tables, is the source of truth.
-	events *eventsourcing.SQLiteStore
+	events eventsourcing.Store
 }
 
 // NewStore creates a Store.
