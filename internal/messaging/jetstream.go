@@ -57,8 +57,8 @@ const (
 
 	// DomainEventsTruthRetention/MaxBytes size DOMAIN_EVENTS as the authority
 	// (Delaney flip). 3y/2GB at the observed rate (~1800 events/day) holds the
-	// full history with headroom; DiscardOld still degrades to oldest-dropped
-	// instead of filling the disk. Monitor stream bytes; grow before it fills.
+	// full history with headroom. DiscardNew rejects writes when full instead
+	// of dropping history — monitor stream bytes and grow before it fills.
 	DomainEventsTruthRetention = 3 * 365 * 24 * time.Hour
 	DomainEventsTruthMaxBytes  = 2 * 1024 * 1024 * 1024
 )
@@ -88,15 +88,23 @@ type streamConfig struct {
 	MaxMsgs    int64
 	MaxBytes   int64
 	Duplicates time.Duration
+	// Discard overrides the default DiscardOld. The truth stream sets
+	// DiscardNew: as the sole log, silently dropping the oldest events
+	// would corrupt replays, so a full stream must reject writes loudly.
+	Discard jetstream.DiscardPolicy
 }
 
 func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) error {
+	discard := sc.Discard
+	if discard == 0 {
+		discard = jetstream.DiscardOld
+	}
 	cfg := jetstream.StreamConfig{
 		Name:       sc.Name,
 		Subjects:   sc.Subjects,
 		Retention:  sc.Retention,
 		Storage:    jetstream.FileStorage,
-		Discard:    jetstream.DiscardOld,
+		Discard:    discard,
 		MaxAge:     sc.MaxAge,
 		MaxMsgs:    sc.MaxMsgs,
 		MaxBytes:   sc.MaxBytes,
@@ -160,8 +168,9 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 
 // EnsureDomainEventsStreamAsTruth creates or updates DOMAIN_EVENTS as the
 // authority: same subjects, 3y retention + 2GB cap (see truth constants).
-// CreateOrUpdate keeps existing messages. Called at every startup by
-// ensureJetStreamStreams; SQLite remains the read source in Phase 1.
+// DiscardNew: a full stream rejects writes instead of silently dropping the
+// oldest authoritative events. CreateOrUpdate keeps existing messages.
+// Called at every startup by ensureJetStreamStreams.
 func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       DomainEventsStreamName,
@@ -171,6 +180,7 @@ func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream
 		MaxMsgs:    10_000_000,
 		MaxBytes:   DomainEventsTruthMaxBytes,
 		Duplicates: 10 * time.Minute,
+		Discard:    jetstream.DiscardNew,
 	}, "domain events (truth)")
 }
 

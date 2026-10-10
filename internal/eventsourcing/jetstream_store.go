@@ -2,12 +2,10 @@
 //
 // JetStreamStore implements Store against the DOMAIN_EVENTS JetStream stream
 // (Delaney flip: JetStream is the authority, SQLite is disposable). Append
-// uses Nats-Expected-Last-Sequence-Per-Subject for optimistic concurrency on
-// the stream's subject, MsgID=event ID for short-window dedup. Load replays
-// one stream's subjects via an ephemeral ordered consumer.
-//
-// Phase 1: write-behind dual-write only; SQLite stays the Load source.
-// Phase 2 flips Load here. Not used by the runtime yet.
+// uses per-aggregate OCC on the stream's subject scope, MsgID=event ID for
+// short-window dedup. Load replays one stream's subjects via an ephemeral
+// filtered pull consumer. Wired into the runtime via SelectedStore in
+// jetstream mode; SQLite remains the default.
 package eventsourcing
 
 import (
@@ -184,9 +182,15 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	if err != nil {
 		return nil, fmt.Errorf("jetstream store: consumer for %s: %w", streamID, err)
 	}
-	// Ephemeral consumer: delete explicitly; the inactivity threshold reaps
-	// stragglers if the context is already dead here.
-	defer func() { _ = stream.DeleteConsumer(ctx, cons.CachedInfo().Name) }()
+	// Ephemeral consumer: delete explicitly on a fresh context — the caller's
+	// ctx may be canceled by the time Load returns, which would leak the
+	// consumer until the inactivity threshold reaps it. The inactivity
+	// threshold remains as backstop if this delete fails.
+	defer func() {
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = stream.DeleteConsumer(dctx, cons.CachedInfo().Name)
+	}()
 	var out []Event
 	for {
 		if err := ctx.Err(); err != nil {

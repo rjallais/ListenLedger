@@ -71,7 +71,10 @@ func SelectedStore(db *toolbeltdb.Database, js jetstream.JetStream) (Store, erro
 }
 
 // CheckJetStreamParity verifies the JetStream log mirrors the SQLite log
-// before jetstream mode serves reads and writes from it. Two O(1) checks:
+// before jetstream mode serves reads and writes from it. One O(1) count
+// check plus one JetStream lookup per stream for tip verification
+// (O(streams), sequential — fine at current scale; revisit with a timeout
+// budget or sampling if the stream count grows):
 //
 //  1. Outbox lag is zero: every logged event was handed to JetStream at
 //     least once (the outbox migration backfilled pre-outbox history).

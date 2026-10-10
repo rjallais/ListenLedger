@@ -1,11 +1,3 @@
-// AppendWithRetry bridges the atomicity gap between SQLiteStore (one
-// transaction: all-or-nothing) and JetStreamStore (per-event publishes: a
-// mid-batch failure can leave a prefix persisted). After a conflict it
-// reloads the stream and retries only the unwritten tail, verified by event
-// ID — never by version alone, so a foreign writer's events can never be
-// silently dropped from the batch. Bounded attempts guarantee termination;
-// a batch that cannot fit the tip returns the conflict for the caller to
-// rebuild.
 package eventsourcing
 
 import (
@@ -19,11 +11,16 @@ import (
 const appendRetryAttempts = 5
 
 // AppendWithRetry appends events, resuming only the unwritten tail when a
-// mid-batch failure leaves a prefix persisted. Success means every event is
-// in the stream (verified by ID on the final attempt); ErrConcurrencyConflict
-// means the batch no longer fits the tip and the caller must rebuild it from
-// a fresh Load. Non-conflict errors (validation, type mismatch, I/O) return
-// immediately — retrying those is pointless.
+// mid-batch failure leaves a prefix persisted. It bridges the atomicity gap
+// between SQLiteStore (one transaction: all-or-nothing) and JetStreamStore
+// (per-event publishes). After a conflict it reloads the stream and retries
+// only the unwritten tail, verified by event ID — never by version alone, so
+// a foreign writer's events can never be silently dropped from the batch.
+// Success means every event is in the stream (verified by ID on the final
+// attempt); ErrConcurrencyConflict means the batch no longer fits the tip
+// and the caller must rebuild it from a fresh Load. Non-conflict errors
+// (validation, type mismatch, I/O) return immediately — retrying those is
+// pointless. Bounded attempts guarantee termination.
 func AppendWithRetry(ctx context.Context, store Store, streamID string, expectedVersion int64, events ...Event) error {
 	if len(events) == 0 {
 		return nil
