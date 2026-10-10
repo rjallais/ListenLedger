@@ -109,5 +109,32 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 	if got := info.State.Msgs; got != uint64(want) {
 		return fmt.Errorf("eventsourcing: parity check failed: SQLite holds %d events, JetStream holds %d (backfill or retention gap — do not flip)", want, got)
 	}
+	// Per-stream tip verification: counts alone cannot catch a balanced
+	// substitution (one event missing, another extra). Every SQLite stream's
+	// tip must match JetStream's by version and event ID. This also
+	// cross-checks the subject encoding end to end (SQLite ID -> JS subject
+	// -> resolved tip). Fail closed: a stream with no JetStream tip, an
+	// unreadable tip, or any version/ID mismatch refuses the flip.
+	tips, err := store.StreamTips(ctx)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: parity check stream tips: %w", err)
+	}
+	for _, tip := range tips {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("eventsourcing: parity check tip %s: %w", tip.StreamID, err)
+		}
+		last, err := stream.GetLastMsgForSubject(ctx, messaging.SubjectDomainEventScope(tip.StreamID))
+		if err != nil {
+			return fmt.Errorf("eventsourcing: parity check failed: stream %s has no JetStream tip: %w", tip.StreamID, err)
+		}
+		lastEvt, err := UnmarshalEvent(last.Data)
+		if err != nil {
+			return fmt.Errorf("eventsourcing: parity check failed: stream %s tip undecodable: %w", tip.StreamID, err)
+		}
+		if lastEvt.Version != tip.Version || lastEvt.ID != tip.EventID {
+			return fmt.Errorf("eventsourcing: parity check failed: stream %s tip is v%d %s in SQLite, v%d %s in JetStream",
+				tip.StreamID, tip.Version, tip.EventID, lastEvt.Version, lastEvt.ID)
+		}
+	}
 	return nil
 }

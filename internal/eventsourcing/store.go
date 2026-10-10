@@ -409,6 +409,44 @@ func (s *SQLiteStore) UnpublishedCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// StreamTip is one stream's latest event identity for parity checks.
+type StreamTip struct {
+	StreamID string
+	EventID  string
+	Version  int64
+}
+
+// StreamTips returns every stream's tip (max version + its event ID) in
+// stream-ID order. Powers the JetStream parity gate's per-stream check.
+func (s *SQLiteStore) StreamTips(ctx context.Context) ([]StreamTip, error) {
+	var tips []StreamTip
+	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		query := tx.Prep(`SELECT stream_id, id, version FROM events AS e
+			WHERE version = (SELECT MAX(version) FROM events WHERE stream_id = e.stream_id)
+			ORDER BY stream_id ASC;`)
+		defer func() { _ = query.Reset() }()
+		for {
+			hasRow, err := query.Step()
+			if err != nil {
+				return fmt.Errorf("stepping through stream tips: %w", err)
+			}
+			if !hasRow {
+				break
+			}
+			tips = append(tips, StreamTip{
+				StreamID: query.ColumnText(0),
+				EventID:  query.ColumnText(1),
+				Version:  query.ColumnInt64(2),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing stream tips: %w", err)
+	}
+	return tips, nil
+}
+
 // EventCount returns the total number of events in the SQLite log.
 // Powers the JetStream parity gate (every logged event must be mirrored).
 func (s *SQLiteStore) EventCount(ctx context.Context) (int64, error) {

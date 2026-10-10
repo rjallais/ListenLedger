@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -388,5 +389,68 @@ func TestCheckJetStreamParity(t *testing.T) {
 	}
 	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
 		t.Fatal("parity with extra JetStream event should fail")
+	}
+}
+
+func TestCheckJetStreamParity_TipSubstitution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
+
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: storeDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+
+	// Balanced substitution: same count, zero lag, but v2's identity differs
+	// per store. Counts pass; the tip check must refuse.
+	v1 := mustTestEvent(t, "ar_sub_1", 1)
+	v2 := mustTestEvent(t, "ar_sub_1", 2)
+	v2prime, err := NewEvent("ar_sub_1", "artist", 2, "ArtistMonthlyListenersScraped",
+		map[string]any{"monthly_listeners": 200}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	sqliteStore := NewSQLiteStore(sqliteDB)
+	if err := sqliteStore.Append(ctx, "ar_sub_1", 0, v1, v2); err != nil {
+		t.Fatalf("SQLite Append: %v", err)
+	}
+	jsStore := NewJetStreamStore(js)
+	if err := jsStore.Append(ctx, "ar_sub_1", 0, v1, v2prime); err != nil {
+		t.Fatalf("JS Append: %v", err)
+	}
+	if err := sqliteStore.MarkPublished(ctx, []string{v1.ID, v2.ID}); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("parity with substituted tip should fail")
+	} else if !strings.Contains(err.Error(), "ar_sub_1") {
+		t.Fatalf("parity error should name the stream, got: %v", err)
 	}
 }
