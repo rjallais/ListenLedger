@@ -735,7 +735,7 @@ select.status-select {
   background-color: var(--surface);
   background-image:
     radial-gradient(circle 2.5px at center, currentColor 98%, transparent 100%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    var(--status-chevron);
   background-repeat: no-repeat;
   background-position: 0.55rem center, right 0.3rem center;
   background-size: 5px 5px, 0.7rem 0.7rem;
@@ -743,6 +743,21 @@ select.status-select {
   color: var(--foreground);
   cursor: pointer;
   transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+/* Status chevron: data-URI SVGs cannot inherit currentColor across
+   themes, so each theme sets an explicit contrasting stroke. The default
+   (no class = dark-first brand) uses the light stroke. */
+select.status-select {
+  --status-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a8b5a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+html.light select.status-select {
+  --status-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+/* Classless html follows the OS: match the chevron when the OS prefers light. */
+@media (prefers-color-scheme: light) {
+  html:not([class]) select.status-select {
+    --status-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2352525b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  }
 }
 select.status-select:focus {
   outline: none;
