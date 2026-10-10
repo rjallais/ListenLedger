@@ -11,14 +11,29 @@ func init() {
 	m.Register(func(app core.App) error {
 		for _, name := range []string{"albums", "songs"} {
 			if err := dedupeTitleArtist(app, name); err != nil {
-				return err
+				return fmt.Errorf("deduping %s: %w", name, err)
 			}
 			if err := addUniqueTitleArtistIndex(app, name); err != nil {
-				return err
+				return fmt.Errorf("adding unique index to %s: %w", name, err)
 			}
 		}
 		return nil
 	}, func(app core.App) error {
+		names := []string{"albums", "songs"}
+		collections := make([]*core.Collection, 0, len(names))
+		for _, name := range names {
+			collection, err := app.FindCollectionByNameOrId(name)
+			if err != nil {
+				return fmt.Errorf("%s collection not found during rollback: %w", name, err)
+			}
+			collections = append(collections, collection)
+		}
+		for i, collection := range collections {
+			collection.RemoveIndex("idx_" + names[i] + "_title_artist_unique")
+			if err := app.Save(collection); err != nil {
+				return fmt.Errorf("failed to remove unique index for %s: %w", names[i], err)
+			}
+		}
 		return nil
 	})
 }
@@ -35,9 +50,13 @@ func dedupeTitleArtist(app core.App, collectionName string) error {
 			continue
 		}
 		if prev, ok := seen[key]; ok {
-			// Keep newest (created DESC, id as tie-breaker)
+			// Keep newest (created DESC, id as tie-breaker). Compare as
+			// times rather than strings so legacy rows with a different
+			// timestamp format cannot silently misorder the keep/delete pick.
+			rCreated := r.GetDateTime("created").Time()
+			prevCreated := prev.GetDateTime("created").Time()
 			keep, del := prev, r
-			if r.GetString("created") > prev.GetString("created") || (r.GetString("created") == prev.GetString("created") && r.Id > prev.Id) {
+			if rCreated.After(prevCreated) || (rCreated.Equal(prevCreated) && r.Id > prev.Id) {
 				keep, del = r, prev
 			}
 			if err := app.Delete(del); err != nil {

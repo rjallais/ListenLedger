@@ -90,7 +90,7 @@ func upsertArtistsCollection(app core.App) error {
 	// If legacy data has duplicate non-empty spotify_id values,
 	// keep startup non-blocking by applying a non-unique lookup index.
 	hasDuplicates := false
-	duplicateSamples := []string{}
+	var duplicateSamples []string
 	if existed {
 		hasDuplicates, duplicateSamples, err = artistsSpotifyIDHasDuplicates(app)
 		if err != nil {
@@ -163,7 +163,7 @@ func artistsSpotifyIDHasDuplicates(app core.App) (bool, []string, error) {
 		Total     int    `db:"total"`
 	}
 
-	rows := []duplicateRow{}
+	var rows []duplicateRow
 	if err := app.DB().NewQuery(`
 		SELECT spotify_id, COUNT(*) AS total
 		FROM artists
@@ -186,9 +186,4 @@ func artistsSpotifyIDHasDuplicates(app core.App) (bool, []string, error) {
 	}
 
 	return true, samples, nil
-}
-
-//go:fix inline
-func float64Ptr(value float64) *float64 {
-	return &value
 }

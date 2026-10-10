@@ -61,3 +61,12 @@ cmd/lookup_artists/
 
 # Build artifacts
 ListenLedger.bin
+
+# Allow database migrations
+!internal/db/migrations/*.sql
+
+# Generated Graphify graph and reports
+graphify-out/
+
+# Local Codex integrations contain machine-specific hook and MCP paths
+/.codex/

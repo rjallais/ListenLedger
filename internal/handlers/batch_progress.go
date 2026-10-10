@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"maps"
 	"strconv"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/starfederation/datastar-go/datastar"
 
@@ -79,7 +81,6 @@ func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
 
 	h.batchMu.Lock()
 	defer h.batchMu.Unlock()
-
 	batchID, ok := h.artistBatch[artistID]
 	if !ok {
 		return
@@ -101,6 +102,71 @@ func (h *Handler) markBatchArtistDone(artistID, fetchStatus string) {
 		batch.Done = true
 	}
 	batch.UpdatedAt = time.Now()
+}
+
+// reconcileBatchFromDBLocked advances batches whose tracked artists already
+// left `pending` in the database. This heals the "183/200 forever" case where
+// `artist.updated` events were missed (e.g. server restart between publish and
+// subscribe, or dropped NATS delivery). Caller must hold h.batchMu.Lock().
+// No-op when h.app is nil (unit tests).
+func (h *Handler) reconcileBatchFromDBLocked() {
+	if h.app == nil || len(h.batches) == 0 || len(h.artistBatch) == 0 {
+		return
+	}
+	// Collect tracked artist IDs.
+	pendingArtists := make([]string, 0, len(h.artistBatch))
+	for artistID := range h.artistBatch {
+		pendingArtists = append(pendingArtists, artistID)
+	}
+	// Query which are still pending in DB, chunked to avoid SQLite limits.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	stillPending := make(map[string]struct{}, len(pendingArtists))
+	const chunkSize = 200
+	for i := 0; i < len(pendingArtists); i += chunkSize {
+		end := min(i+chunkSize, len(pendingArtists))
+		chunk := pendingArtists[i:end]
+		vals := make([]any, len(chunk))
+		for j, id := range chunk {
+			vals[j] = id
+		}
+		records := make([]*core.Record, 0, len(chunk))
+		err := h.app.RecordQuery("artists").
+			WithContext(ctx).
+			AndWhere(dbx.In("id", vals...)).
+			AndWhere(dbx.HashExp{"fetch_status": "pending"}).
+			All(&records)
+		if err != nil {
+			return
+		}
+		for _, r := range records {
+			stillPending[r.Id] = struct{}{}
+		}
+	}
+	// Anything tracked but no longer pending in DB is counted as done.
+	for artistID := range h.artistBatch {
+		if _, ok := stillPending[artistID]; ok {
+			continue
+		}
+		batchID := h.artistBatch[artistID]
+		batch, ok := h.batches[batchID]
+		if !ok {
+			delete(h.artistBatch, artistID)
+			continue
+		}
+		if _, tracked := batch.Pending[artistID]; !tracked {
+			delete(h.artistBatch, artistID)
+			continue
+		}
+		delete(batch.Pending, artistID)
+		delete(h.artistBatch, artistID)
+		batch.Completed++
+		if batch.Completed >= batch.Total {
+			batch.Completed = batch.Total
+			batch.Done = true
+		}
+		batch.UpdatedAt = time.Now()
+	}
 }
 
 func isCompletedFetchStatus(artistID, fetchStatus string) bool {
@@ -189,9 +255,9 @@ func (h *Handler) getBatchSnapshot(batchID string) (batchProgressSnapshot, bool)
 		return batchProgressSnapshot{}, false
 	}
 
-	h.batchMu.RLock()
-	defer h.batchMu.RUnlock()
-
+	h.batchMu.Lock()
+	defer h.batchMu.Unlock()
+	h.reconcileBatchFromDBLocked()
 	batch, ok := h.batches[batchID]
 	if !ok {
 		return batchProgressSnapshot{}, false
@@ -200,8 +266,9 @@ func (h *Handler) getBatchSnapshot(batchID string) (batchProgressSnapshot, bool)
 }
 
 func (h *Handler) getActiveBatchSnapshot() (batchProgressSnapshot, bool) {
-	h.batchMu.RLock()
-	defer h.batchMu.RUnlock()
+	h.batchMu.Lock()
+	defer h.batchMu.Unlock()
+	h.reconcileBatchFromDBLocked()
 
 	var activeBatch *batchProgress
 	var latestTime time.Time
@@ -224,9 +291,9 @@ func (h *Handler) getActiveBatchSnapshot() (batchProgressSnapshot, bool) {
 }
 
 func (h *Handler) getLatestBatchSnapshot() (batchProgressSnapshot, bool) {
-	h.batchMu.RLock()
-	defer h.batchMu.RUnlock()
-
+	h.batchMu.Lock()
+	defer h.batchMu.Unlock()
+	h.reconcileBatchFromDBLocked()
 	batchID := h.latestBatch
 	if batchID == "" {
 		return batchProgressSnapshot{}, false
