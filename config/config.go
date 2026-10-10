@@ -209,8 +209,8 @@ func DefaultConfig() *Config {
 
 		// NATS embedded server defaults
 		NATSStoreDir:       "",
-		NATSMaxMemoryStore: 64 * 1024 * 1024,  // 64 MB
-		NATSMaxFileStore:   512 * 1024 * 1024, // 512 MB
+		NATSMaxMemoryStore: 64 * 1024 * 1024,       // 64 MB
+		NATSMaxFileStore:   3 * 1024 * 1024 * 1024, // 3 GB (fits the 2GB DOMAIN_EVENTS truth stream + queues)
 		NATSLogging:        false,
 		NATSDebug:          false,
 

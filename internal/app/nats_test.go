@@ -19,7 +19,7 @@ func TestEmbeddedNATSLifecycle(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.NATSStoreDir = natsDir
 	cfg.NATSMaxMemoryStore = 32 * 1024 * 1024
-	cfg.NATSMaxFileStore = 64 * 1024 * 1024
+	cfg.NATSMaxFileStore = 3 * 1024 * 1024 * 1024
 
 	en, err := bootstrapNATS(ctx, tempDir, cfg)
 	if err != nil {

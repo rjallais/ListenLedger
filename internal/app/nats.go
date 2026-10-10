@@ -165,8 +165,11 @@ func ensureJetStreamStreams(ctx context.Context, js jetstream.JetStream) error {
 	if err := ensureJetStreamStream(ctx, js, messaging.EnsureEventsStream); err != nil {
 		return fmt.Errorf("failed to ensure events stream: %w", err)
 	}
-	if err := ensureJetStreamStream(ctx, js, messaging.EnsureDomainEventsStream); err != nil {
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureDomainEventsStreamAsTruth); err != nil {
 		return fmt.Errorf("failed to ensure domain events stream: %w", err)
+	}
+	if err := ensureJetStreamStream(ctx, js, messaging.EnsureKVBuckets); err != nil {
+		return fmt.Errorf("failed to ensure KV buckets: %w", err)
 	}
 
 	return nil
