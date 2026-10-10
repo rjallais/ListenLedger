@@ -173,13 +173,11 @@ func SubjectRanksUpdatedForGenre(genre string) string {
 	return SubjectRanksUpdated + "." + genre
 }
 
-// SubjectDomainEvent returns the durable domain-event subject for an
-// aggregate event, e.g. "domain.events.artist.ar_123.ArtistCreated".
 // sanitizeSubjectToken maps one subject token to its publish-safe form; the
-// mapping is injective (distinct IDs yield distinct tokens), so OCC scopes
-// and filters never conflate two aggregates.
+// mapping is injective (distinct inputs yield distinct tokens), so OCC scopes
+// and filters never conflate two aggregates. Whitespace (including leading
+// and trailing) is escaped, never trimmed; only the empty input maps to "-".
 func sanitizeSubjectToken(s string) string {
-	s = strings.TrimSpace(s)
 	if s == "" {
 		// "-" is reachable only here: a literal "-" encodes to "--".
 		return "-"
@@ -213,6 +211,8 @@ func sanitizeSubjectToken(s string) string {
 	return b.String()
 }
 
+// SubjectDomainEvent returns the durable domain-event subject for an
+// aggregate event, e.g. "domain.events.artist.ar_123.ArtistCreated".
 // Dots in IDs are escaped since NATS treats dots as token separators; the
 // escape keeps distinct IDs distinct ("a.b" vs "a_b" encode differently).
 func SubjectDomainEvent(streamType, streamID, eventType string) string {

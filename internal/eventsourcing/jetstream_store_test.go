@@ -3,6 +3,7 @@ package eventsourcing
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -240,5 +241,79 @@ func TestJetStreamStore_SameIDAcrossTypesRejected(t *testing.T) {
 	}
 	if err := store.Append(ctx, "ar_shared", 1, albumV2); err == nil || errors.Is(err, ErrConcurrencyConflict) {
 		t.Fatalf("wrong-type Append = %v; want non-conflict type error", err)
+	}
+}
+
+// partialFailStore simulates a mid-batch transport failure: it persists the
+// first failAfter events via the wrapped store, then reports a conflict as
+// if the batch's remaining publishes never reached the server.
+type partialFailStore struct {
+	Store
+	failAfter int
+}
+
+func (s *partialFailStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	if len(events) > s.failAfter {
+		if err := s.Store.Append(ctx, streamID, expectedVersion, events[:s.failAfter]...); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: injected mid-batch failure", ErrConcurrencyConflict)
+	}
+	return s.Store.Append(ctx, streamID, expectedVersion, events...)
+}
+
+func TestAppendWithRetry_ResumesUnwrittenTail(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	flaky := &partialFailStore{Store: store, failAfter: 1}
+
+	v1 := mustTestEvent(t, "ar_retry_1", 1)
+	v2 := mustTestEvent(t, "ar_retry_1", 2)
+	v3 := mustTestEvent(t, "ar_retry_1", 3)
+	if err := AppendWithRetry(ctx, flaky, "ar_retry_1", 0, v1, v2, v3); err != nil {
+		t.Fatalf("AppendWithRetry = %v; want nil", err)
+	}
+	loaded, err := store.Load(ctx, "ar_retry_1")
+	if err != nil || len(loaded) != 3 {
+		t.Fatalf("Load = %d, %v; want 3", len(loaded), err)
+	}
+	for i, want := range []string{v1.ID, v2.ID, v3.ID} {
+		if loaded[i].ID != want {
+			t.Fatalf("loaded[%d].ID = %s, want %s", i, loaded[i].ID, want)
+		}
+	}
+}
+
+func TestAppendWithRetry_AllPersistedIsSuccess(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	v1 := mustTestEvent(t, "ar_retry_2", 1)
+	v2 := mustTestEvent(t, "ar_retry_2", 2)
+	if err := AppendWithRetry(ctx, store, "ar_retry_2", 0, v1, v2); err != nil {
+		t.Fatalf("first AppendWithRetry: %v", err)
+	}
+	// Same batch again (e.g. ack lost after success): IDs verify present.
+	if err := AppendWithRetry(ctx, store, "ar_retry_2", 0, v1, v2); err != nil {
+		t.Fatalf("redundant AppendWithRetry = %v; want nil", err)
+	}
+}
+
+func TestAppendWithRetry_ForeignWriterWins(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_retry_3", 0, mustTestEvent(t, "ar_retry_3", 1)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mine := mustTestEvent(t, "ar_retry_3", 1)
+	if err := AppendWithRetry(ctx, store, "ar_retry_3", 0, mine); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("AppendWithRetry = %v; want ErrConcurrencyConflict", err)
+	}
+}
+
+func TestAppendWithRetry_ValidationPassesThrough(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	other := mustTestEvent(t, "ar_retry_other", 1)
+	if err := AppendWithRetry(ctx, store, "ar_retry_4", 0, other); err == nil || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("AppendWithRetry = %v; want plain validation error", err)
 	}
 }

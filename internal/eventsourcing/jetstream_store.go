@@ -80,8 +80,8 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 				ErrConcurrencyConflict, streamID, i, evt.Version, want)
 		}
 		if evt.StreamID != streamID {
-			return fmt.Errorf("%w: event %s belongs to stream %s, want %s",
-				ErrConcurrencyConflict, evt.ID, evt.StreamID, streamID)
+			return fmt.Errorf("jetstream store: event %s belongs to stream %s, want %s",
+				evt.ID, evt.StreamID, streamID)
 		}
 		if evt.StreamType != streamType {
 			return fmt.Errorf("jetstream store: stream %s has mixed aggregate types %q and %q",

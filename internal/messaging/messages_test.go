@@ -140,6 +140,13 @@ func TestSubjectTokenEncodingInjective(t *testing.T) {
 	if SubjectDomainEventScope("-") == SubjectDomainEventScope("--") {
 		t.Fatal("Scope conflates - and --")
 	}
+	// Edge whitespace is escaped, not trimmed: "a " and "a" stay distinct.
+	if SubjectDomainEventScope("a ") == SubjectDomainEventScope("a") {
+		t.Fatal("Scope conflates 'a ' and 'a'")
+	}
+	if SubjectDomainEventScope("") == SubjectDomainEventScope("   ") {
+		t.Fatal("Scope conflates empty and whitespace-only IDs")
+	}
 }
 
 func TestUnknownMessageVersionsRejected(t *testing.T) {
