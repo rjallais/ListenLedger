@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -60,6 +61,38 @@ func TestKV_PutGetPop(t *testing.T) {
 	}
 	if _, ok, _ := KVGet(ctx, js, KVCorrelation, "ar_1"); ok {
 		t.Fatal("KVGet after pop: want missing")
+	}
+}
+
+func TestKV_PopRaceKeepsReplacement(t *testing.T) {
+	js, ctx := setupTestKV(t)
+
+	if err := KVPut(ctx, js, KVCorrelation, "ar_race", "req_old"); err != nil {
+		t.Fatalf("KVPut: %v", err)
+	}
+	// Capture the revision a concurrent popper would have read, then
+	// replace the value out-of-band. A delete conditional on the stale
+	// revision must fail and the replacement must survive.
+	kv, err := js.KeyValue(ctx, KVCorrelation)
+	if err != nil {
+		t.Fatalf("KeyValue: %v", err)
+	}
+	entry, err := kv.Get(ctx, "ar_race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, err := kv.PutString(ctx, "ar_race", "req_new"); err != nil {
+		t.Fatalf("PutString replacement: %v", err)
+	}
+	if err := kv.Delete(ctx, "ar_race", jetstream.LastRevision(entry.Revision())); !errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+		t.Fatalf("stale-revision Delete = %v; want ErrKeyRevisionMismatch", err)
+	}
+	if val, ok, err := KVGet(ctx, js, KVCorrelation, "ar_race"); err != nil || !ok || val != "req_new" {
+		t.Fatalf("KVGet after stale delete = %q, %v, %v; want req_new, true, nil", val, ok, err)
+	}
+	// The live pop path still works on the current revision.
+	if val, ok, err := KVPop(ctx, js, KVCorrelation, "ar_race"); err != nil || !ok || val != "req_new" {
+		t.Fatalf("KVPop = %q, %v, %v; want req_new, true, nil", val, ok, err)
 	}
 }
 

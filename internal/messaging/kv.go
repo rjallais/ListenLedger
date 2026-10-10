@@ -50,18 +50,24 @@ func EnsureKVBuckets(ctx context.Context, js jetstream.JetStream) error {
 
 // KVGet returns the latest value for key, or ("", false, nil) when missing.
 func KVGet(ctx context.Context, js jetstream.JetStream, bucket, key string) (string, bool, error) {
+	val, _, ok, err := kvGetEntry(ctx, js, bucket, key)
+	return val, ok, err
+}
+
+// kvGetEntry returns the value plus the entry revision for conditional ops.
+func kvGetEntry(ctx context.Context, js jetstream.JetStream, bucket, key string) (string, uint64, bool, error) {
 	kv, err := js.KeyValue(ctx, bucket)
 	if err != nil {
-		return "", false, fmt.Errorf("KV bucket %s: %w", bucket, err)
+		return "", 0, false, fmt.Errorf("KV bucket %s: %w", bucket, err)
 	}
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return "", false, nil
+			return "", 0, false, nil
 		}
-		return "", false, fmt.Errorf("KV get %s/%s: %w", bucket, key, err)
+		return "", 0, false, fmt.Errorf("KV get %s/%s: %w", bucket, key, err)
 	}
-	return string(entry.Value()), true, nil
+	return string(entry.Value()), entry.Revision(), true, nil
 }
 
 // KVPut stores value for key.
@@ -77,9 +83,12 @@ func KVPut(ctx context.Context, js jetstream.JetStream, bucket, key, value strin
 }
 
 // KVPop returns the value for key and deletes it (correlation pop).
-// Missing keys return ("", false, nil).
+// Missing keys return ("", false, nil). The delete is conditional on the
+// read revision: a concurrent Put between read and delete surfaces as
+// ("", false, nil) so the replacement survives and the stale value is
+// never reported as popped.
 func KVPop(ctx context.Context, js jetstream.JetStream, bucket, key string) (string, bool, error) {
-	val, ok, err := KVGet(ctx, js, bucket, key)
+	val, rev, ok, err := kvGetEntry(ctx, js, bucket, key)
 	if err != nil || !ok {
 		return val, ok, err
 	}
@@ -87,7 +96,10 @@ func KVPop(ctx context.Context, js jetstream.JetStream, bucket, key string) (str
 	if err != nil {
 		return "", false, fmt.Errorf("KV bucket %s: %w", bucket, err)
 	}
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+			return "", false, nil
+		}
 		return "", false, fmt.Errorf("KV delete %s/%s: %w", bucket, key, err)
 	}
 	return val, true, nil

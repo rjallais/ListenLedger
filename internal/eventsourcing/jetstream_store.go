@@ -33,9 +33,24 @@ func NewJetStreamStore(js jetstream.JetStream) *JetStreamStore {
 // Compile-time: JetStreamStore satisfies the write-path read contract.
 var _ Store = (*JetStreamStore)(nil)
 
-// Append publishes events to their per-type subjects with OCC on the
-// stream's last sequence for that subject and MsgID dedup on the event ID.
-// A CAS miss surfaces as ErrConcurrencyConflict, same contract as SQLite.
+// Append publishes events to their per-type subjects with stream-wide OCC
+// and MsgID dedup on the event ID. A CAS miss surfaces as
+// ErrConcurrencyConflict, same contract as SQLite.
+//
+// OCC is two-layered: (1) reload the stream's current max version and
+// reject a stale expectedVersion before publishing; (2) publish under a
+// stream-wide WithExpectLastSequence anchor so a concurrent append between
+// the reload and the publish fails the batch. JetStream subjects are per
+// (type, id, event-type), so no subject primitive enforces one aggregate's
+// version — the reload is the version check, the anchor is the race guard.
+// True single-round-trip per-aggregate CAS needs a Phase 2 version anchor
+// (e.g. KV streamID->version with revision-conditional update).
+//
+// Partial-write contract: publishes are per-event (JetStream has no
+// multi-publish transaction), so a mid-batch failure can leave a prefix
+// persisted. On any error the caller must reload the stream and retry only
+// the unwritten tail; already-persisted versions resurface as
+// ErrConcurrencyConflict, never as silent duplicates.
 func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
 	if s.js == nil {
 		return fmt.Errorf("jetstream store: JetStream not configured")
@@ -43,27 +58,60 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 	if len(events) == 0 {
 		return nil
 	}
+	// Validate the whole batch before publishing anything: a version skew
+	// must fail without mutating the stream.
 	for i, evt := range events {
 		want := expectedVersion + int64(i) + 1
 		if evt.Version != want {
 			return fmt.Errorf("%w: stream %s event %d has version %d, want %d",
 				ErrConcurrencyConflict, streamID, i, evt.Version, want)
 		}
+	}
+	stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
+	if err != nil {
+		return fmt.Errorf("jetstream store: stream: %w", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("jetstream store: read stream state: %w", err)
+	}
+	floor := info.State.LastSeq // stream-wide CAS anchor; 0 on empty stream
+	// Layer 1: reject a stale reader. Reload the aggregate's current max
+	// version from the log and compare against expectedVersion. Fail closed
+	// on read errors — an unreadable log must not accept writes.
+	current, err := s.Load(ctx, streamID)
+	if err != nil {
+		return fmt.Errorf("jetstream store: reload %s: %w", streamID, err)
+	}
+	var maxVersion int64
+	for _, evt := range current {
+		maxVersion = max(maxVersion, evt.Version)
+	}
+	if maxVersion != expectedVersion {
+		return fmt.Errorf("%w: stream %s expected version %d, but found %d",
+			ErrConcurrencyConflict, streamID, expectedVersion, maxVersion)
+	}
+	// Layer 2: publish under the CAS anchor. A concurrent append between
+	// the reload and now moved LastSeq, so the first publish misses and
+	// the batch fails without partial writes from a stale view.
+	var published uint64
+	for _, evt := range events {
 		subject := messaging.SubjectDomainEvent(evt.StreamType, evt.StreamID, evt.EventType)
 		data, err := evt.Bytes()
 		if err != nil {
 			return fmt.Errorf("jetstream store: marshal %s: %w", evt.ID, err)
 		}
-		opts := []jetstream.PublishOpt{jetstream.WithMsgID(evt.ID)}
-		if seq, ok := lastSubjectSeq(ctx, s.js, subject); ok && seq > 0 {
-			opts = append(opts, jetstream.WithExpectLastSequencePerSubject(seq))
+		opts := []jetstream.PublishOpt{
+			jetstream.WithMsgID(evt.ID),
+			jetstream.WithExpectLastSequence(floor + published),
 		}
 		if _, err := s.js.Publish(ctx, subject, data, opts...); err != nil {
 			if isWrongLastSeq(err) {
-				return fmt.Errorf("%w: stream %s: %v", ErrConcurrencyConflict, streamID, err)
+				return fmt.Errorf("%w: stream %s: %w", ErrConcurrencyConflict, streamID, err)
 			}
 			return fmt.Errorf("jetstream store: publish %s: %w", evt.ID, err)
 		}
+		published++
 	}
 	return nil
 }
@@ -87,6 +135,9 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	if err != nil {
 		return nil, fmt.Errorf("jetstream store: info: %w", err)
 	}
+	if info.State.Msgs == 0 {
+		return nil, nil // empty stream: nothing to replay
+	}
 	var out []Event
 	for seq := info.State.FirstSeq; seq <= info.State.LastSeq; seq++ {
 		if err := ctx.Err(); err != nil {
@@ -94,7 +145,10 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		}
 		raw, err := stream.GetMsg(ctx, seq)
 		if err != nil {
-			continue // deleted/expired slot: skip
+			if errors.Is(err, jetstream.ErrMsgNotFound) {
+				continue // deleted/expired slot: skip
+			}
+			return nil, fmt.Errorf("jetstream store: get seq %d: %w", seq, err)
 		}
 		evt, err := UnmarshalEvent(raw.Data)
 		if err != nil {
@@ -105,20 +159,6 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		}
 	}
 	return out, nil
-}
-
-// lastSubjectSeq returns the stream sequence of the last message on subject,
-// or false when the subject has no messages yet (first append: no CAS).
-func lastSubjectSeq(ctx context.Context, js jetstream.JetStream, subject string) (uint64, bool) {
-	stream, err := js.Stream(ctx, messaging.DomainEventsStreamName)
-	if err != nil {
-		return 0, false
-	}
-	msg, err := stream.GetLastMsgForSubject(ctx, subject)
-	if err != nil || msg == nil {
-		return 0, false
-	}
-	return msg.Sequence, true
 }
 
 // isWrongLastSeq reports a JetStream CAS miss (both single and clustered codes).

@@ -96,6 +96,42 @@ func TestJetStreamStore_VersionConflict(t *testing.T) {
 	}
 }
 
+func TestJetStreamStore_BatchPrevalidationNoPartialWrite(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	v1 := mustTestEvent(t, "ar_js_4", 1)
+	v3 := mustTestEvent(t, "ar_js_4", 3) // skew: forces pre-validation failure
+	if err := store.Append(ctx, "ar_js_4", 0, v1, v3); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("Append skewed batch = %v; want ErrConcurrencyConflict", err)
+	}
+	if got, err := store.Load(ctx, "ar_js_4"); err != nil || len(got) != 0 {
+		t.Fatalf("Load after rejected batch = %d, %v; want 0, nil (no partial write)", len(got), err)
+	}
+}
+
+func TestJetStreamStore_ConcurrentAppendConflict(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Two writers read the same empty stream, both append v1. The loser's
+	// stream-wide CAS must surface ErrConcurrencyConflict.
+	w1 := mustTestEvent(t, "ar_js_5", 1)
+	w2, err := NewEvent("ar_js_5", "artist", 1, "ArtistMonthlyListenersScraped",
+		map[string]any{"monthly_listeners": 200}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_js_5", 0, w1); err != nil {
+		t.Fatalf("first Append: %v", err)
+	}
+	if err := store.Append(ctx, "ar_js_5", 0, w2); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("stale Append = %v; want ErrConcurrencyConflict", err)
+	}
+	loaded, err := store.Load(ctx, "ar_js_5")
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("Load = %d, %v; want exactly the winner", len(loaded), err)
+	}
+}
+
 func TestUnmarshalEvent_RoundTrip(t *testing.T) {
 	orig := mustTestEvent(t, "ar_js_3", 7)
 	data, err := orig.Bytes()
