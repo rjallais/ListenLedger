@@ -12,6 +12,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/messaging"
@@ -247,9 +248,10 @@ func TestJetStreamStore_SameIDAcrossTypesRejected(t *testing.T) {
 	}
 }
 
-// partialFailStore simulates a mid-batch transport failure: it persists the
-// first failAfter events via the wrapped store, then reports a conflict as
-// if the batch's remaining publishes never reached the server.
+// partialFailStore simulates a mid-batch transport failure with unknown
+// outcome (timeout / lost ack): it persists the first failAfter events via
+// the wrapped store, then reports indeterminate as if the remaining
+// publishes never answered.
 type partialFailStore struct {
 	Store
 	failAfter int
@@ -260,7 +262,7 @@ func (s *partialFailStore) Append(ctx context.Context, streamID string, expected
 		if err := s.Store.Append(ctx, streamID, expectedVersion, events[:s.failAfter]...); err != nil {
 			return err
 		}
-		return fmt.Errorf("%w: injected mid-batch failure", ErrConcurrencyConflict)
+		return fmt.Errorf("%w: injected mid-batch failure", ErrAppendIndeterminate)
 	}
 	return s.Store.Append(ctx, streamID, expectedVersion, events...)
 }
@@ -466,4 +468,88 @@ func TestCheckJetStreamParity_TipSubstitution(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "ar_sub_1") {
 		t.Fatalf("parity error should name the stream, got: %v", err)
 	}
+}
+
+// outageStore fails Append as indeterminate once, then fails Load: the
+// retry helper must preserve the unknown-outcome signal through the
+// reconciliation failure instead of returning only the load error.
+type outageStore struct {
+	Store
+	loadErr error
+}
+
+func (s *outageStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	return fmt.Errorf("%w: simulated timeout", ErrAppendIndeterminate)
+}
+
+func (s *outageStore) Load(ctx context.Context, streamID string) ([]Event, error) {
+	return nil, s.loadErr
+}
+
+func TestAppendWithRetry_PreservesIndeterminateOnLoadFailure(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	flaky := &outageStore{Store: store, loadErr: errors.New("connection refused")}
+
+	v1 := mustTestEvent(t, "ar_outage_1", 1)
+	err := AppendWithRetry(ctx, flaky, "ar_outage_1", 0, v1)
+	if err == nil {
+		t.Fatal("AppendWithRetry should fail")
+	}
+	if !errors.Is(err, ErrAppendIndeterminate) {
+		t.Fatalf("error should preserve ErrAppendIndeterminate, got: %v", err)
+	}
+}
+
+func TestWrapPublishError(t *testing.T) {
+	// Deterministic server rejection (APIError: e.g. DiscardNew stream
+	// full): nothing persisted, so no indeterminate marking — callers must
+	// not waste reconcile cycles on it.
+	rejected := fmt.Errorf("publish: %w", &jetstream.APIError{Code: 500, ErrorCode: 10077})
+	err := wrapPublishError("ar_w_1", "evt-1", rejected)
+	if err == nil || errors.Is(err, ErrAppendIndeterminate) || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("rejection should be plain, got: %v", err)
+	}
+
+	// Transport failure (no APIError): outcome unknown, must reconcile.
+	timeout := fmt.Errorf("publish: %w", errors.New("timeout"))
+	err = wrapPublishError("ar_w_1", "evt-1", timeout)
+	if !errors.Is(err, ErrAppendIndeterminate) {
+		t.Fatalf("timeout should be indeterminate, got: %v", err)
+	}
+}
+
+func TestAppendWithRetry_DeadContextReturnsEarly(t *testing.T) {
+	store, _ := setupTestJSStore(t)
+	// Always loses the race, and counts reconciliation Loads: with a dead
+	// context the guard must return before any Load runs.
+	racer := &countingConflictStore{Store: store}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // dead before the first attempt
+
+	v1 := mustTestEvent(t, "ar_dead_1", 1)
+	err := AppendWithRetry(ctx, racer, "ar_dead_1", 0, v1)
+	if err == nil {
+		t.Fatal("AppendWithRetry with dead ctx should fail")
+	}
+	if !errors.Is(err, ErrConcurrencyConflict) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error should preserve conflict + ctx signals, got: %v", err)
+	}
+	if racer.loads != 0 {
+		t.Fatalf("dead ctx ran %d reconciliation Loads, want 0", racer.loads)
+	}
+}
+
+// countingConflictStore loses every CAS race and counts Load calls.
+type countingConflictStore struct {
+	Store
+	loads int
+}
+
+func (s *countingConflictStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	return fmt.Errorf("%w: simulated race", ErrConcurrencyConflict)
+}
+
+func (s *countingConflictStore) Load(ctx context.Context, streamID string) ([]Event, error) {
+	s.loads++
+	return s.Store.Load(ctx, streamID)
 }

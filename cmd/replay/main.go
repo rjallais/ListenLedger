@@ -72,6 +72,14 @@ func main() {
 		return
 	}
 
+	// One-way flip guard: the SQLite log freezes once the authority marker
+	// is recorded. Rebuilding read models from it post-flip would wipe
+	// post-flip state — refuse and point at jetstream mode instead.
+	if err := refusePostFlipSQLite(context.Background(), dataDir); err != nil {
+		logger.Error("refusing sqlite replay after jetstream flip", "error", err)
+		os.Exit(2)
+	}
+
 	if !apply {
 		logger.Info("dry run: no changes will be made (pass --apply to rebuild)",
 			"data_dir", dataDir, "streams", streams)
@@ -92,6 +100,26 @@ func main() {
 		logger.Error("replay failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// refusePostFlipSQLite reports an error when the authority marker shows
+// JetStream already owns the log: sqlite-mode replay (dry run or --apply)
+// would read or rebuild from frozen pre-flip history.
+func refusePostFlipSQLite(ctx context.Context, dataDir string) error {
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+	pos, err := eventsourcing.NewSQLiteStore(database).GetCheckpoint(ctx, eventsourcing.CheckpointJetStreamAuthority)
+	if err != nil {
+		return fmt.Errorf("reading jetstream authority marker: %w", err)
+	}
+	if pos != 0 {
+		return fmt.Errorf("jetstream authority already established (set %s=%q to replay from JetStream)",
+			eventsourcing.EventStoreEnv, eventsourcing.EventStoreJetStream)
+	}
+	return nil
 }
 
 // isLiveDataDir reports whether dataDir is the live default (pb_data via
@@ -276,8 +304,8 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 	store := eventsourcing.NewSQLiteStore(database)
 	artistProj := projections.NewArtistProjection(logger, database, nil)
 	catalogProj := projections.NewCatalogProjection(logger, database)
-	// Replay tooling always reads the SQLite log (the permanent record in
-	// sqlite mode; a frozen pre-flip record in jetstream mode).
+	// sqlite-mode replay only: jetstream mode routes to runJetStreamReplay,
+	// and refusePostFlipSQLite blocks this path after the flip.
 	batchProj := batchprogress.NewStore(database, store)
 
 	streamInfos, err := store.Streams(ctx)

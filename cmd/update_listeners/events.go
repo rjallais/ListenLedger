@@ -45,6 +45,17 @@ func openEventLog(ctx context.Context, dataDir string) (*eventLog, error) {
 			eventsourcing.EventStoreEnv, eventsourcing.EventStoreJetStream, eventsourcing.EventStoreSQLite)
 	}
 	store := eventsourcing.NewSQLiteStore(database)
+	// One-way flip guard: the app refuses sqlite mode once the authority
+	// marker is recorded. This CLI has no JetStream writer, so it must
+	// refuse too — otherwise it would append facts to the frozen log that
+	// JetStream never reads.
+	if pos, err := store.GetCheckpoint(ctx, eventsourcing.CheckpointJetStreamAuthority); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: reading jetstream authority marker: %w", err)
+	} else if pos != 0 {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: jetstream authority already established; this CLI has no JetStream writer and cannot run after the flip (use the live app's refresh endpoints)")
+	}
 	return &eventLog{
 		database: database,
 		store:    store,

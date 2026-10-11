@@ -343,12 +343,14 @@ func TestReplayFromJetStream(t *testing.T) {
 	}
 
 	// Enumeration helper finds the seeded stream; dry run is read-only.
+	// Shut the first server down before dryRunJS: two embedded servers on
+	// one StoreDir corrupt it, and dryRunJS opens its own.
 	js2, cleanup, err := openReplayJetStream(ctx, dataDir)
 	if err != nil {
 		t.Fatalf("openReplayJetStream: %v", err)
 	}
-	defer cleanup()
 	infos, err := jsStreamInfos(ctx, js2, selected)
+	cleanup()
 	if err != nil {
 		t.Fatalf("jsStreamInfos: %v", err)
 	}

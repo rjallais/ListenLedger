@@ -148,10 +148,7 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 		}
 		ack, err := s.js.Publish(ctx, subject, data, opts...)
 		if err != nil {
-			if isWrongLastSeq(err) {
-				return fmt.Errorf("%w: stream %s: %w", ErrConcurrencyConflict, streamID, err)
-			}
-			return fmt.Errorf("jetstream store: publish %s: %w", evt.ID, err)
+			return wrapPublishError(streamID, evt.ID, err)
 		}
 		if ack != nil {
 			anchor = ack.Sequence
@@ -251,6 +248,23 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		}
 	}
 	return out, nil
+}
+
+// wrapPublishError reports a failed publish for one event. Version races
+// wrap ErrConcurrencyConflict; deterministic server rejections (APIError:
+// stream full, message too large, bad subject) pass through plainly since
+// nothing persisted; transport failures (timeout, lost ack, disconnect: no
+// APIError) wrap ErrAppendIndeterminate so AppendWithRetry reconciles the
+// unknown outcome instead of assuming success or failure.
+func wrapPublishError(streamID, eventID string, err error) error {
+	if isWrongLastSeq(err) {
+		return fmt.Errorf("%w: stream %s: %w", ErrConcurrencyConflict, streamID, err)
+	}
+	var jsErr jetstream.JetStreamError
+	if errors.As(err, &jsErr) && jsErr.APIError() != nil {
+		return fmt.Errorf("jetstream store: publish %s: %w", eventID, err)
+	}
+	return fmt.Errorf("%w: jetstream store: publish %s: %w", ErrAppendIndeterminate, eventID, err)
 }
 
 // isWrongLastSeq reports a JetStream CAS miss (both single and clustered codes).

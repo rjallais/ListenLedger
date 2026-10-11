@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -70,7 +71,7 @@ func main() {
 
 	log.Println("Backup completed successfully!")
 
-	if err := backupNATSStore(*natsSrc, *natsDst, *dbPath, *backupDir, timestamp, *stopped); err != nil {
+	if err := backupNATSStore(context.Background(), *natsSrc, *natsDst, *dbPath, *backupDir, timestamp, *stopped); err != nil {
 		log.Fatalf("NATS backup failed: %v", err)
 	}
 }
@@ -78,7 +79,7 @@ func main() {
 // backupNATSStore copies the JetStream file store for replay rehearsals.
 // Without the stopped assertion it skips (loudly): a raw copy of a live
 // store may be torn, while VACUUM INTO above is always live-safe.
-func backupNATSStore(natsSrc, natsDst, dbPath, backupDir, timestamp string, stopped bool) error {
+func backupNATSStore(ctx context.Context, natsSrc, natsDst, dbPath, backupDir, timestamp string, stopped bool) error {
 	if natsSrc == "" {
 		natsSrc = filepath.Join(filepath.Dir(dbPath), "nats")
 	}
@@ -96,18 +97,92 @@ func backupNATSStore(natsSrc, natsDst, dbPath, backupDir, timestamp string, stop
 	if natsDst == "" {
 		natsDst = filepath.Join(backupDir, fmt.Sprintf("nats-%s", timestamp))
 	}
-	// Refuse a non-empty destination: merging would leave stale files next
-	// to the new ones, and the copy could still verify clean. An existing
-	// *empty* dir is fine (explicit --nats-dst).
-	if entries, err := os.ReadDir(natsDst); err == nil && len(entries) > 0 {
-		return fmt.Errorf("NATS destination %s is not empty", natsDst)
+	// Refuse a bad destination: an existing regular file (ReadDir would skip
+	// the emptiness check and a failed copy's RemoveAll would delete it), a
+	// non-empty dir (merging leaves stale files beside new ones), or a
+	// destination inside the source (the copy would walk its own output).
+	if fi, err := os.Stat(natsDst); err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("NATS destination %s exists and is not a directory", natsDst)
+		}
+		if entries, err := os.ReadDir(natsDst); err != nil {
+			return fmt.Errorf("reading NATS destination: %w", err)
+		} else if len(entries) > 0 {
+			return fmt.Errorf("NATS destination %s is not empty", natsDst)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat NATS destination: %w", err)
+	}
+	// Compare resolved paths: either side may sit under symlinked parents,
+	// and Abs alone is lexical. Both sides are absolutized first: a relative
+	// srcReal against an absolute dstCheck would fail Rel below, and that
+	// failure must refuse the copy, never permit it.
+	srcAbs, err := filepath.Abs(natsSrc)
+	if err != nil {
+		return fmt.Errorf("resolving NATS source: %w", err)
+	}
+	srcReal, err := filepath.EvalSymlinks(srcAbs)
+	if err != nil {
+		return fmt.Errorf("resolving NATS source: %w", err)
+	}
+	dstAbs, err := filepath.Abs(natsDst)
+	if err != nil {
+		return fmt.Errorf("resolving NATS destination: %w", err)
+	}
+	{
+		// Resolve symlinks before comparing: a dst symlink pointing
+		// inside src would pass the lexical check below while copyDir
+		// writes through it into the tree being walked (self-copy until
+		// the disk fills). Resolve the link itself when dst exists,
+		// else the nearest existing parent.
+		dstCheck := dstAbs
+		// Resolve whenever dst exists: a symlinked ancestor would survive
+		// leaf-only resolution while copyDir writes through it into the
+		// source. A dangling leaf fails EvalSymlinks — fail closed, as does
+		// any other stat error (never fall back to the lexical path).
+		switch _, err := os.Lstat(natsDst); {
+		case err == nil:
+			real, err := filepath.EvalSymlinks(natsDst)
+			if err != nil {
+				return fmt.Errorf("resolving NATS destination: %w", err)
+			}
+			dstCheck = real
+		case !os.IsNotExist(err):
+			return fmt.Errorf("stat NATS destination: %w", err)
+		default:
+			// Walk up to the nearest existing ancestor: intermediate
+			// parents may be missing too, and EvalSymlinks fails on any
+			// missing path — resolving only the immediate parent would
+			// fall back to the lexical dstAbs while srcReal is resolved,
+			// letting an inside-source destination pass the guard below.
+			suffix := ""
+			for dir := dstAbs; ; {
+				parent := filepath.Dir(dir)
+				suffix = filepath.Join(filepath.Base(dir), suffix)
+				if real, err := filepath.EvalSymlinks(parent); err == nil {
+					dstCheck = filepath.Join(real, suffix)
+					break
+				}
+				if parent == dir {
+					break
+				}
+				dir = parent
+			}
+		}
+		rel, err := filepath.Rel(srcReal, dstCheck)
+		if err != nil {
+			return fmt.Errorf("comparing NATS source and destination: %w", err)
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("NATS destination %s is inside source %s", natsDst, natsSrc)
+		}
 	}
 	log.Printf("[safebackup] copying NATS store %s -> %s ...", natsSrc, natsDst)
 	if err := copyDir(natsSrc, natsDst); err != nil {
 		_ = os.RemoveAll(natsDst)
 		return fmt.Errorf("copying NATS store: %w", err)
 	}
-	if err := verifyNATSStore(natsDst); err != nil {
+	if err := verifyNATSStore(ctx, natsDst); err != nil {
 		_ = os.RemoveAll(natsDst)
 		return fmt.Errorf("verifying NATS copy (source may have been live): %w", err)
 	}
@@ -162,7 +237,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 // verifyNATSStore boots an embedded server on the COPY (never the source)
 // and lists streams: a torn copy fails recovery loudly instead of seeding a
 // misleading rehearsal. Read-only against the source by construction.
-func verifyNATSStore(storeDir string) error {
+func verifyNATSStore(ctx context.Context, storeDir string) error {
 	ns, err := natsserver.NewServer(&natsserver.Options{
 		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
 		JetStream: true, StoreDir: storeDir,
@@ -184,7 +259,7 @@ func verifyNATSStore(storeDir string) error {
 	if err != nil {
 		return fmt.Errorf("creating JetStream context: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	lister := js.StreamNames(ctx)
 	count := 0

@@ -85,7 +85,7 @@ func TestBackupNATSStore(t *testing.T) {
 
 	// Without --stopped the copy is skipped, never attempted.
 	skipDst := filepath.Join(t.TempDir(), "skipped")
-	if err := backupNATSStore(src, skipDst, "pb_data/data.db", t.TempDir(), "ts", false); err != nil {
+	if err := backupNATSStore(t.Context(), src, skipDst, "pb_data/data.db", t.TempDir(), "ts", false); err != nil {
 		t.Fatalf("skip path: %v", err)
 	}
 	if _, err := os.Stat(skipDst); !os.IsNotExist(err) {
@@ -94,7 +94,7 @@ func TestBackupNATSStore(t *testing.T) {
 
 	// Stopped: copy + self-verification against the copy.
 	dst := filepath.Join(t.TempDir(), "nats-copy")
-	if err := backupNATSStore(src, dst, "pb_data/data.db", t.TempDir(), "ts", true); err != nil {
+	if err := backupNATSStore(t.Context(), src, dst, "pb_data/data.db", t.TempDir(), "ts", true); err != nil {
 		t.Fatalf("stopped copy: %v", err)
 	}
 	if _, err := os.Stat(dst); err != nil {
@@ -104,9 +104,56 @@ func TestBackupNATSStore(t *testing.T) {
 
 func TestBackupNATSStoreMissingSource(t *testing.T) {
 	if err := backupNATSStore(
+		t.Context(),
 		filepath.Join(t.TempDir(), "absent"), filepath.Join(t.TempDir(), "dst"),
 		"pb_data/data.db", t.TempDir(), "ts", true,
 	); err != nil {
 		t.Fatalf("absent source should skip cleanly: %v", err)
+	}
+}
+
+func TestBackupNATSStoreRejectsSymlinkedDestination(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(src, 0750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Destination symlink pointing inside the source: lexical Abs/Rel sees
+	// only the link path, so without resolution the copy would walk src and
+	// write through the link into its own output.
+	inner, err := os.MkdirTemp(src, "inner")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "dstlink")
+	if err := os.Symlink(inner, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	err = backupNATSStore(t.Context(), src, link, "pb_data/data.db", t.TempDir(), "ts", true)
+	if err == nil {
+		t.Fatal("symlinked destination inside source should be refused")
+	}
+}
+
+func TestBackupNATSStoreRejectsSymlinkedAncestor(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(src, 0750); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Real dir inside src, reached via a symlinked parent outside it: the
+	// lexical dst path looks outside the source while writes land inside.
+	linkParent := filepath.Join(t.TempDir(), "linkparent")
+	if err := os.Symlink(src, linkParent); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	dst := filepath.Join(linkParent, "dst")
+	if err := backupNATSStore(t.Context(), src, dst, "pb_data/data.db", t.TempDir(), "ts", true); err == nil {
+		t.Fatal("destination under a symlinked ancestor inside source should be refused")
 	}
 }

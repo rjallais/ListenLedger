@@ -2,7 +2,7 @@
 # Local secrets such as API keys belong in .mise.local.toml and are not committed.
 
 [tools]
-go = "1.27.1"
+go = "1.27.2"
 
 [settings]
 npm.package_manager = "aube"

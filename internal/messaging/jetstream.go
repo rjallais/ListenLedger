@@ -55,12 +55,14 @@ const (
 	// because nothing rebuilds state from this stream.
 	DomainEventsMaxBytes = 256 * 1024 * 1024
 
-	// DomainEventsTruthRetention/MaxBytes size DOMAIN_EVENTS as the authority
-	// (Delaney flip). 3y/2GB at the observed rate (~1800 events/day) holds the
-	// full history with headroom. DiscardNew rejects writes when full instead
-	// of dropping history — monitor stream bytes and grow before it fills.
-	DomainEventsTruthRetention = 3 * 365 * 24 * time.Hour
-	DomainEventsTruthMaxBytes  = 2 * 1024 * 1024 * 1024
+	// DomainEventsTruthRetention is 0 (no age expiry): MaxAge deletes
+	// messages regardless of DiscardNew, which would erase the authority.
+	// DiscardNew + MaxBytes + MaxMsgs (10M, see EnsureDomainEventsStreamAsTruth)
+	// are the bounds — monitor stream bytes and message count, grow before
+	// either fills. At ~1800 events/day the count bound is ~15 years out;
+	// bytes depend on event size.
+	DomainEventsTruthRetention time.Duration = 0
+	DomainEventsTruthMaxBytes                = 2 * 1024 * 1024 * 1024
 )
 
 // ScrapeWorkerConsumerNames returns all known scrape consumer durables.
@@ -167,10 +169,10 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 }
 
 // EnsureDomainEventsStreamAsTruth creates or updates DOMAIN_EVENTS as the
-// authority: same subjects, 3y retention + 2GB cap (see truth constants).
-// DiscardNew: a full stream rejects writes instead of silently dropping the
-// oldest authoritative events. CreateOrUpdate keeps existing messages.
-// Called at every startup by ensureJetStreamStreams.
+// authority: same subjects, no age expiry, 2GB cap with DiscardNew (see
+// truth constants). DiscardNew: a full stream rejects writes instead of
+// silently dropping the oldest authoritative events. CreateOrUpdate keeps
+// existing messages. Called at every startup by ensureJetStreamStreams.
 func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
 		Name:       DomainEventsStreamName,

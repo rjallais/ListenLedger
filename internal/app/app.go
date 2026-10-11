@@ -72,6 +72,25 @@ func Run(ctx context.Context) error {
 			return fmt.Errorf("invalid event store mode: %w", err)
 		}
 		slog.Info("event store authority", "mode", mode)
+		// One-way flip: once the authority marker is recorded, JetStream is
+		// ahead by design (SQLite frozen). Booting sqlite mode after that
+		// would append versions JetStream already holds, forking the log
+		// with duplicate versions under different IDs — and no JS->SQLite
+		// backfill exists to heal it. Fail closed instead.
+		if mode == eventsourcing.EventStoreSQLite {
+			pos, err := eventsourcing.NewSQLiteStore(sqliteDB).GetCheckpoint(ctx, eventsourcing.CheckpointJetStreamAuthority)
+			if err != nil {
+				_ = sqliteDB.Close()
+				_ = embeddedNATS.Close(ctx)
+				return fmt.Errorf("reading jetstream authority marker: %w", err)
+			}
+			if pos != 0 {
+				_ = sqliteDB.Close()
+				_ = embeddedNATS.Close(ctx)
+				return fmt.Errorf("jetstream authority already established: booting %s=%q would fork the event log (no JS->SQLite backfill exists)",
+					eventsourcing.EventStoreEnv, eventsourcing.EventStoreSQLite)
+			}
+		}
 		// Parity gate: jetstream mode serves reads and writes from
 		// DOMAIN_EVENTS, so refuse to boot unless it mirrors the SQLite log
 		// (relay drained, nothing expired). Flip-day order is audit first,
