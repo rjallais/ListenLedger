@@ -96,9 +96,37 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 	store := NewSQLiteStore(db)
 	// Steady state short-circuit: once the gate has passed and recorded the
 	// authority marker, JetStream is ahead by design (SQLite frozen). Only
-	// the first flip boot pays for full verification.
-	if marked, err := store.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err == nil && marked != 0 {
-		slog.Info("eventsourcing: jetstream authority previously established, skipping parity re-verification")
+	// the first flip boot pays for full verification. A marker read error
+	// fails closed here — falling through to first-flip verification would
+	// misreport the post-flip ahead-by-design state as a backfill gap.
+	marked, err := store.GetCheckpoint(ctx, CheckpointJetStreamAuthority)
+	if err != nil {
+		return fmt.Errorf("eventsourcing: reading jetstream authority marker: %w", err)
+	}
+	if marked != 0 {
+		// Steady-state guard: JetStream only grows after the flip, so its
+		// message count must at least cover the frozen SQLite log. A lower
+		// count means the nats/ store was lost, moved, or restored without
+		// its tree (EnsureDomainEventsStreamAsTruth would recreate an empty
+		// DOMAIN_EVENTS) — booting would mint new v1 events over missing
+		// history. Two O(1) calls; full tip verification stays skipped.
+		want, err := store.EventCount(ctx)
+		if err != nil {
+			return fmt.Errorf("eventsourcing: authority check event count: %w", err)
+		}
+		stream, err := js.Stream(ctx, messaging.DomainEventsStreamName)
+		if err != nil {
+			return fmt.Errorf("eventsourcing: authority check stream: %w", err)
+		}
+		info, err := stream.Info(ctx)
+		if err != nil {
+			return fmt.Errorf("eventsourcing: authority check stream info: %w", err)
+		}
+		if info.State.Msgs < uint64(want) {
+			return fmt.Errorf("eventsourcing: JetStream holds %d events, below the frozen SQLite log's %d (store lost or misplaced?)",
+				info.State.Msgs, want)
+		}
+		slog.Info("eventsourcing: jetstream authority previously established, skipping full parity re-verification")
 		return nil
 	}
 	lag, err := store.UnpublishedCount(ctx)
