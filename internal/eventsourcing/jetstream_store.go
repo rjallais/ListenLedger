@@ -19,6 +19,19 @@ import (
 	"ListenLedger/internal/messaging"
 )
 
+// Load tuning for the filtered replay consumer.
+const (
+	// loadFetchBatchSize bounds one NoWait drain. Persisted history is
+	// already available server-side, so this only sizes round trips, not
+	// latency: the loop ends on ErrNoMessages either way.
+	loadFetchBatchSize = 100
+	// consumerDeleteTimeout bounds ephemeral-consumer cleanup. Kept short
+	// deliberately: the delete runs synchronously in Load's defer, so every
+	// millisecond here is tail latency on every read. A timeout failure is
+	// benign — the 30s inactivity threshold reaps the consumer.
+	consumerDeleteTimeout = 2 * time.Second
+)
+
 // JetStreamStore is an event store backed by JetStream DOMAIN_EVENTS.
 type JetStreamStore struct {
 	js jetstream.JetStream
@@ -187,7 +200,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	// consumer until the inactivity threshold reaps it. The inactivity
 	// threshold remains as backstop if this delete fails.
 	defer func() {
-		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), consumerDeleteTimeout)
 		defer cancel()
 		_ = stream.DeleteConsumer(dctx, cons.CachedInfo().Name)
 	}()
@@ -196,7 +209,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		batch, err := cons.FetchNoWait(100)
+		batch, err := cons.FetchNoWait(loadFetchBatchSize)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrNoMessages) {
 				break // caught up: no more matching messages

@@ -118,6 +118,8 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 	// cross-checks the subject encoding end to end (SQLite ID -> JS subject
 	// -> resolved tip). Fail closed: a stream with no JetStream tip, an
 	// unreadable tip, or any version/ID mismatch refuses the flip.
+	// Scale: one server-side index lookup per stream, jetstream-mode boots
+	// only, cancellable via ctx — sub-second at current stream counts.
 	tips, err := store.StreamTips(ctx)
 	if err != nil {
 		return fmt.Errorf("eventsourcing: parity check stream tips: %w", err)

@@ -186,6 +186,8 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 			// LISTENLEDGER_EVENT_STORE=jetstream (see SelectedStore). A
 			// selection error means JetStream was requested but is unwirable;
 			// falling back to SQLite would split the log, so fail fast.
+			// Unreachable in prod boot: internal/app/app.go validates the
+			// mode (SelectedStoreName) before WithDatabase runs.
 			events, err := eventsourcing.SelectedStore(db, w.js)
 			if err != nil {
 				panic(fmt.Sprintf("worker: event store selection failed: %v", err))

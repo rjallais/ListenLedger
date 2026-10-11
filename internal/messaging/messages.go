@@ -1,4 +1,12 @@
 // Package messaging defines event contracts and serialization for NATS subjects.
+//
+// Subject-token encoding invariant: sanitizeSubjectToken and
+// decodeSubjectToken must stay exact inverses (distinct inputs yield distinct
+// tokens). Per-aggregate OCC scopes, expected-subject publish anchors, and
+// replay filters all assume one ID maps to exactly one subject — breaking
+// injectivity silently conflates aggregates. Any change here must keep
+// TestSubjectTokenEncodingInjective and TestParseSubjectDomainEventRoundTrip
+// green, and preferably extend them.
 package messaging
 
 import (

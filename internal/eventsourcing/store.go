@@ -417,7 +417,10 @@ type StreamTip struct {
 }
 
 // StreamTips returns every stream's tip (max version + its event ID) in
-// stream-ID order. Powers the JetStream parity gate's per-stream check.
+// stream-ID order. Powers the JetStream parity gate's per-stream check and
+// the audit tool's size stats. One indexed query; milliseconds at current
+// scale (~10k events) — revisit with a window function if the events table
+// grows orders of magnitude.
 func (s *SQLiteStore) StreamTips(ctx context.Context) ([]StreamTip, error) {
 	var tips []StreamTip
 	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
