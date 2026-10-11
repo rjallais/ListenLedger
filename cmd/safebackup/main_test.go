@@ -103,12 +103,63 @@ func TestBackupNATSStore(t *testing.T) {
 }
 
 func TestBackupNATSStoreMissingSource(t *testing.T) {
+	// Without --stopped a missing store is an expected skip (e.g. a fresh
+	// deployment before the first boot).
+	if err := backupNATSStore(
+		t.Context(),
+		filepath.Join(t.TempDir(), "absent"), filepath.Join(t.TempDir(), "dst"),
+		"pb_data/data.db", t.TempDir(), "ts", false,
+	); err != nil {
+		t.Fatalf("absent source without --stopped should skip cleanly: %v", err)
+	}
+	// With --stopped the operator explicitly requested the copy: a missing
+	// source is a bad --nats-src/--db and must fail, not skip.
 	if err := backupNATSStore(
 		t.Context(),
 		filepath.Join(t.TempDir(), "absent"), filepath.Join(t.TempDir(), "dst"),
 		"pb_data/data.db", t.TempDir(), "ts", true,
-	); err != nil {
-		t.Fatalf("absent source should skip cleanly: %v", err)
+	); err == nil {
+		t.Fatal("absent source with --stopped should error, got nil")
+	}
+}
+
+// TestBackupNATSStoreKeepsExistingDestinationOnFailure guards the cleanup
+// contract: a failed copy must clear the contents of a pre-existing
+// destination directory, never delete the directory itself.
+func TestBackupNATSStoreKeepsExistingDestinationOnFailure(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "nats")
+	if err := os.MkdirAll(src, 0750); err != nil {
+		t.Fatal(err)
+	}
+	// copyDir rejects symlinks fail-closed: a link in the source makes the
+	// copy fail partway, which drives the undoDest cleanup path.
+	if err := os.Symlink(filepath.Join(src, "self"), filepath.Join(src, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "bogus.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "rehearsal", "nats")
+	if err := os.MkdirAll(dst, 0750); err != nil {
+		t.Fatal(err)
+	}
+	if err := backupNATSStore(
+		t.Context(),
+		src, dst, "pb_data/data.db", t.TempDir(), "ts", true,
+	); err == nil {
+		t.Fatal("copy with a symlink in the source should fail")
+	}
+	if fi, err := os.Stat(dst); err != nil {
+		t.Fatalf("pre-existing destination must survive failed copy: %v", err)
+	} else if !fi.IsDir() {
+		t.Fatal("pre-existing destination must remain a directory")
+	}
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed copy must clear destination contents, found %d entries", len(entries))
 	}
 }
 

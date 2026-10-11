@@ -85,6 +85,11 @@ func backupNATSStore(ctx context.Context, natsSrc, natsDst, dbPath, backupDir, t
 	}
 	if _, err := os.Stat(natsSrc); err != nil {
 		if os.IsNotExist(err) {
+			// --stopped is the operator explicitly requesting the copy;
+			// a missing source here is a bad --nats-src/--db, not a skip.
+			if stopped {
+				return fmt.Errorf("--stopped set but no NATS store at %s", natsSrc)
+			}
 			log.Printf("[safebackup] no NATS store at %s, skipping NATS copy", natsSrc)
 			return nil
 		}
@@ -101,7 +106,9 @@ func backupNATSStore(ctx context.Context, natsSrc, natsDst, dbPath, backupDir, t
 	// the emptiness check and a failed copy's RemoveAll would delete it), a
 	// non-empty dir (merging leaves stale files beside new ones), or a
 	// destination inside the source (the copy would walk its own output).
+	dstExisted := false
 	if fi, err := os.Stat(natsDst); err == nil {
+		dstExisted = true
 		if !fi.IsDir() {
 			return fmt.Errorf("NATS destination %s exists and is not a directory", natsDst)
 		}
@@ -179,14 +186,33 @@ func backupNATSStore(ctx context.Context, natsSrc, natsDst, dbPath, backupDir, t
 	}
 	log.Printf("[safebackup] copying NATS store %s -> %s ...", natsSrc, natsDst)
 	if err := copyDir(natsSrc, natsDst); err != nil {
-		_ = os.RemoveAll(natsDst)
+		_ = undoDest(natsDst, dstExisted)
 		return fmt.Errorf("copying NATS store: %w", err)
 	}
 	if err := verifyNATSStore(ctx, natsDst); err != nil {
-		_ = os.RemoveAll(natsDst)
+		_ = undoDest(natsDst, dstExisted)
 		return fmt.Errorf("verifying NATS copy (source may have been live): %w", err)
 	}
 	log.Println("[safebackup] NATS copy verified.")
+	return nil
+}
+
+// undoDest cleans up after a failed copy without deleting a directory the
+// operator owned before the call: a pre-existing dir is emptied in place,
+// one this call created is removed entirely.
+func undoDest(dst string, existed bool) error {
+	if !existed {
+		return os.RemoveAll(dst)
+	}
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
