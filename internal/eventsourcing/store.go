@@ -527,6 +527,12 @@ const (
 	CheckpointSongProjection    = "song"
 	CheckpointBatchProjection   = "batch"
 	CheckpointDomainEventsRelay = "domain_events_relay"
+	// CheckpointJetStreamAuthority records (position 1) that the parity gate
+	// passed once and JetStream is the authority. Later boots skip
+	// re-verification: with SQLite frozen and JetStream append-only, the
+	// mirror can only move ahead, so re-checking counts would brick every
+	// restart after the first JetStream write.
+	CheckpointJetStreamAuthority = "jetstream_authority"
 )
 
 // GetCheckpoint retrieves the last processed global position for a given projection.

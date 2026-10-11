@@ -361,6 +361,14 @@ func TestCheckJetStreamParity(t *testing.T) {
 	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
 		t.Fatalf("empty parity = %v; want nil", err)
 	}
+	if pos, err := sqliteStore.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err != nil || pos == 0 {
+		t.Fatalf("authority marker = %d, %v; want recorded after passing gate", pos, err)
+	}
+	// Test-only reset between scenarios (no DeleteCheckpoint API): a zero
+	// marker re-arms full verification for the phases below.
+	if err := sqliteStore.SaveCheckpoint(ctx, CheckpointJetStreamAuthority, 0); err != nil {
+		t.Fatalf("resetting marker: %v", err)
+	}
 
 	v1 := mustTestEvent(t, "ar_par_1", 1)
 	v2 := mustTestEvent(t, "ar_par_1", 2)
@@ -382,13 +390,18 @@ func TestCheckJetStreamParity(t *testing.T) {
 	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
 		t.Fatalf("mirrored parity = %v; want nil", err)
 	}
+	if pos, err := sqliteStore.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err != nil || pos == 0 {
+		t.Fatalf("authority marker = %d, %v; want recorded after passing gate", pos, err)
+	}
 
-	// A foreign event in JetStream breaks count equality with zero lag.
+	// A foreign event in JetStream breaks count equality — but the recorded
+	// flip short-circuits the gate now (steady state: JetStream ahead by
+	// design, SQLite frozen). Boot must not brick on it.
 	if _, err := js.Publish(ctx, messaging.SubjectDomainEvent("artist", "ar_par_x", "ArtistCreated"), []byte(`{}`)); err != nil {
 		t.Fatalf("foreign Publish: %v", err)
 	}
-	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
-		t.Fatal("parity with extra JetStream event should fail")
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("post-flip parity = %v; want nil (skip)", err)
 	}
 }
 

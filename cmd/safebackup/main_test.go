@@ -97,6 +97,9 @@ func TestBackupNATSStore(t *testing.T) {
 	if err := backupNATSStore(src, dst, "pb_data/data.db", t.TempDir(), "ts", true); err != nil {
 		t.Fatalf("stopped copy: %v", err)
 	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("stopped copy should exist: %v", err)
+	}
 }
 
 func TestBackupNATSStoreMissingSource(t *testing.T) {

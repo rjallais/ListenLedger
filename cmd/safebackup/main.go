@@ -96,18 +96,29 @@ func backupNATSStore(natsSrc, natsDst, dbPath, backupDir, timestamp string, stop
 	if natsDst == "" {
 		natsDst = filepath.Join(backupDir, fmt.Sprintf("nats-%s", timestamp))
 	}
+	// Refuse a non-empty destination: merging would leave stale files next
+	// to the new ones, and the copy could still verify clean. An existing
+	// *empty* dir is fine (explicit --nats-dst).
+	if entries, err := os.ReadDir(natsDst); err == nil && len(entries) > 0 {
+		return fmt.Errorf("NATS destination %s is not empty", natsDst)
+	}
 	log.Printf("[safebackup] copying NATS store %s -> %s ...", natsSrc, natsDst)
 	if err := copyDir(natsSrc, natsDst); err != nil {
+		_ = os.RemoveAll(natsDst)
 		return fmt.Errorf("copying NATS store: %w", err)
 	}
 	if err := verifyNATSStore(natsDst); err != nil {
+		_ = os.RemoveAll(natsDst)
 		return fmt.Errorf("verifying NATS copy (source may have been live): %w", err)
 	}
 	log.Println("[safebackup] NATS copy verified.")
 	return nil
 }
 
-// copyDir replicates a file tree (modes preserved, symlinks not followed).
+// copyDir replicates a file tree (modes preserved). Fail-closed: symlinks
+// and other non-regular files are rejected (a link escaping the store would
+// silently pull outside content into a "verified" copy). Destination
+// freshness is the caller's job (see backupNATSStore).
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -120,6 +131,9 @@ func copyDir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported non-regular file %s", path)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0750); err != nil {
 			return err
@@ -159,7 +173,7 @@ func verifyNATSStore(storeDir string) error {
 	go ns.Start()
 	defer ns.Shutdown()
 	if !ns.ReadyForConnections(10 * time.Second) {
-		return fmt.Errorf("embedded NATS not ready on copy")
+		return fmt.Errorf("embedded NATS not ready on copy at %s", storeDir)
 	}
 	nc, err := nats.Connect(ns.ClientURL())
 	if err != nil {

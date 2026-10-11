@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -273,13 +274,15 @@ func TestAuditReportsStreamSizes(t *testing.T) {
 	if got := rep.MaxStreamVersions[artist.StreamTypeArtist]; got != artist.SnapshotInterval+5 {
 		t.Fatalf("max artist version = %d, want %d", got, artist.SnapshotInterval+5)
 	}
+	want := fmt.Sprintf("longest artist stream is v%d (snapshot interval %d)", artist.SnapshotInterval+5, artist.SnapshotInterval)
 	found := false
 	for _, w := range rep.Warnings {
-		if strings.Contains(w, "snapshot interval") {
+		if strings.Contains(w, want) {
 			found = true
+			break
 		}
 	}
 	if !found {
-		t.Fatalf("want long-stream snapshot warning, got warnings=%v", rep.Warnings)
+		t.Fatalf("want warning containing %q, got warnings=%v", want, rep.Warnings)
 	}
 }

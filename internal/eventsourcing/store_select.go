@@ -16,6 +16,7 @@ package eventsourcing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -71,10 +72,13 @@ func SelectedStore(db *toolbeltdb.Database, js jetstream.JetStream) (Store, erro
 }
 
 // CheckJetStreamParity verifies the JetStream log mirrors the SQLite log
-// before jetstream mode serves reads and writes from it. One O(1) count
-// check plus one JetStream lookup per stream for tip verification
-// (O(streams), sequential — fine at current scale; revisit with a timeout
-// budget or sampling if the stream count grows):
+// before jetstream mode serves reads and writes from it, then records the
+// authority marker so later boots skip re-verification (steady-state
+// JetStream runs ahead by design — re-checking counts would brick every
+// restart after the first JetStream write). One O(1) count check plus one
+// JetStream lookup per stream for tip verification (O(streams), sequential —
+// fine at current scale; revisit with a timeout budget or sampling if the
+// stream count grows):
 //
 //  1. Outbox lag is zero: every logged event was handed to JetStream at
 //     least once (the outbox migration backfilled pre-outbox history).
@@ -90,6 +94,13 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 		return fmt.Errorf("eventsourcing: parity check needs JetStream, got nil")
 	}
 	store := NewSQLiteStore(db)
+	// Steady state short-circuit: once the gate has passed and recorded the
+	// authority marker, JetStream is ahead by design (SQLite frozen). Only
+	// the first flip boot pays for full verification.
+	if marked, err := store.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err == nil && marked != 0 {
+		slog.Info("eventsourcing: jetstream authority previously established, skipping parity re-verification")
+		return nil
+	}
 	lag, err := store.UnpublishedCount(ctx)
 	if err != nil {
 		return fmt.Errorf("eventsourcing: parity check outbox lag: %w", err)
@@ -140,6 +151,12 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 			return fmt.Errorf("eventsourcing: parity check failed: stream %s tip is v%d %s in SQLite, v%d %s in JetStream",
 				tip.StreamID, tip.Version, tip.EventID, lastEvt.Version, lastEvt.ID)
 		}
+	}
+	// Record the flip: later boots skip re-verification (see above). A
+	// marker-write failure fails closed — boot without a recorded flip must
+	// re-verify rather than assume authority.
+	if err := store.SaveCheckpoint(ctx, CheckpointJetStreamAuthority, 1); err != nil {
+		return fmt.Errorf("eventsourcing: parity passed but authority marker unwritable: %w", err)
 	}
 	return nil
 }

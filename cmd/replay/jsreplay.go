@@ -209,6 +209,16 @@ func dryRunJS(ctx context.Context, logger *slog.Logger, dataDir string, selected
 // projections, fold every selected stream, log completion. Always a full
 // replay — --since-checkpoint is refused by the caller in jetstream mode.
 func replayFromJetStream(ctx context.Context, logger *slog.Logger, dataDir string, selectedStreams map[string]struct{}) error {
+	// NATS first: a missing/broken store must fail before SQLite is opened
+	// (SetupDB may create files), so a non-replay failure leaves nothing
+	// half-opened behind.
+	js, cleanup, err := openReplayJetStream(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	jsStore := eventsourcing.NewJetStreamStore(js)
+
 	database, err := db.SetupDB(ctx, logger, dataDir, false)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -218,13 +228,6 @@ func replayFromJetStream(ctx context.Context, logger *slog.Logger, dataDir strin
 			logger.Warn("failed closing database", "error", err)
 		}
 	}()
-
-	js, cleanup, err := openReplayJetStream(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	jsStore := eventsourcing.NewJetStreamStore(js)
 
 	// The SQLite store still backs checkpoints/frontiers helpers and the
 	// batch projector's tables; the event source is JetStream.
