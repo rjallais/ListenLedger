@@ -407,6 +407,61 @@ func TestCheckJetStreamParity(t *testing.T) {
 	}
 }
 
+// TestCheckJetStreamParity_RefusesBehindFrozenLog covers the steady-state
+// guard's refusal path: marker recorded, but JetStream holds fewer events
+// than the frozen SQLite log (nats/ store lost or restored without its
+// tree). Boot must refuse instead of minting v1 events over missing history.
+func TestCheckJetStreamParity_RefusesBehindFrozenLog(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
+
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: storeDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+
+	// Frozen log with one event, authority marker recorded — the post-flip
+	// world. The JetStream store is empty (0 msgs < 1 logged event).
+	sqliteStore := NewSQLiteStore(sqliteDB)
+	v1 := mustTestEvent(t, "ar_frozen_1", 1)
+	if err := sqliteStore.Append(ctx, "ar_frozen_1", 0, v1); err != nil {
+		t.Fatalf("SQLite Append: %v", err)
+	}
+	if err := sqliteStore.SaveCheckpoint(ctx, CheckpointJetStreamAuthority, 1); err != nil {
+		t.Fatalf("recording marker: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("post-flip boot with JetStream behind the frozen log should refuse")
+	}
+}
+
 func TestCheckJetStreamParity_TipSubstitution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
