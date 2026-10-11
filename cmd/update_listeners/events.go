@@ -33,7 +33,29 @@ func openEventLog(ctx context.Context, dataDir string) (*eventLog, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening event log: %w", err)
 	}
+	// This CLI has no NATS client, so it can only append to the SQLite log.
+	// Under LISTENLEDGER_EVENT_STORE=jetstream those writes would diverge
+	// from the JetStream authority unread: refuse instead of corrupting.
+	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: selecting event store: %w", err)
+	} else if mode == eventsourcing.EventStoreJetStream {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: %s=%q needs a JetStream writer; run with %q",
+			eventsourcing.EventStoreEnv, eventsourcing.EventStoreJetStream, eventsourcing.EventStoreSQLite)
+	}
 	store := eventsourcing.NewSQLiteStore(database)
+	// One-way flip guard: the app refuses sqlite mode once the authority
+	// marker is recorded. This CLI has no JetStream writer, so it must
+	// refuse too — otherwise it would append facts to the frozen log that
+	// JetStream never reads.
+	if pos, err := store.GetCheckpoint(ctx, eventsourcing.CheckpointJetStreamAuthority); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: reading jetstream authority marker: %w", err)
+	} else if pos != 0 {
+		_ = database.Close()
+		return nil, fmt.Errorf("update_listeners: jetstream authority already established; this CLI has no JetStream writer and cannot run after the flip (use the live app's refresh endpoints)")
+	}
 	return &eventLog{
 		database: database,
 		store:    store,

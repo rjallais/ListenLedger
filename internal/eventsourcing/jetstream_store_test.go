@@ -3,13 +3,18 @@ package eventsourcing
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"ListenLedger/internal/db"
 	"ListenLedger/internal/messaging"
 )
 
@@ -145,4 +150,406 @@ func TestUnmarshalEvent_RoundTrip(t *testing.T) {
 	if got.ID != orig.ID || got.StreamID != "ar_js_3" || got.Version != 7 || got.EventType != orig.EventType {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
+}
+
+func TestJetStreamStore_LoadFiltersByStream(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_filter_a", 0, mustTestEvent(t, "ar_filter_a", 1)); err != nil {
+		t.Fatalf("Append a: %v", err)
+	}
+	if err := store.Append(ctx, "ar_filter_b", 0, mustTestEvent(t, "ar_filter_b", 1)); err != nil {
+		t.Fatalf("Append b: %v", err)
+	}
+	if err := store.Append(ctx, "ar_filter_a", 1, mustTestEvent(t, "ar_filter_a", 2)); err != nil {
+		t.Fatalf("Append a v2: %v", err)
+	}
+
+	loaded, err := store.Load(ctx, "ar_filter_a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("Load = %d events, want 2", len(loaded))
+	}
+	for _, evt := range loaded {
+		if evt.StreamID != "ar_filter_a" {
+			t.Fatalf("Load leaked event from stream %q", evt.StreamID)
+		}
+	}
+	if loaded[0].Version != 1 || loaded[1].Version != 2 {
+		t.Fatalf("Load order = v%d,v%d; want v1,v2", loaded[0].Version, loaded[1].Version)
+	}
+}
+
+func TestJetStreamStore_NoCrossAggregateContention(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Interleaved appends to different aggregates must not conflict: the
+	// OCC scope is per-aggregate, not stream-wide.
+	if err := store.Append(ctx, "ar_x_1", 0, mustTestEvent(t, "ar_x_1", 1)); err != nil {
+		t.Fatalf("Append x1: %v", err)
+	}
+	if err := store.Append(ctx, "ar_x_2", 0, mustTestEvent(t, "ar_x_2", 1)); err != nil {
+		t.Fatalf("Append x2: %v", err)
+	}
+	if err := store.Append(ctx, "ar_x_1", 1, mustTestEvent(t, "ar_x_1", 2)); err != nil {
+		t.Fatalf("Append x1 v2: %v", err)
+	}
+}
+
+func TestJetStreamStore_MultiEventBatchWithInterleaving(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Seed another aggregate first so scope sequences are non-consecutive
+	// within the target aggregate: base+i anchoring would false-conflict on
+	// the second event after the first persisted.
+	if err := store.Append(ctx, "ar_m_other", 0, mustTestEvent(t, "ar_m_other", 1)); err != nil {
+		t.Fatalf("Append other: %v", err)
+	}
+	v1 := mustTestEvent(t, "ar_m_main", 1)
+	v2 := mustTestEvent(t, "ar_m_main", 2)
+	if err := store.Append(ctx, "ar_m_main", 0, v1, v2); err != nil {
+		t.Fatalf("multi-event Append with interleaving: %v", err)
+	}
+	loaded, err := store.Load(ctx, "ar_m_main")
+	if err != nil || len(loaded) != 2 {
+		t.Fatalf("Load = %d, %v; want 2", len(loaded), err)
+	}
+	if loaded[0].Version != 1 || loaded[1].Version != 2 {
+		t.Fatalf("Load order = v%d,v%d; want v1,v2", loaded[0].Version, loaded[1].Version)
+	}
+}
+
+func TestJetStreamStore_SameIDAcrossTypesRejected(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_shared", 0, mustTestEvent(t, "ar_shared", 1)); err != nil {
+		t.Fatalf("Append artist v1: %v", err)
+	}
+	// Same ID, different aggregate type, same version: the OCC scope covers
+	// the ID across types (like Load), so the double-mint must conflict.
+	albumV1, err := NewEvent("ar_shared", "album", 1, "AlbumCreated",
+		map[string]any{"title": "X"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_shared", 0, albumV1); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("cross-type Append = %v; want ErrConcurrencyConflict", err)
+	}
+	// Correct version but wrong type: the aggregate-type guard fires.
+	albumV2, err := NewEvent("ar_shared", "album", 2, "AlbumCreated",
+		map[string]any{"title": "X"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_shared", 1, albumV2); err == nil || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("wrong-type Append = %v; want non-conflict type error", err)
+	}
+}
+
+// partialFailStore simulates a mid-batch transport failure with unknown
+// outcome (timeout / lost ack): it persists the first failAfter events via
+// the wrapped store, then reports indeterminate as if the remaining
+// publishes never answered.
+type partialFailStore struct {
+	Store
+	failAfter int
+}
+
+func (s *partialFailStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	if len(events) > s.failAfter {
+		if err := s.Store.Append(ctx, streamID, expectedVersion, events[:s.failAfter]...); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: injected mid-batch failure", ErrAppendIndeterminate)
+	}
+	return s.Store.Append(ctx, streamID, expectedVersion, events...)
+}
+
+func TestAppendWithRetry_ResumesUnwrittenTail(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	flaky := &partialFailStore{Store: store, failAfter: 1}
+
+	v1 := mustTestEvent(t, "ar_retry_1", 1)
+	v2 := mustTestEvent(t, "ar_retry_1", 2)
+	v3 := mustTestEvent(t, "ar_retry_1", 3)
+	if err := AppendWithRetry(ctx, flaky, "ar_retry_1", 0, v1, v2, v3); err != nil {
+		t.Fatalf("AppendWithRetry = %v; want nil", err)
+	}
+	loaded, err := store.Load(ctx, "ar_retry_1")
+	if err != nil || len(loaded) != 3 {
+		t.Fatalf("Load = %d, %v; want 3", len(loaded), err)
+	}
+	for i, want := range []string{v1.ID, v2.ID, v3.ID} {
+		if loaded[i].ID != want {
+			t.Fatalf("loaded[%d].ID = %s, want %s", i, loaded[i].ID, want)
+		}
+	}
+}
+
+func TestAppendWithRetry_AllPersistedIsSuccess(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	v1 := mustTestEvent(t, "ar_retry_2", 1)
+	v2 := mustTestEvent(t, "ar_retry_2", 2)
+	if err := AppendWithRetry(ctx, store, "ar_retry_2", 0, v1, v2); err != nil {
+		t.Fatalf("first AppendWithRetry: %v", err)
+	}
+	// Same batch again (e.g. ack lost after success): IDs verify present.
+	if err := AppendWithRetry(ctx, store, "ar_retry_2", 0, v1, v2); err != nil {
+		t.Fatalf("redundant AppendWithRetry = %v; want nil", err)
+	}
+}
+
+func TestAppendWithRetry_ForeignWriterWins(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_retry_3", 0, mustTestEvent(t, "ar_retry_3", 1)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	mine := mustTestEvent(t, "ar_retry_3", 1)
+	if err := AppendWithRetry(ctx, store, "ar_retry_3", 0, mine); !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("AppendWithRetry = %v; want ErrConcurrencyConflict", err)
+	}
+}
+
+func TestAppendWithRetry_ValidationPassesThrough(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	other := mustTestEvent(t, "ar_retry_other", 1)
+	if err := AppendWithRetry(ctx, store, "ar_retry_4", 0, other); err == nil || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("AppendWithRetry = %v; want plain validation error", err)
+	}
+}
+
+func TestCheckJetStreamParity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
+
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: storeDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+
+	sqliteStore := NewSQLiteStore(sqliteDB)
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("empty parity = %v; want nil", err)
+	}
+	if pos, err := sqliteStore.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err != nil || pos == 0 {
+		t.Fatalf("authority marker = %d, %v; want recorded after passing gate", pos, err)
+	}
+	// Test-only reset between scenarios (no DeleteCheckpoint API): a zero
+	// marker re-arms full verification for the phases below.
+	if err := sqliteStore.SaveCheckpoint(ctx, CheckpointJetStreamAuthority, 0); err != nil {
+		t.Fatalf("resetting marker: %v", err)
+	}
+
+	v1 := mustTestEvent(t, "ar_par_1", 1)
+	v2 := mustTestEvent(t, "ar_par_1", 2)
+	if err := sqliteStore.Append(ctx, "ar_par_1", 0, v1, v2); err != nil {
+		t.Fatalf("SQLite Append: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("parity with unpublished outbox rows should fail")
+	}
+
+	// Mirror the outbox set to JetStream and mark published: parity holds.
+	jsStore := NewJetStreamStore(js)
+	if err := jsStore.Append(ctx, "ar_par_1", 0, v1, v2); err != nil {
+		t.Fatalf("JS Append: %v", err)
+	}
+	if err := sqliteStore.MarkPublished(ctx, []string{v1.ID, v2.ID}); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("mirrored parity = %v; want nil", err)
+	}
+	if pos, err := sqliteStore.GetCheckpoint(ctx, CheckpointJetStreamAuthority); err != nil || pos == 0 {
+		t.Fatalf("authority marker = %d, %v; want recorded after passing gate", pos, err)
+	}
+
+	// A foreign event in JetStream breaks count equality — but the recorded
+	// flip short-circuits the gate now (steady state: JetStream ahead by
+	// design, SQLite frozen). Boot must not brick on it.
+	if _, err := js.Publish(ctx, messaging.SubjectDomainEvent("artist", "ar_par_x", "ArtistCreated"), []byte(`{}`)); err != nil {
+		t.Fatalf("foreign Publish: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err != nil {
+		t.Fatalf("post-flip parity = %v; want nil (skip)", err)
+	}
+}
+
+func TestCheckJetStreamParity_TipSubstitution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteDB.Close() })
+
+	storeDir := filepath.Join(t.TempDir(), "nats-store")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: storeDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+
+	// Balanced substitution: same count, zero lag, but v2's identity differs
+	// per store. Counts pass; the tip check must refuse.
+	v1 := mustTestEvent(t, "ar_sub_1", 1)
+	v2 := mustTestEvent(t, "ar_sub_1", 2)
+	v2prime, err := NewEvent("ar_sub_1", "artist", 2, "ArtistMonthlyListenersScraped",
+		map[string]any{"monthly_listeners": 200}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	sqliteStore := NewSQLiteStore(sqliteDB)
+	if err := sqliteStore.Append(ctx, "ar_sub_1", 0, v1, v2); err != nil {
+		t.Fatalf("SQLite Append: %v", err)
+	}
+	jsStore := NewJetStreamStore(js)
+	if err := jsStore.Append(ctx, "ar_sub_1", 0, v1, v2prime); err != nil {
+		t.Fatalf("JS Append: %v", err)
+	}
+	if err := sqliteStore.MarkPublished(ctx, []string{v1.ID, v2.ID}); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if err := CheckJetStreamParity(ctx, sqliteDB, js); err == nil {
+		t.Fatal("parity with substituted tip should fail")
+	} else if !strings.Contains(err.Error(), "ar_sub_1") {
+		t.Fatalf("parity error should name the stream, got: %v", err)
+	}
+}
+
+// outageStore fails Append as indeterminate once, then fails Load: the
+// retry helper must preserve the unknown-outcome signal through the
+// reconciliation failure instead of returning only the load error.
+type outageStore struct {
+	Store
+	loadErr error
+}
+
+func (s *outageStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	return fmt.Errorf("%w: simulated timeout", ErrAppendIndeterminate)
+}
+
+func (s *outageStore) Load(ctx context.Context, streamID string) ([]Event, error) {
+	return nil, s.loadErr
+}
+
+func TestAppendWithRetry_PreservesIndeterminateOnLoadFailure(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	flaky := &outageStore{Store: store, loadErr: errors.New("connection refused")}
+
+	v1 := mustTestEvent(t, "ar_outage_1", 1)
+	err := AppendWithRetry(ctx, flaky, "ar_outage_1", 0, v1)
+	if err == nil {
+		t.Fatal("AppendWithRetry should fail")
+	}
+	if !errors.Is(err, ErrAppendIndeterminate) {
+		t.Fatalf("error should preserve ErrAppendIndeterminate, got: %v", err)
+	}
+}
+
+func TestWrapPublishError(t *testing.T) {
+	// Deterministic server rejection (APIError: e.g. DiscardNew stream
+	// full): nothing persisted, so no indeterminate marking — callers must
+	// not waste reconcile cycles on it.
+	rejected := fmt.Errorf("publish: %w", &jetstream.APIError{Code: 500, ErrorCode: 10077})
+	err := wrapPublishError("ar_w_1", "evt-1", rejected)
+	if err == nil || errors.Is(err, ErrAppendIndeterminate) || errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("rejection should be plain, got: %v", err)
+	}
+
+	// Transport failure (no APIError): outcome unknown, must reconcile.
+	timeout := fmt.Errorf("publish: %w", errors.New("timeout"))
+	err = wrapPublishError("ar_w_1", "evt-1", timeout)
+	if !errors.Is(err, ErrAppendIndeterminate) {
+		t.Fatalf("timeout should be indeterminate, got: %v", err)
+	}
+}
+
+func TestAppendWithRetry_DeadContextReturnsEarly(t *testing.T) {
+	store, _ := setupTestJSStore(t)
+	// Always loses the race, and counts reconciliation Loads: with a dead
+	// context the guard must return before any Load runs.
+	racer := &countingConflictStore{Store: store}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // dead before the first attempt
+
+	v1 := mustTestEvent(t, "ar_dead_1", 1)
+	err := AppendWithRetry(ctx, racer, "ar_dead_1", 0, v1)
+	if err == nil {
+		t.Fatal("AppendWithRetry with dead ctx should fail")
+	}
+	if !errors.Is(err, ErrConcurrencyConflict) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error should preserve conflict + ctx signals, got: %v", err)
+	}
+	if racer.loads != 0 {
+		t.Fatalf("dead ctx ran %d reconciliation Loads, want 0", racer.loads)
+	}
+}
+
+// countingConflictStore loses every CAS race and counts Load calls.
+type countingConflictStore struct {
+	Store
+	loads int
+}
+
+func (s *countingConflictStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	return fmt.Errorf("%w: simulated race", ErrConcurrencyConflict)
+}
+
+func (s *countingConflictStore) Load(ctx context.Context, streamID string) ([]Event, error) {
+	s.loads++
+	return s.Store.Load(ctx, streamID)
 }

@@ -184,7 +184,7 @@ func TestRepository_SaveSnapshotsAtInterval(t *testing.T) {
 	if _, err := repo.Save(ctx, agg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	for agg.Version() < snapshotInterval {
+	for agg.Version() < SnapshotInterval {
 		if err := agg.RecordMonthlyListeners(1000+agg.Version(), "test", 1); err != nil {
 			t.Fatalf("RecordMonthlyListeners: %v", err)
 		}
@@ -194,18 +194,18 @@ func TestRepository_SaveSnapshotsAtInterval(t *testing.T) {
 	}
 	snap, err := store.LoadSnapshot(ctx, "ar_snap_n")
 	if err != nil {
-		t.Fatalf("snapshot should exist at v%d: %v", snapshotInterval, err)
+		t.Fatalf("snapshot should exist at v%d: %v", SnapshotInterval, err)
 	}
-	if snap.Version != snapshotInterval {
-		t.Fatalf("snapshot version = %d, want %d", snap.Version, snapshotInterval)
+	if snap.Version != SnapshotInterval {
+		t.Fatalf("snapshot version = %d, want %d", snap.Version, SnapshotInterval)
 	}
 
 	loaded, err := repo.Load(ctx, "ar_snap_n")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Version() != snapshotInterval || loaded.MonthlyListeners != int64(1000+snapshotInterval-1) {
-		t.Fatalf("loaded v%d listeners %d, want v%d", loaded.Version(), loaded.MonthlyListeners, snapshotInterval)
+	if loaded.Version() != SnapshotInterval || loaded.MonthlyListeners != int64(1000+SnapshotInterval-1) {
+		t.Fatalf("loaded v%d listeners %d, want v%d", loaded.Version(), loaded.MonthlyListeners, SnapshotInterval)
 	}
 }
 
@@ -222,7 +222,7 @@ func TestRepository_SaveSnapshotsOnBoundaryCrossing(t *testing.T) {
 	if _, err := repo.Save(ctx, agg); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	for agg.Version() < snapshotInterval-1 {
+	for agg.Version() < SnapshotInterval-1 {
 		if err := agg.RecordMonthlyListeners(agg.Version(), "test", 1); err != nil {
 			t.Fatalf("RecordMonthlyListeners: %v", err)
 		}

@@ -35,7 +35,7 @@ Net: **vendor the registry idea, reimplement transport on our stack.** No new `b
 
 ```
 POST /api/... (command) -> Validate -> SQLite ledger.db Tx {append events + outbox + idempotency} -> 202 {request_id}  (<10ms)
-Outbox relay -> JetStream `DOMAIN_EVENTS` (Limits, 7d, FileStorage) + legacy `scrape.request` / `artist.updated` alias
+Outbox relay -> JetStream `DOMAIN_EVENTS` (Limits, no age expiry, DiscardNew, 2 GiB / 10M caps, FileStorage — truth stream, flips to authority in jetstream mode) + legacy `scrape.request` / `artist.updated` alias
 Worker saga: consume -> fetcher.FetchOne -> append result events -> ack/NAK-with-delay/Term (keep quota-pool shutdown, Apify preflight, DLQ)
 Projectors: NATS -> SQLite views (permanent) + PocketBase collections (temporary compat, projector-only writes)
 Reads/SSE: query SQLite views; SSE = SQLite replay + live NATS tail -> PatchElementTempl

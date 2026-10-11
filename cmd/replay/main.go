@@ -61,6 +61,25 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Event source routes first: in jetstream mode the SQLite log is frozen
+	// pre-flip history, so both dry-run and apply read DOMAIN_EVENTS instead.
+	// (The SQLite dry-run below must not run in jetstream mode.)
+	if mode, err := eventsourcing.SelectedStoreName(); err != nil {
+		logger.Error("invalid event store mode", "error", err)
+		os.Exit(2)
+	} else if mode == eventsourcing.EventStoreJetStream {
+		runJetStreamReplay(logger, dataDir, selectedStreams, apply, liveOK, sinceCheckpoint)
+		return
+	}
+
+	// One-way flip guard: the SQLite log freezes once the authority marker
+	// is recorded. Rebuilding read models from it post-flip would wipe
+	// post-flip state — refuse and point at jetstream mode instead.
+	if err := refusePostFlipSQLite(context.Background(), dataDir); err != nil {
+		logger.Error("refusing sqlite replay after jetstream flip", "error", err)
+		os.Exit(2)
+	}
+
 	if !apply {
 		logger.Info("dry run: no changes will be made (pass --apply to rebuild)",
 			"data_dir", dataDir, "streams", streams)
@@ -81,6 +100,26 @@ func main() {
 		logger.Error("replay failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// refusePostFlipSQLite reports an error when the authority marker shows
+// JetStream already owns the log: sqlite-mode replay (dry run or --apply)
+// would read or rebuild from frozen pre-flip history.
+func refusePostFlipSQLite(ctx context.Context, dataDir string) error {
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer func() { _ = database.Close() }()
+	pos, err := eventsourcing.NewSQLiteStore(database).GetCheckpoint(ctx, eventsourcing.CheckpointJetStreamAuthority)
+	if err != nil {
+		return fmt.Errorf("reading jetstream authority marker: %w", err)
+	}
+	if pos != 0 {
+		return fmt.Errorf("jetstream authority already established (set %s=%q to replay from JetStream)",
+			eventsourcing.EventStoreEnv, eventsourcing.EventStoreJetStream)
+	}
+	return nil
 }
 
 // isLiveDataDir reports whether dataDir is the live default (pb_data via
@@ -265,7 +304,9 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 	store := eventsourcing.NewSQLiteStore(database)
 	artistProj := projections.NewArtistProjection(logger, database, nil)
 	catalogProj := projections.NewCatalogProjection(logger, database)
-	batchProj := batchprogress.NewStore(database)
+	// sqlite-mode replay only: jetstream mode routes to runJetStreamReplay,
+	// and refusePostFlipSQLite blocks this path after the flip.
+	batchProj := batchprogress.NewStore(database, store)
 
 	streamInfos, err := store.Streams(ctx)
 	if err != nil {
@@ -336,8 +377,9 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 
 // projectStream folds one stream through its projector and records its
 // frontier. It returns the number of events folded (0 when the stream is
-// empty). Projectors are idempotent, so re-folding is always safe.
-func projectStream(ctx context.Context, logger *slog.Logger, store *eventsourcing.SQLiteStore, artistProj *projections.ArtistProjection, catalogProj *projections.CatalogProjection, batchProj *batchprogress.Store, stream eventsourcing.StreamInfo, frontiers map[string]int64) (int, error) {
+// empty). Projectors are idempotent, so re-folding is always safe. The event
+// source is any Store: SQLite in sqlite mode, JetStream in jetstream mode.
+func projectStream(ctx context.Context, logger *slog.Logger, store eventsourcing.Store, artistProj *projections.ArtistProjection, catalogProj *projections.CatalogProjection, batchProj *batchprogress.Store, stream eventsourcing.StreamInfo, frontiers map[string]int64) (int, error) {
 	streamID := stream.ID
 	events, err := store.Load(ctx, streamID)
 	if err != nil {

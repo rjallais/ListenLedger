@@ -55,11 +55,10 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator creates an Orchestrator. A nil db disables Tick (fail-open).
-func NewOrchestrator(db *toolbeltdb.Database) *Orchestrator {
-	var store eventsourcing.Store
-	if db != nil {
-		store = eventsourcing.NewSQLiteStore(db)
-	}
+// store is the authoritative event log for job-stream Loads; wiring passes
+// the selected store (see eventsourcing.SelectedStore) so saga reads follow
+// the SQLite-to-JetStream flip.
+func NewOrchestrator(db *toolbeltdb.Database, store eventsourcing.Store) *Orchestrator {
 	return &Orchestrator{db: db, store: store}
 }
 

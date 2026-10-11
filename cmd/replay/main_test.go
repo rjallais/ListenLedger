@@ -3,16 +3,22 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
+	"ListenLedger/internal/messaging"
 )
 
 func TestParseStreamTypes(t *testing.T) {
@@ -252,5 +258,106 @@ func assertReplayedRowListeners(t *testing.T, ctx context.Context, dataDir, arti
 	}
 	if got != want {
 		t.Fatalf("projected row listeners = %d, want %d", got, want)
+	}
+}
+
+func TestReplayFromJetStream(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	selected := map[string]struct{}{artist.StreamTypeArtist: {}}
+
+	// Phase 1: write the log straight to JetStream (no SQLite events), then
+	// shut the server down — the rebuild must find the facts on restart.
+	natsDir := filepath.Join(dataDir, "nats")
+	ns, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		JetStream: true, StoreDir: natsDir,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go ns.Start()
+	if !ns.ReadyForConnections(5 * time.Second) {
+		ns.Shutdown()
+		t.Fatal("NATS not ready")
+	}
+	nc, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		ns.Shutdown()
+		t.Fatalf("Connect: %v", err)
+	}
+	js, err := messaging.NewJetStream(nc)
+	if err != nil {
+		nc.Close()
+		ns.Shutdown()
+		t.Fatalf("NewJetStream: %v", err)
+	}
+	if err := messaging.EnsureDomainEventsStream(ctx, js); err != nil {
+		nc.Close()
+		ns.Shutdown()
+		t.Fatalf("EnsureDomainEventsStream: %v", err)
+	}
+	evt, err := eventsourcing.NewEvent("ar_js_replay", artist.StreamTypeArtist, 1, artist.EventTypeArtistCreated,
+		artist.CreatedPayload{ID: "ar_js_replay", Name: "JS Replay", SpotifyID: "sp_js", GenreGroup: "rock_metal", ListStatus: "included"}, nil)
+	if err != nil {
+		nc.Close()
+		ns.Shutdown()
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := eventsourcing.NewJetStreamStore(js).Append(ctx, "ar_js_replay", 0, evt); err != nil {
+		nc.Close()
+		ns.Shutdown()
+		t.Fatalf("JS Append: %v", err)
+	}
+	nc.Close()
+	ns.Shutdown()
+
+	// Phase 2: rebuild read models from the JetStream log alone.
+	if err := replayFromJetStream(ctx, logger, dataDir, selected); err != nil {
+		t.Fatalf("replayFromJetStream: %v", err)
+	}
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	var name string
+	if err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT name FROM artists WHERE id = 'ar_js_replay';")
+		defer func() { _ = stmt.Reset() }()
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			return fmt.Errorf("no artists row for ar_js_replay")
+		}
+		name = stmt.ColumnText(0)
+		return nil
+	}); err != nil {
+		t.Fatalf("read artists row: %v", err)
+	}
+	if name != "JS Replay" {
+		t.Fatalf("artists name = %q, want %q", name, "JS Replay")
+	}
+
+	// Enumeration helper finds the seeded stream; dry run is read-only.
+	// Shut the first server down before dryRunJS: two embedded servers on
+	// one StoreDir corrupt it, and dryRunJS opens its own.
+	js2, cleanup, err := openReplayJetStream(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("openReplayJetStream: %v", err)
+	}
+	infos, err := jsStreamInfos(ctx, js2, selected)
+	cleanup()
+	if err != nil {
+		t.Fatalf("jsStreamInfos: %v", err)
+	}
+	if len(infos) != 1 || infos[0].ID != "ar_js_replay" || infos[0].Type != artist.StreamTypeArtist {
+		t.Fatalf("jsStreamInfos = %+v, want [ar_js_replay/artist]", infos)
+	}
+	if err := dryRunJS(ctx, logger, dataDir, selected); err != nil {
+		t.Fatalf("dryRunJS: %v", err)
 	}
 }

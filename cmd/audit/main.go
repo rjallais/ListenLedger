@@ -57,6 +57,11 @@ type report struct {
 	PurgedInfos int              `json:"purged_infos"`
 	OutboxLag   int64            `json:"outbox_lag"`
 	Checkpoints map[string]int64 `json:"checkpoints,omitempty"`
+	// MaxStreamVersions records the longest stream per type (stream type ->
+	// max tip version). Informational only: long artist streams lose their
+	// snapshot shortcut under JetStream reads, so flip-day operators need
+	// this number, not a red/green verdict.
+	MaxStreamVersions map[string]int64 `json:"max_stream_versions,omitempty"`
 	// Warnings records non-fatal observability failures (outbox/checkpoint
 	// reads) that leave a field at its zero value instead of failing the run.
 	Warnings []string `json:"warnings,omitempty"`
@@ -111,6 +116,7 @@ func main() {
 		"purged_infos", rep.PurgedInfos,
 		"outbox_lag", rep.OutboxLag,
 		"checkpoints", rep.Checkpoints,
+		"max_stream_versions", rep.MaxStreamVersions,
 		"warnings", rep.Warnings,
 	)
 	diverged := rep.hasMismatch()
@@ -212,6 +218,32 @@ func audit(ctx context.Context, dataDir string, selected map[string]struct{}, ma
 	for _, info := range streamInfos {
 		if _, ok := selected[info.Type]; ok {
 			byType[info.Type] = append(byType[info.Type], info.ID)
+		}
+	}
+
+	// Stream-size stats for flip-day operators: longest stream per selected
+	// type from one tips query. Warn-only (never a mismatch): long artist
+	// streams lose the snapshot shortcut under JetStream reads.
+	rep.MaxStreamVersions = make(map[string]int64)
+	if tips, err := store.StreamTips(ctx); err != nil {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("stream tips unavailable: %v", err))
+	} else {
+		idToType := make(map[string]string, len(streamInfos))
+		for _, info := range streamInfos {
+			idToType[info.ID] = info.Type
+		}
+		for _, tip := range tips {
+			typ, ok := idToType[tip.StreamID]
+			if !ok {
+				continue
+			}
+			if _, ok := selected[typ]; !ok {
+				continue
+			}
+			rep.MaxStreamVersions[typ] = max(rep.MaxStreamVersions[typ], tip.Version)
+		}
+		if maxArtist, ok := rep.MaxStreamVersions[artist.StreamTypeArtist]; ok && maxArtist > artist.SnapshotInterval {
+			rep.Warnings = append(rep.Warnings, fmt.Sprintf("longest artist stream is v%d (snapshot interval %d): JetStream reads replay it fully", maxArtist, artist.SnapshotInterval))
 		}
 	}
 

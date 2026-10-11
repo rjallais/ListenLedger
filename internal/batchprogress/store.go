@@ -38,9 +38,11 @@ type Store struct {
 	events eventsourcing.Store
 }
 
-// NewStore creates a Store.
-func NewStore(db *toolbeltdb.Database) *Store {
-	return &Store{db: db, events: eventsourcing.NewSQLiteStore(db)}
+// NewStore creates a Store. events is the authoritative event log (SQLite by
+// default, JetStream when LISTENLEDGER_EVENT_STORE=jetstream); callers pass
+// the selected store so reads and writes follow the flip together.
+func NewStore(db *toolbeltdb.Database, events eventsourcing.Store) *Store {
+	return &Store{db: db, events: events}
 }
 
 func encodeStats(stats map[string]int) string {
@@ -218,7 +220,7 @@ func (s *Store) appendStarted(ctx context.Context, id string, artistIDs []string
 	if len(uncommitted) == 0 {
 		return nil
 	}
-	if err := s.events.Append(ctx, id, 0, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, s.events, id, 0, uncommitted...); err != nil {
 		if isBatchStreamConflict(err) {
 			return nil
 		}
@@ -249,7 +251,7 @@ func (s *Store) appendCompletion(ctx context.Context, batchID, artistID string) 
 	if len(uncommitted) == 0 {
 		return nil
 	}
-	if err := s.events.Append(ctx, batchID, base, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, s.events, batchID, base, uncommitted...); err != nil {
 		return fmt.Errorf("appending completion %s/%s: %w", batchID, artistID, err)
 	}
 	return nil
@@ -327,7 +329,7 @@ func (s *Store) seedStreamFromProjection(ctx context.Context, batchID string) er
 	if err != nil {
 		return fmt.Errorf("seeding batch aggregate %s: %w", batchID, err)
 	}
-	if err := s.events.Append(ctx, batchID, 0, agg.UncommittedEvents()...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, s.events, batchID, 0, agg.UncommittedEvents()...); err != nil {
 		if isBatchStreamConflict(err) {
 			return nil
 		}

@@ -131,7 +131,7 @@ func TestTickTracksLifecycle(t *testing.T) {
 	seedSagaRow(t, db, "req_tick", "ar_tick", "queued")
 
 	// Row ahead of stream reads as requested.
-	o := NewOrchestrator(db)
+	o := NewOrchestrator(db, eventsourcing.NewSQLiteStore(db))
 	if n, err := o.Tick(ctx); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	} else if n == 0 {
@@ -229,7 +229,7 @@ func TestTickRecordsFailure(t *testing.T) {
 		}
 	}
 
-	if _, err := NewOrchestrator(db).Tick(ctx); err != nil {
+	if _, err := NewOrchestrator(db, eventsourcing.NewSQLiteStore(db)).Tick(ctx); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
 	state, attempts, lastEvent, failure := sagaInstanceState(t, db, "req_fail")

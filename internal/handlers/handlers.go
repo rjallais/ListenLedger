@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,6 +51,10 @@ type Handler struct {
 	songRepo          *song.Repository
 	catalogProjection *projections.CatalogProjection
 	store             *eventsourcing.SQLiteStore
+	// events is the authoritative event log for aggregate and job streams
+	// (SQLite by default, JetStream when LISTENLEDGER_EVENT_STORE=jetstream).
+	// store stays SQLite for admin introspection (outbox lag, checkpoints).
+	events eventsourcing.Store
 	// batchStore projects batch progress into durable SQLite. Nil when db is
 	// nil; batch entry points fail closed without it (no in-memory fallback).
 	batchStore *batchprogress.Store
@@ -67,15 +72,26 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 		if db != nil {
 			store := eventsourcing.NewSQLiteStore(db)
 			h.store = store
-			h.artistRepo = artist.NewRepository(store)
+			// Authoritative event log: SQLite by default, JetStream when
+			// LISTENLEDGER_EVENT_STORE=jetstream. Any selection error means
+			// JetStream was requested but is unwirable — falling back to
+			// SQLite would split the log, so fail fast instead. Unreachable
+			// in prod boot: internal/app/app.go validates the mode
+			// (SelectedStoreName) before WithDatabase runs.
+			events, err := eventsourcing.SelectedStore(db, h.js)
+			if err != nil {
+				panic(fmt.Sprintf("handlers: event store selection failed: %v", err))
+			}
+			h.events = events
+			h.artistRepo = artist.NewRepository(events)
 			h.artistProjection = projections.NewArtistProjection(slog.Default(), db, h.nc)
 			if h.js != nil {
 				h.artistProjection.SetJetStream(h.js)
 			}
-			h.albumRepo = album.NewRepository(store)
-			h.songRepo = song.NewRepository(store)
+			h.albumRepo = album.NewRepository(events)
+			h.songRepo = song.NewRepository(events)
 			h.catalogProjection = projections.NewCatalogProjection(slog.Default(), db)
-			h.batchStore = batchprogress.NewStore(db)
+			h.batchStore = batchprogress.NewStore(db, events)
 		}
 	}
 }

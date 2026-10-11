@@ -117,10 +117,35 @@ func TestSubjectDomainEvent(t *testing.T) {
 	if got != want {
 		t.Fatalf("SubjectDomainEvent() = %q, want %q", got, want)
 	}
-	// Dots in IDs are sanitized since NATS uses dots as token separators.
+	// Dots in IDs are escaped since NATS uses dots as token separators.
 	got = SubjectDomainEvent("artist", "ar.123", "ArtistCreated")
-	if got != "domain.events.artist.ar_123.ArtistCreated" {
+	if got != "domain.events.artist.ar-d-123.ArtistCreated" {
 		t.Fatalf("SubjectDomainEvent(dotted) = %q", got)
+	}
+}
+
+func TestSubjectTokenEncodingInjective(t *testing.T) {
+	// "a.b" and "a_b" must not share a scope or filter: the old "_" mapping
+	// conflated them and Append for one ID would read the other's history.
+	if SubjectDomainEventScope("a.b") == SubjectDomainEventScope("a_b") {
+		t.Fatalf("Scope conflates a.b and a_b: %q", SubjectDomainEventScope("a.b"))
+	}
+	if SubjectDomainEventFilter("a.b") == SubjectDomainEventFilter("a_b") {
+		t.Fatalf("Filter conflates a.b and a_b: %q", SubjectDomainEventFilter("a.b"))
+	}
+	if SubjectDomainEvent("artist", "a.b", "E") == SubjectDomainEvent("artist", "a_b", "E") {
+		t.Fatal("Subject conflates a.b and a_b")
+	}
+	// Dashes escape too: "-" (empty marker) vs "--" (encoded literal).
+	if SubjectDomainEventScope("-") == SubjectDomainEventScope("--") {
+		t.Fatal("Scope conflates - and --")
+	}
+	// Edge whitespace is escaped, not trimmed: "a " and "a" stay distinct.
+	if SubjectDomainEventScope("a ") == SubjectDomainEventScope("a") {
+		t.Fatal("Scope conflates 'a ' and 'a'")
+	}
+	if SubjectDomainEventScope("") == SubjectDomainEventScope("   ") {
+		t.Fatal("Scope conflates empty and whitespace-only IDs")
 	}
 }
 
@@ -154,6 +179,47 @@ func TestScrapeRequestMsgID(t *testing.T) {
 	for _, empty := range []string{"", "   "} {
 		if got := ScrapeRequestMsgID(empty); got != "" {
 			t.Fatalf("ScrapeRequestMsgID(%q) = %q, want empty (publish without MsgID)", empty, got)
+		}
+	}
+}
+
+func TestParseSubjectDomainEventRoundTrip(t *testing.T) {
+	adversarial := []string{
+		"", "-", "--", "---", "a", "ar_123", "a.b", "a_b", "-d-", "a-d-b",
+		"a*d", "a>d", "a d", "a\td", "a\nd", "a\rd", "a\fd", "_", "-w-",
+		"caf\u00e9", "a/b", "a=b", "UPPER", "0123",
+	}
+	for _, id := range adversarial {
+		subject := SubjectDomainEvent("artist", id, "ArtistCreated")
+		gotType, gotID, gotEvent, err := ParseSubjectDomainEvent(subject)
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", subject, err)
+		}
+		if gotType != "artist" || gotID != id || gotEvent != "ArtistCreated" {
+			t.Fatalf("Parse(%q) = (%q,%q,%q), want (artist,%q,ArtistCreated)",
+				subject, gotType, gotID, gotEvent, id)
+		}
+	}
+	// Tricky values in the other positions round-trip too.
+	subject := SubjectDomainEvent("a.b", "x", "E*F")
+	if typ, id, evt, err := ParseSubjectDomainEvent(subject); err != nil || typ != "a.b" || id != "x" || evt != "E*F" {
+		t.Fatalf("Parse(%q) = (%q,%q,%q,%v)", subject, typ, id, evt, err)
+	}
+}
+
+func TestParseSubjectDomainEventRejects(t *testing.T) {
+	for _, subject := range []string{
+		"",
+		"domain.events.artist",              // too few tokens
+		"domain.events.artist.id.Evt.Extra", // too many tokens
+		"other.events.artist.id.Evt",        // wrong prefix
+		"domain.events.artist.id.-x-",       // bad escape letter
+		"domain.events.artist.id.Evt-",      // dangling dash
+		"domain.events.artist..Evt",         // empty token
+		"domain.events.artist.-d.Evt",       // truncated escape
+	} {
+		if _, _, _, err := ParseSubjectDomainEvent(subject); err == nil {
+			t.Fatalf("Parse(%q) should fail", subject)
 		}
 	}
 }

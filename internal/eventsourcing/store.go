@@ -409,6 +409,69 @@ func (s *SQLiteStore) UnpublishedCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// StreamTip is one stream's latest event identity for parity checks.
+type StreamTip struct {
+	StreamID string
+	EventID  string
+	Version  int64
+}
+
+// StreamTips returns every stream's tip (max version + its event ID) in
+// stream-ID order. Powers the JetStream parity gate's per-stream check and
+// the audit tool's size stats. One indexed query; milliseconds at current
+// scale (~10k events) — revisit with a window function if the events table
+// grows orders of magnitude.
+func (s *SQLiteStore) StreamTips(ctx context.Context) ([]StreamTip, error) {
+	var tips []StreamTip
+	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		query := tx.Prep(`SELECT stream_id, id, version FROM events AS e
+			WHERE version = (SELECT MAX(version) FROM events WHERE stream_id = e.stream_id)
+			ORDER BY stream_id ASC;`)
+		defer func() { _ = query.Reset() }()
+		for {
+			hasRow, err := query.Step()
+			if err != nil {
+				return fmt.Errorf("stepping through stream tips: %w", err)
+			}
+			if !hasRow {
+				break
+			}
+			tips = append(tips, StreamTip{
+				StreamID: query.ColumnText(0),
+				EventID:  query.ColumnText(1),
+				Version:  query.ColumnInt64(2),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing stream tips: %w", err)
+	}
+	return tips, nil
+}
+
+// EventCount returns the total number of events in the SQLite log.
+// Powers the JetStream parity gate (every logged event must be mirrored).
+func (s *SQLiteStore) EventCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT COUNT(*) FROM events;")
+		defer func() { _ = stmt.Reset() }()
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if hasRow {
+			count = stmt.ColumnInt64(0)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("counting events: %w", err)
+	}
+	return count, nil
+}
+
 // LoadFromGlobalPosition loads events across all streams starting after afterPosition (exclusive), ordered by global sequence.
 func (s *SQLiteStore) LoadFromGlobalPosition(ctx context.Context, afterPosition int64, limit int) ([]Event, error) {
 	if limit <= 0 {
@@ -464,6 +527,12 @@ const (
 	CheckpointSongProjection    = "song"
 	CheckpointBatchProjection   = "batch"
 	CheckpointDomainEventsRelay = "domain_events_relay"
+	// CheckpointJetStreamAuthority records (position 1) that the parity gate
+	// passed once and JetStream is the authority. Later boots skip
+	// re-verification: with SQLite frozen and JetStream append-only, the
+	// mirror can only move ahead, so re-checking counts would brick every
+	// restart after the first JetStream write.
+	CheckpointJetStreamAuthority = "jetstream_authority"
 )
 
 // GetCheckpoint retrieves the last processed global position for a given projection.

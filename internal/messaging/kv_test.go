@@ -116,4 +116,7 @@ func TestEnsureDomainEventsStreamAsTruth(t *testing.T) {
 	if info.Config.MaxBytes != DomainEventsTruthMaxBytes {
 		t.Fatalf("MaxBytes = %d, want %d", info.Config.MaxBytes, DomainEventsTruthMaxBytes)
 	}
+	if info.Config.Discard != jetstream.DiscardNew {
+		t.Fatalf("Discard = %s, want DiscardNew (truth stream must reject writes, never drop history)", info.Config.Discard)
+	}
 }

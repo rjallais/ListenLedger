@@ -1,4 +1,12 @@
 // Package messaging defines event contracts and serialization for NATS subjects.
+//
+// Subject-token encoding invariant: sanitizeSubjectToken and
+// decodeSubjectToken must stay exact inverses (distinct inputs yield distinct
+// tokens). Per-aggregate OCC scopes, expected-subject publish anchors, and
+// replay filters all assume one ID maps to exactly one subject — breaking
+// injectivity silently conflates aggregates. Any change here must keep
+// TestSubjectTokenEncodingInjective and TestParseSubjectDomainEventRoundTrip
+// green, and preferably extend them.
 package messaging
 
 import (
@@ -173,25 +181,145 @@ func SubjectRanksUpdatedForGenre(genre string) string {
 	return SubjectRanksUpdated + "." + genre
 }
 
-// SubjectDomainEvent returns the durable domain-event subject for an
-// aggregate event, e.g. "domain.events.artist.<artistID>.ArtistCreated".
-// Dots in IDs are sanitized since NATS treats dots as token separators.
-func SubjectDomainEvent(streamType, streamID, eventType string) string {
-	sanitize := func(s string) string {
-		s = strings.TrimSpace(s)
-		s = strings.Map(func(r rune) rune {
-			switch r {
-			case '.', '*', '>', ' ', '\t', '\n', '\r':
-				return '_'
-			}
-			return r
-		}, s)
-		if s == "" {
-			return "-"
-		}
-		return s
+// sanitizeSubjectToken maps one subject token to its publish-safe form; the
+// mapping is injective (distinct inputs yield distinct tokens), so OCC scopes
+// and filters never conflate two aggregates. Whitespace (including leading
+// and trailing) is escaped, never trimmed; only the empty input maps to "-".
+func sanitizeSubjectToken(s string) string {
+	if s == "" {
+		// "-" is reachable only here: a literal "-" encodes to "--".
+		return "-"
 	}
-	return SubjectDomainEventsPrefix + "." + sanitize(streamType) + "." + sanitize(streamID) + "." + sanitize(eventType)
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for _, r := range s {
+		switch r {
+		case '-':
+			b.WriteString("--")
+		case '.':
+			b.WriteString("-d-")
+		case '*':
+			b.WriteString("-s-")
+		case '>':
+			b.WriteString("-g-")
+		case ' ':
+			b.WriteString("-w-")
+		case '\t':
+			b.WriteString("-t-")
+		case '\n':
+			b.WriteString("-n-")
+		case '\r':
+			b.WriteString("-r-")
+		case '\f':
+			b.WriteString("-f-")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// SubjectDomainEvent returns the durable domain-event subject for an
+// aggregate event, e.g. "domain.events.artist.ar_123.ArtistCreated".
+// Dots in IDs are escaped since NATS treats dots as token separators; the
+// escape keeps distinct IDs distinct ("a.b" vs "a_b" encode differently).
+func SubjectDomainEvent(streamType, streamID, eventType string) string {
+	return SubjectDomainEventsPrefix + "." + sanitizeSubjectToken(streamType) + "." + sanitizeSubjectToken(streamID) + "." + sanitizeSubjectToken(eventType)
+}
+
+// ParseSubjectDomainEvent inverts SubjectDomainEvent, decoding each token's
+// dash escapes back to the raw stream type, ID, and event type. Encoded
+// tokens never contain literal dots, so a plain dot-split is safe. It
+// rejects wrong prefixes, wrong token counts, and malformed escapes —
+// fail-closed, since replay and tooling must never read a stranger's stream.
+// The single token "-" decodes to "" (the empty-input marker).
+func ParseSubjectDomainEvent(subject string) (streamType, streamID, eventType string, err error) {
+	tokens := strings.Split(subject, ".")
+	if len(tokens) != 5 || tokens[0] != "domain" || tokens[1] != "events" {
+		return "", "", "", fmt.Errorf("not a domain event subject: %q", subject)
+	}
+	if streamType, err = decodeSubjectToken(tokens[2]); err != nil {
+		return "", "", "", fmt.Errorf("decoding stream type in %q: %w", subject, err)
+	}
+	if streamID, err = decodeSubjectToken(tokens[3]); err != nil {
+		return "", "", "", fmt.Errorf("decoding stream ID in %q: %w", subject, err)
+	}
+	if eventType, err = decodeSubjectToken(tokens[4]); err != nil {
+		return "", "", "", fmt.Errorf("decoding event type in %q: %w", subject, err)
+	}
+	return streamType, streamID, eventType, nil
+}
+
+// decodeSubjectToken inverts sanitizeSubjectToken's dash escapes.
+func decodeSubjectToken(token string) (string, error) {
+	if token == "" {
+		return "", fmt.Errorf("empty subject token")
+	}
+	if token == "-" {
+		return "", nil // empty-input marker
+	}
+	var b strings.Builder
+	b.Grow(len(token))
+	for i := 0; i < len(token); {
+		if token[i] != '-' {
+			b.WriteByte(token[i])
+			i++
+			continue
+		}
+		// Dash escape: "--" is a literal dash, "-x-" maps one reserved rune.
+		if i+1 < len(token) && token[i+1] == '-' {
+			b.WriteByte('-')
+			i += 2
+			continue
+		}
+		if i+2 >= len(token) || token[i+2] != '-' {
+			return "", fmt.Errorf("malformed escape in %q", token)
+		}
+		switch token[i+1] {
+		case 'd':
+			b.WriteByte('.')
+		case 's':
+			b.WriteByte('*')
+		case 'g':
+			b.WriteByte('>')
+		case 'w':
+			b.WriteByte(' ')
+		case 't':
+			b.WriteByte('\t')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 'f':
+			b.WriteByte('\f')
+		default:
+			return "", fmt.Errorf("malformed escape in %q", token)
+		}
+		i += 3
+	}
+	return b.String(), nil
+}
+
+// SubjectDomainEventScope returns the wildcard subject covering one
+// aggregate's events across all stream types: domain.events.*.<id>.*. Used
+// for per-aggregate sequence checks (GetLastMsgForSubject, expected-subject
+// publish anchors); the server resolves the wildcard to the latest matching
+// message. The scope deliberately omits the stream type so it matches the
+// replay scope in SubjectDomainEventFilter: SQLite keys history by stream ID
+// alone (with a type-consistency guard), and the JetStream OCC must too —
+// otherwise two types sharing one ID could both mint version 1. The ID is
+// encoded exactly as at publish time.
+func SubjectDomainEventScope(streamID string) string {
+	return SubjectDomainEventsPrefix + ".*." + sanitizeSubjectToken(streamID) + ".*"
+}
+
+// SubjectDomainEventFilter returns the JetStream filter subject matching one
+// aggregate's events across all types: domain.events.*.<id>.>. The wildcard
+// covers the stream-type token; the ID is encoded exactly as at publish time
+// (injective escape) so the filter aligns with stored subjects without
+// conflating distinct IDs.
+func SubjectDomainEventFilter(streamID string) string {
+	return SubjectDomainEventsPrefix + ".*." + sanitizeSubjectToken(streamID) + ".>"
 }
 
 // RanksGenreFromSubject decodes the genre group from a ranks.updated subject,

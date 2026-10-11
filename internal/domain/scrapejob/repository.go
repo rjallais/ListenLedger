@@ -36,7 +36,7 @@ func (r *Repository) Save(ctx context.Context, agg *Job) ([]eventsourcing.Event,
 		return nil, nil
 	}
 	expectedVersion := agg.Version() - int64(len(uncommitted))
-	if err := r.store.Append(ctx, agg.AggregateID(), expectedVersion, uncommitted...); err != nil {
+	if err := eventsourcing.AppendWithRetry(ctx, r.store, agg.AggregateID(), expectedVersion, uncommitted...); err != nil {
 		return nil, fmt.Errorf("saving scrapejob stream %s: %w", agg.AggregateID(), err)
 	}
 	agg.ClearUncommittedEvents()
