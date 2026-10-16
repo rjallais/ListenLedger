@@ -70,7 +70,9 @@ func (h *Handler) queueArtistRefreshWithType(ctx context.Context, record *core.R
 	// re-queued) are not errors.
 	h.appendJobRequested(ctx, requestID, record.Id, cmdType)
 
+	correlation.Associate(record.Id, requestID)
 	if err := h.markArtistRefreshQueued(ctx, record, requestID); err != nil {
+		correlation.Clear(record.Id)
 		h.appendJobTransition(ctx, requestID, record.Id, func(j *scrapejob.Job) error {
 			_, _, err := j.RecordFailed("queue_mark_failed", eventsourcing.Correlation{RequestID: requestID})
 			return err
@@ -78,7 +80,6 @@ func (h *Handler) queueArtistRefreshWithType(ctx context.Context, record *core.R
 		return "", false, fmt.Errorf("queueArtistRefresh: mark queued: %w", err)
 	}
 
-	correlation.Associate(record.Id, requestID)
 	if err := h.createScrapeJobRecord(ctx, requestID, record.Id); err != nil {
 		h.appendJobTransition(ctx, requestID, record.Id, func(j *scrapejob.Job) error {
 			_, _, err := j.RecordFailed("queue_row_failed", eventsourcing.Correlation{RequestID: requestID})
@@ -156,6 +157,42 @@ func (h *Handler) appendJobRequested(ctx context.Context, requestID, artistID, c
 		}
 		log.Printf("[scrapejob] ScrapeRequested(%s) not logged: %v", requestID, err)
 	}
+}
+
+// appendBatchJobsRequested opens job streams for all batch candidates in a
+// single transaction when the event store supports BatchAppender, falling back
+// to per-candidate appendJobRequested otherwise. Returns true when all streams
+// were committed via the batch fast path.
+func (h *Handler) appendBatchJobsRequested(ctx context.Context, candidates []batchCandidate, cmdType string) bool {
+	if h.events == nil || len(candidates) == 0 {
+		return true
+	}
+	batcher, ok := h.events.(eventsourcing.BatchAppender)
+	if !ok {
+		return false
+	}
+	batches := make([]eventsourcing.StreamAppend, 0, len(candidates))
+	for _, c := range candidates {
+		requestID := strings.TrimSpace(c.requestID)
+		artistID := strings.TrimSpace(c.job.Record.Id)
+		if requestID == "" || artistID == "" {
+			continue
+		}
+		agg, err := scrapejob.NewScrapeJob(requestID, artistID, cmdType)
+		if err != nil {
+			log.Printf("[scrapejob] NewScrapeJob(%s) failed: %v", requestID, err)
+			return false
+		}
+		batches = append(batches, eventsourcing.StreamAppend{
+			StreamID:        requestID,
+			ExpectedVersion: 0,
+			Events:          agg.UncommittedEvents(),
+		})
+	}
+	if err := batcher.AppendBatch(ctx, batches); err != nil {
+		return false
+	}
+	return true
 }
 
 // appendJobTransition folds a fact into a request stream, seeding pre-log
@@ -258,25 +295,57 @@ func createScrapeJobRecordTx(ctx context.Context, txApp core.App, jobsCol *core.
 	return txApp.SaveWithContext(ctx, job)
 }
 
-func (h *Handler) enqueueBatchRefreshJobs(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
-	if len(jobs) == 0 || count <= 0 {
-		return nil, make(map[string]int)
+// batchCandidateArtistIDs returns the selected member list in candidate order.
+// Start records it as the batch's member set: members are the intent (the
+// selection), not just the subset that survived dispatch — failed dispatches
+// are compensated and reconciled like any other member.
+func batchCandidateArtistIDs(candidates []batchCandidate) []string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.job.Record.Id)
 	}
-	if h.app == nil {
-		return h.enqueueBatchRefreshJobsSequential(ctx, jobs, count)
-	}
+	return ids
+}
 
-	candidates := batchRefreshCandidates(jobs, count, time.Now())
+// batchCandidateStats counts the selected candidates per priority, freezing
+// the batch's priority composition on the BatchStarted fact at birth.
+func batchCandidateStats(candidates []batchCandidate) map[string]int {
+	stats := make(map[string]int)
+	for _, candidate := range candidates {
+		stats[candidate.job.Priority.String()]++
+	}
+	return stats
+}
+
+// errBatchNotStarted marks the compensation path in abortBatchRefreshCandidates.
+var errBatchNotStarted = errors.New("batch start failed")
+
+// abortBatchRefreshCandidates compensates the persist step when the batch
+// record could not be written. No request may run behind a missing batch, so
+// every persisted candidate is rolled back (status restored, queued row
+// deleted, failure fact folded) before the caller surfaces the error.
+// Detached context: the caller's request context may already be gone.
+func (h *Handler) abortBatchRefreshCandidates(candidates []batchCandidate) {
 	if len(candidates) == 0 {
-		return nil, make(map[string]int)
+		return
 	}
-	if err := h.persistBatchRefreshCandidates(ctx, candidates); err != nil {
-		log.Printf("[batch] Transaction failed to queue batch artists: %v", err)
-		return nil, make(map[string]int)
+	timeout := time.Duration(len(candidates)) * time.Second
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
 	}
-
-	results := h.publishBatchRefreshCandidates(ctx, candidates)
-	return h.processBatchRefreshResults(ctx, results)
+	if timeout > 5*time.Minute {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	results := make([]batchPublishResult, 0, len(candidates))
+	for _, candidate := range candidates {
+		results = append(results, batchPublishResult{
+			candidate: candidate,
+			err:       errBatchNotStarted,
+		})
+	}
+	h.processBatchRefreshResults(ctx, results)
 }
 
 func (h *Handler) enqueueBatchRefreshJobsSequential(ctx context.Context, jobs []priority.Job, count int) ([]string, map[string]int) {
@@ -325,6 +394,7 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 		for _, candidate := range candidates {
 			record := candidate.job.Record
 			record.Set("fetch_status", "pending")
+			correlation.Associate(record.Id, candidate.requestID)
 			if err := txApp.SaveWithContext(ctx, record); err != nil {
 				return fmt.Errorf("batch save artist %s: %w", record.Id, err)
 			}
@@ -335,27 +405,31 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 			}); err != nil {
 				return fmt.Errorf("batch create scrape job %s: %w", record.Id, err)
 			}
-			correlation.Associate(record.Id, candidate.requestID)
 		}
 		return nil
 	})
 	if err != nil {
+		for _, candidate := range candidates {
+			correlation.Clear(candidate.job.Record.Id)
+		}
 		return err
 	}
 	// Event side: fold pending facts with saga request_ids so aggregate state
-	// converges with the rows above. Best-effort; rows are the compat mirror.
-	for _, candidate := range candidates {
-		if ctx.Err() != nil {
-			break
-		}
-		h.emitArtistFetchStatus(ctx, candidate.job.Record.Id, "pending", "batch queue", candidate.requestID)
-	}
+	// converges with the rows above. Committed in a single batch transaction
+	// when the store supports BatchAppender. Projection to SQLite is skipped
+	// here because the mirror step below writes all candidates into the SQLite
+	// artists table in a single atomic transaction.
+	h.emitBatchArtistFetchStatusEvents(ctx, candidates, "pending", "batch queue")
+
 	// SQLite mirror: the PB transaction above created the scrape_jobs rows but
 	// nothing mirrors them (unlike createScrapeJobRecord's single path), so
 	// worker row transitions and SQLite queue counts would miss batch jobs.
+	// WriteTX, not WriteWithoutTx: 400 statements in autocommit means 400
+	// commit boundaries (measured 26s for 200 artists on an HDD data dir);
+	// one transaction makes it a single commit.
 	if h.db != nil {
 		now := time.Now().UTC().Format("2006-01-02 15:04:05.000Z")
-		if err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep(`INSERT INTO scrape_jobs (id, request_id, artist_id, status, attempts, error, queued_at)
 				VALUES (?, ?, ?, 'queued', 0, '', ?)
 				ON CONFLICT(request_id) DO NOTHING;`)
@@ -393,6 +467,11 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 
 func (h *Handler) publishBatchRefreshCandidates(ctx context.Context, candidates []batchCandidate) []batchPublishResult {
 	results := make([]batchPublishResult, len(candidates))
+	// Audit first like the single-refresh path: open all job streams before
+	// publishing so a crash between row persist and publish leaves facts to
+	// reconcile, while committing in a single SQLite transaction when supported.
+	batchedJobEvents := h.appendBatchJobsRequested(ctx, candidates, commands.TypeBatch)
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, 16)
 	for index, candidate := range candidates {
@@ -400,9 +479,9 @@ func (h *Handler) publishBatchRefreshCandidates(ctx context.Context, candidates 
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			// Audit first like the single-refresh path: open the job stream so a
-			// crash between row persist and publish leaves a fact to reconcile.
-			h.appendJobRequested(ctx, candidate.requestID, candidate.job.Record.Id, commands.TypeBatch)
+			if !batchedJobEvents {
+				h.appendJobRequested(ctx, candidate.requestID, candidate.job.Record.Id, commands.TypeBatch)
+			}
 			req := messaging.NewScrapeRequested(
 				candidate.job.Record.Id,
 				candidate.job.Record.GetString("spotify_id"),
@@ -424,15 +503,18 @@ func (h *Handler) publishBatchRefreshCandidates(ctx context.Context, candidates 
 	return results
 }
 
-func (h *Handler) processBatchRefreshResults(ctx context.Context, results []batchPublishResult) ([]string, map[string]int) {
+// processBatchRefreshResults finalizes one dispatch round: publish failures
+// and duplicate acks are compensated (rollback + failure fact), accepted
+// requests log their batch command and land in the returned ID list.
+func (h *Handler) processBatchRefreshResults(ctx context.Context, results []batchPublishResult) []string {
 	queuedArtistIDs := make([]string, 0, len(results))
-	stats := make(map[string]int)
+	acceptedCmds := make([]commands.Command, 0, len(results))
 	for _, result := range results {
 		candidate := result.candidate
 		record := candidate.job.Record
 		switch {
 		case result.err != nil:
-			log.Printf("[batch] Failed to publish scrape request for %s: %v — rolling back", record.GetString("name"), result.err)
+			log.Printf("[batch] Failed to dispatch scrape request for %s: %v — rolling back", record.GetString("name"), result.err)
 			h.appendJobTransition(ctx, candidate.requestID, record.Id, func(j *scrapejob.Job) error {
 				_, _, err := j.RecordFailed("publish_failed", eventsourcing.Correlation{RequestID: candidate.requestID})
 				return err
@@ -443,10 +525,19 @@ func (h *Handler) processBatchRefreshResults(ctx context.Context, results []batc
 			h.handleDuplicateAck(record, candidate.requestID, candidate.previousFetchStatus)
 		default:
 			queuedArtistIDs = append(queuedArtistIDs, record.Id)
-			stats[candidate.job.Priority.String()]++
-			h.logScrapeCommand(ctx, commands.TypeBatch, candidate.requestID, record)
-			h.appendJobRequested(ctx, candidate.requestID, record.Id, commands.TypeBatch)
+			acceptedCmds = append(acceptedCmds, commands.Command{
+				RequestID:  candidate.requestID,
+				Type:       commands.TypeBatch,
+				ArtistID:   record.Id,
+				SpotifyID:  record.GetString("spotify_id"),
+				ArtistName: record.GetString("name"),
+			})
 		}
 	}
-	return queuedArtistIDs, stats
+	if len(acceptedCmds) > 0 && h.db != nil {
+		if err := commands.LogBatch(ctx, h.db, acceptedCmds); err != nil {
+			log.Printf("[commands] failed logging batch commands: %v", err)
+		}
+	}
+	return queuedArtistIDs
 }

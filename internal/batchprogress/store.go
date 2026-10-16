@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
@@ -36,6 +37,12 @@ type Store struct {
 	// projection writes follow. If the projection write fails, replay rebuilds
 	// it — the log, never the tables, is the source of truth.
 	events eventsourcing.Store
+
+	// mu guards cachedID and cachedAgg so the 200 completions of an active
+	// batch do not reload and replay an ever-growing stream O(N^2) times.
+	mu        sync.Mutex
+	cachedID  string
+	cachedAgg *batch.Batch
 }
 
 // NewStore creates a Store. events is the authoritative event log (SQLite by
@@ -157,7 +164,7 @@ func (s *Store) CompleteArtist(ctx context.Context, artistID, fetchStatus string
 	if batchID == "" {
 		return "", nil
 	}
-	if err := s.appendCompletion(ctx, batchID, artistID); err != nil {
+	if err := s.appendCompletions(ctx, batchID, artistID); err != nil {
 		return "", err
 	}
 	if err := s.markMemberDone(ctx, batchID, artistID); err != nil {
@@ -226,22 +233,73 @@ func (s *Store) appendStarted(ctx context.Context, id string, artistIDs []string
 		}
 		return fmt.Errorf("appending BatchStarted %s: %w", id, err)
 	}
+	agg.ClearUncommittedEvents()
+	s.mu.Lock()
+	s.cachedID = id
+	s.cachedAgg = agg
+	s.mu.Unlock()
 	return nil
 }
 
-// appendCompletion logs BatchArtistCompleted (plus BatchCompleted when the
-// lifecycle ends) for one member. No new fact (unknown/duplicate member)
-// appends nothing. Missing streams (batches born before the event log) are
-// seeded from current projection state first.
-func (s *Store) appendCompletion(ctx context.Context, batchID, artistID string) error {
+// appendCompletions logs BatchArtistCompleted (plus BatchCompleted when the
+// lifecycle ends) for one or more members of batchID. No new fact
+// (unknown/duplicate member) appends nothing. Missing streams (batches born
+// before the event log) are seeded from current projection state first.
+func (s *Store) appendCompletions(ctx context.Context, batchID string, artistIDs ...string) error {
+	if len(artistIDs) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cachedID == batchID && s.cachedAgg != nil {
+		agg := s.cachedAgg
+		base := agg.Version()
+		anyRecorded := false
+		for _, artistID := range artistIDs {
+			if _, recorded, err := agg.RecordCompletion(artistID); err != nil {
+				s.cachedID = ""
+				s.cachedAgg = nil
+				return fmt.Errorf("recording completion %s/%s: %w", batchID, artistID, err)
+			} else if recorded {
+				anyRecorded = true
+			}
+		}
+		if !anyRecorded {
+			return nil
+		}
+		if _, _, err := agg.RecordClosed(); err != nil {
+			s.cachedID = ""
+			s.cachedAgg = nil
+			return fmt.Errorf("recording close %s: %w", batchID, err)
+		}
+		uncommitted := agg.UncommittedEvents()
+		if err := s.events.Append(ctx, batchID, base, uncommitted...); err == nil {
+			agg.ClearUncommittedEvents()
+			return nil
+		}
+		// Cache drifted (e.g. external writer); invalidate and reload from the stream.
+		s.cachedID = ""
+		s.cachedAgg = nil
+	}
+
 	agg, err := s.loadAggregate(ctx, batchID)
 	if err != nil {
 		return err
 	}
 	base := agg.Version()
-	if _, recorded, err := agg.RecordCompletion(artistID); err != nil {
-		return fmt.Errorf("recording completion %s/%s: %w", batchID, artistID, err)
-	} else if !recorded {
+	anyRecorded := false
+	for _, artistID := range artistIDs {
+		if _, recorded, err := agg.RecordCompletion(artistID); err != nil {
+			return fmt.Errorf("recording completion %s/%s: %w", batchID, artistID, err)
+		} else if recorded {
+			anyRecorded = true
+		}
+	}
+	if !anyRecorded {
+		s.cachedID = batchID
+		s.cachedAgg = agg
 		return nil
 	}
 	if _, _, err := agg.RecordClosed(); err != nil {
@@ -252,8 +310,11 @@ func (s *Store) appendCompletion(ctx context.Context, batchID, artistID string) 
 		return nil
 	}
 	if err := eventsourcing.AppendWithRetry(ctx, s.events, batchID, base, uncommitted...); err != nil {
-		return fmt.Errorf("appending completion %s/%s: %w", batchID, artistID, err)
+		return fmt.Errorf("appending completion %s: %w", batchID, err)
 	}
+	agg.ClearUncommittedEvents()
+	s.cachedID = batchID
+	s.cachedAgg = agg
 	return nil
 }
 
@@ -421,15 +482,23 @@ func (s *Store) Reconcile(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 
-	// Log each catch-up completion after the projection converges. A crash
-	// between the two reruns the same convergent outcome; RecordCompletion
-	// emits nothing for already-logged facts.
+	// Log each catch-up completion after the projection converges, grouped per
+	// batch so a multi-member catch-up commits in one append per batch instead
+	// of reloading and replaying the stream for every member.
+	var batchOrder []string
+	byBatch := make(map[string][]string)
 	for _, f := range flips {
+		if _, exists := byBatch[f.batchID]; !exists {
+			batchOrder = append(batchOrder, f.batchID)
+		}
+		byBatch[f.batchID] = append(byBatch[f.batchID], f.artistID)
+	}
+	for _, batchID := range batchOrder {
 		if err := ctx.Err(); err != nil {
 			return int64(len(flips)), err
 		}
-		if err := s.appendCompletion(ctx, f.batchID, f.artistID); err != nil {
-			return int64(len(flips)), fmt.Errorf("logging reconciled completion %s/%s: %w", f.batchID, f.artistID, err)
+		if err := s.appendCompletions(ctx, batchID, byBatch[batchID]...); err != nil {
+			return int64(len(flips)), fmt.Errorf("logging reconciled completions %s: %w", batchID, err)
 		}
 	}
 	return int64(len(flips)), nil
@@ -437,6 +506,10 @@ func (s *Store) Reconcile(ctx context.Context) (int64, error) {
 
 // ResetForReplay clears batch projections before event replay.
 func (s *Store) ResetForReplay(ctx context.Context) error {
+	s.mu.Lock()
+	s.cachedID = ""
+	s.cachedAgg = nil
+	s.mu.Unlock()
 	return s.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		for _, query := range []string{"DELETE FROM batch_members;", "DELETE FROM batches;"} {
 			stmt := tx.Prep(query)

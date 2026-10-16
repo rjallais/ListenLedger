@@ -20,6 +20,21 @@ var songReleaseDateLayouts = []string{
 	"2006",
 }
 
+// formatParsedReleaseDate converts an already parsed release date to UI format.
+func formatParsedReleaseDate(stored string, t time.Time, valid bool) string {
+	if !valid {
+		return stored
+	}
+	trimmed := strings.TrimSpace(stored)
+	if len(trimmed) <= 4 {
+		return stored // empty string or plain year — pass through
+	}
+	if len(trimmed) == 7 && trimmed[4] == '-' {
+		return t.Format("January 2006")
+	}
+	return t.Format("2 January 2006")
+}
+
 // formatReleaseDateForUI converts a stored date to a human-friendly format
 // like "2 January 2006". Plain years (e.g. "2006") or unparseable values are
 // returned as-is.
@@ -28,16 +43,8 @@ func formatReleaseDateForUI(stored string) string {
 	if len(trimmed) <= 4 {
 		return stored // empty string or plain year — pass through
 	}
-	if len(trimmed) == 7 && trimmed[4] == '-' {
-		if t, err := time.Parse("2006-01", trimmed); err == nil {
-			return t.Format("January 2006")
-		}
-	}
 	t, ok := parseSongReleaseDate(trimmed)
-	if !ok {
-		return stored
-	}
-	return t.Format("2 January 2006")
+	return formatParsedReleaseDate(stored, t, ok)
 }
 
 func parseSongReleaseDate(stored string) (time.Time, bool) {
@@ -58,6 +65,7 @@ type songListEntry struct {
 	createdAt        time.Time
 	releaseDate      time.Time
 	releaseDateValid bool
+	titleLower       string
 }
 
 func normalizePlaylistSort(raw string) string {
@@ -91,10 +99,8 @@ func sortRecentSongEntries(entries []songListEntry) {
 		if !left.releaseDate.Equal(right.releaseDate) {
 			return left.releaseDate.After(right.releaseDate)
 		}
-		leftTitle := strings.ToLower(left.song.Title)
-		rightTitle := strings.ToLower(right.song.Title)
-		if leftTitle != rightTitle {
-			return leftTitle < rightTitle
+		if left.titleLower != right.titleLower {
+			return left.titleLower < right.titleLower
 		}
 
 		return left.song.ID < right.song.ID
@@ -115,10 +121,8 @@ func sortNotRecentSongEntries(entries []songListEntry) {
 		if !left.createdAt.Equal(right.createdAt) {
 			return left.createdAt.After(right.createdAt)
 		}
-		leftTitle := strings.ToLower(left.song.Title)
-		rightTitle := strings.ToLower(right.song.Title)
-		if leftTitle != rightTitle {
-			return leftTitle < rightTitle
+		if left.titleLower != right.titleLower {
+			return left.titleLower < right.titleLower
 		}
 		return left.song.ID < right.song.ID
 	})
@@ -192,12 +196,42 @@ func compareByWaitingReleaseAsc(left, right songListEntry) bool {
 }
 
 func compareTitleThenID(left, right songListEntry) bool {
-	lt := strings.ToLower(left.song.Title)
-	rt := strings.ToLower(right.song.Title)
-	if lt != rt {
-		return lt < rt
+	if left.titleLower != right.titleLower {
+		return left.titleLower < right.titleLower
 	}
 	return left.song.ID < right.song.ID
+}
+
+// assignSortOrders precomputes both the added-desc order index and the release-asc
+// order index for each song in the section. This enables instant client-side DOM sorting
+// without network roundtrips or idiomorph DOM tree walks.
+func assignSortOrders(entries []songListEntry, mode songSortMode) {
+	if len(entries) == 0 {
+		return
+	}
+	addedOrder := append([]songListEntry(nil), entries...)
+	sort.SliceStable(addedOrder, func(i, j int) bool {
+		return mode.defaultCmp(addedOrder[i], addedOrder[j])
+	})
+	addedIndices := make(map[string]int, len(addedOrder))
+	for i, entry := range addedOrder {
+		addedIndices[entry.song.ID] = i
+	}
+
+	releaseOrder := append([]songListEntry(nil), entries...)
+	sort.SliceStable(releaseOrder, func(i, j int) bool {
+		return mode.releaseAsc(releaseOrder[i], releaseOrder[j])
+	})
+	releaseIndices := make(map[string]int, len(releaseOrder))
+	for i, entry := range releaseOrder {
+		releaseIndices[entry.song.ID] = i
+	}
+
+	for i := range entries {
+		id := entries[i].song.ID
+		entries[i].song.OrderAdded = addedIndices[id]
+		entries[i].song.OrderRelease = releaseIndices[id]
+	}
 }
 
 type songSortMode struct {

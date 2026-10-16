@@ -71,6 +71,9 @@ type Song struct {
 	BatchSeq int
 	BatchPos int
 	IsRecent bool
+
+	OrderAdded   int
+	OrderRelease int
 }
 
 // Pagination holds pagination state

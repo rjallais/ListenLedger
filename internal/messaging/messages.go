@@ -30,6 +30,8 @@ const (
 	SubjectArtistUpdated = "artist.updated"
 	// SubjectQueueUpdated is the fanout subject for queue and job stats notifications.
 	SubjectQueueUpdated = "queue.updated"
+	// SubjectBatchProgress is the fanout subject for batch refresh progress notifications.
+	SubjectBatchProgress = "batch.progress"
 	// SubjectRanksUpdated is the fanout subject prefix for total_songs rank
 	// recalculation completions. Published per genre as
 	// "ranks.updated.<genre_group>" (ephemeral core NATS, like queue.updated:
@@ -397,3 +399,48 @@ func UnmarshalArtistUpdated(data []byte) (ArtistUpdated, error) {
 	}
 	return update, nil
 }
+
+// BatchProgressUpdated is the fanout payload for batch refresh progress notifications.
+type BatchProgressUpdated struct {
+	Version   string         `json:"version"`
+	BatchID   string         `json:"batch_id"`
+	Total     int            `json:"total"`
+	Completed int            `json:"completed"`
+	Done      bool           `json:"done"`
+	Stats     map[string]int `json:"stats,omitempty"`
+}
+
+// NewBatchProgressUpdated constructs a versioned batch progress update payload.
+func NewBatchProgressUpdated(batchID string, total, completed int, done bool, stats map[string]int) BatchProgressUpdated {
+	return BatchProgressUpdated{
+		Version:   SchemaVersionV1,
+		BatchID:   batchID,
+		Total:     total,
+		Completed: completed,
+		Done:      done,
+		Stats:     stats,
+	}
+}
+
+// MarshalBatchProgressUpdated serializes a batch progress payload.
+func MarshalBatchProgressUpdated(update BatchProgressUpdated) ([]byte, error) {
+	if update.Version == "" {
+		update.Version = SchemaVersionV1
+	}
+	return json.Marshal(update)
+}
+
+// UnmarshalBatchProgressUpdated decodes a batch progress payload.
+func UnmarshalBatchProgressUpdated(data []byte) (BatchProgressUpdated, error) {
+	var update BatchProgressUpdated
+	if err := json.Unmarshal(data, &update); err != nil {
+		return BatchProgressUpdated{}, fmt.Errorf("unmarshal batch.progress: %w", err)
+	}
+	version, err := checkMessageVersion(update.Version, "batch.progress")
+	if err != nil {
+		return BatchProgressUpdated{}, err
+	}
+	update.Version = version
+	return update, nil
+}
+

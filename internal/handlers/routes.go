@@ -44,7 +44,9 @@ func (h *Handler) Routes() chi.Router {
 	r.Use(SlogMiddleware(baseLogger))
 	r.Use(ThemeMiddleware)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Compress(5, "text/html", "text/css", "application/javascript", "application/json"))
+	// Brotli-first response compression (gzip/zstd fallbacks) for HTML/JSON/CSS/JS,
+	// via CAFxX/httpcompression — the same engine Datastar's SSE compression uses.
+	r.Use(compressMiddleware)
 
 	// Static files & robots.txt
 	r.Get("/static/*", h.HandleStatic)

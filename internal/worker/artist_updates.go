@@ -175,12 +175,14 @@ func (w *Worker) updateArtistStatus(ctx context.Context, artistID, status string
 			return fmt.Errorf("load artist %s for status update: %w", artistID, err)
 		}
 
-		record.Set("fetch_status", status)
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("check cancellation before saving status for artist %s: %w", artistID, err)
-		}
-		if err := w.app.Save(record); err != nil {
-			return fmt.Errorf("save fetch_status for artist %s: %w", artistID, err)
+		if record.GetString("fetch_status") != status {
+			record.Set("fetch_status", status)
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("check cancellation before saving status for artist %s: %w", artistID, err)
+			}
+			if err := w.app.Save(record); err != nil {
+				return fmt.Errorf("save fetch_status for artist %s: %w", artistID, err)
+			}
 		}
 	}
 	return nil
@@ -265,22 +267,9 @@ func (w *Worker) updateArtistListeners(ctx context.Context, artistID string, lis
 		// (PB already saved above, so the save below is a no-op repeat)
 		// must not append a second listener fact with the same RequestID —
 		// that would forge a delta-0 history snapshot on replay.
-		if corr.RequestID != "" && w.jobStore != nil {
-			if committed, err := w.jobStore.Load(ctx, artistID); err == nil {
-				for _, evt := range committed {
-					if evt.EventType != artist.EventTypeArtistMonthlyListenersScraped {
-						continue
-					}
-					meta, err := eventsourcing.DecodeMetadata(evt.Metadata)
-					if err != nil || meta == nil {
-						continue
-					}
-					if eventsourcing.RequestIDFromMetadata(meta) == corr.RequestID {
-						log.Printf("[worker] listener event for artist %s request %s already recorded, skipping duplicate", artistID, corr.RequestID)
-						return nil
-					}
-				}
-			}
+		if agg.HasRecordedListenersForRequest(corr.RequestID) {
+			log.Printf("[worker] listener event for artist %s request %s already recorded, skipping duplicate", artistID, corr.RequestID)
+			return nil
 		}
 		if err := agg.RecordMonthlyListeners(int64(listeners), provider, durationMs, corr); err != nil {
 			return fmt.Errorf("record monthly listeners for %s: %w", artistID, err)

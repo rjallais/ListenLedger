@@ -52,7 +52,7 @@ templ SongNotRecentSection(notRecentCount int, playlistSort string) {
 			<div class="overflow-x-auto">
 				<table class="table table-zebra">
 					@SongTableHeader()
-					<tbody id="songs-not-recent"></tbody>
+					<tbody id="songs-not-recent" data-on:change={ songRecentChangeAction() }></tbody>
 				</table>
 			</div>
 			@SongNotRecentLoadControl(notRecentCount, playlistSort)

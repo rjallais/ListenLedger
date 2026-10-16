@@ -829,19 +829,32 @@ func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.Stream
 	}
 
 	consumerAvailable := false
-	for _, consumerName := range messaging.ScrapeWorkerConsumerNames() {
-		consumer, consumerErr := stream.Consumer(ctx, consumerName)
-		if consumerErr != nil {
-			continue
+	consumer, consumerErr := stream.Consumer(ctx, messaging.ScrapeWorkerConsumerName)
+	if consumerErr == nil {
+		if info, infoErr := consumer.Info(ctx); infoErr != nil {
+			log.Printf("[queue] Warning: failed to load consumer info for %s: %v", messaging.ScrapeWorkerConsumerName, infoErr)
+		} else {
+			consumerAvailable = true
+			queueAckPending = uint64(info.NumAckPending)
+			queueRedelivered = uint64(info.NumRedelivered)
 		}
-		info, infoErr := consumer.Info(ctx)
-		if infoErr != nil {
-			log.Printf("[queue] Warning: failed to load consumer info for %s: %v", consumerName, infoErr)
-			continue
+	} else {
+		for _, consumerName := range messaging.ScrapeWorkerConsumerNames() {
+			if consumerName == messaging.ScrapeWorkerConsumerName {
+				continue
+			}
+			c, cErr := stream.Consumer(ctx, consumerName)
+			if cErr != nil {
+				continue
+			}
+			info, infoErr := c.Info(ctx)
+			if infoErr != nil {
+				continue
+			}
+			consumerAvailable = true
+			queueAckPending += uint64(info.NumAckPending)
+			queueRedelivered += uint64(info.NumRedelivered)
 		}
-		consumerAvailable = true
-		queueAckPending += uint64(info.NumAckPending)
-		queueRedelivered += uint64(info.NumRedelivered)
 	}
 
 	return streamInfo, consumerAvailable, queueAckPending, queueRedelivered

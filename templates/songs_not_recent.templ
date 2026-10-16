@@ -10,7 +10,7 @@ import (
 
 // NotRecentSongRows appends not-recent songs and updates pagination controls.
 templ NotRecentSongRows(songs []Song, nextOffset int, hasMore bool, playlistSort string) {
-	<tbody id="songs-not-recent">
+	<tbody id="songs-not-recent" data-on:change={ songRecentChangeAction() }>
 		for _, song := range songs {
 			@SongRow(song, playlistSort)
 		}

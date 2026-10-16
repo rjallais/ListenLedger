@@ -229,14 +229,19 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 
 	// Domain-level dedup: the request stream's terminal state survives
 	// restarts and retention purges that the cache and scrape_jobs row do not.
+	// When the stream exists and replays cleanly to a non-succeeded state,
+	// return immediately without querying PocketBase on every queued job.
 	if w.jobStore != nil {
 		if evts, err := w.jobStore.Load(ctx, requestID); err == nil && len(evts) > 0 {
-			if agg, err := scrapejob.Replay(requestID, evts); err == nil && agg.Status() == scrapejob.StatusSucceeded {
-				w.succeededMu.Lock()
-				w.pruneSucceededLocked(now)
-				w.succeededRequests[requestID] = now
-				w.succeededMu.Unlock()
-				return true
+			if agg, err := scrapejob.Replay(requestID, evts); err == nil {
+				if agg.Status() == scrapejob.StatusSucceeded {
+					w.succeededMu.Lock()
+					w.pruneSucceededLocked(now)
+					w.succeededRequests[requestID] = now
+					w.succeededMu.Unlock()
+					return true
+				}
+				return false
 			}
 		}
 	}
@@ -319,34 +324,36 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 			log.Printf("[worker] Warning: failed to load failed jobs for artist %s, skipping clear: %v", artistID, err)
 			return
 		}
-		for _, job := range failed {
-			if ctx.Err() != nil {
-				break
-			}
-			w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
-				_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
-				return err
-			})
-		}
-		now := time.Now().UTC().Format(jobTimestampFormat)
-		if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ?;")
-			defer func() { _ = stmt.Reset() }()
+		if len(failed) > 0 {
 			for _, job := range failed {
 				if ctx.Err() != nil {
 					break
 				}
-				_ = stmt.Reset()
-				stmt.BindText(1, now)
-				stmt.BindText(2, note)
-				stmt.BindText(3, job.requestID)
-				if _, err := stmt.Step(); err != nil {
+				w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
+					_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
 					return err
-				}
+				})
 			}
-			return nil
-		}); err != nil {
-			log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
+			now := time.Now().UTC().Format(jobTimestampFormat)
+			if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+				stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ?;")
+				defer func() { _ = stmt.Reset() }()
+				for _, job := range failed {
+					if ctx.Err() != nil {
+						break
+					}
+					_ = stmt.Reset()
+					stmt.BindText(1, now)
+					stmt.BindText(2, note)
+					stmt.BindText(3, job.requestID)
+					if _, err := stmt.Step(); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
+			}
 		}
 	}
 
@@ -408,6 +415,23 @@ func (w *Worker) reconcileFailedJobs(ctx context.Context, records []*core.Record
 const staleJobThreshold = 5 * time.Minute
 const staleJobSweepInterval = 30 * time.Second
 const staleJobSweepTimeout = 20 * time.Second
+
+// orphanedQueuedGrace bounds how long a queued row may exist without its
+// ScrapeRequested fact before the sweeper treats it as never dispatched.
+// Dispatch opens the job stream before publishing (single and batch paths),
+// so a queued row whose stream is missing was persisted by an enqueue that
+// died before its fact/dispatch; the grace covers enqueue timeouts and
+// retry republishes of rows whose original attempt never opened a stream.
+const orphanedQueuedGrace = 15 * time.Minute
+
+// orphanedQueuedReason is the failure reason recorded for swept rows.
+const orphanedQueuedReason = "orphaned_no_dispatch"
+
+// orphanedQueuedScanLimit bounds per-sweep stream existence checks. Each check
+// is one event-store Load (a filtered consumer in JetStream mode), so the cap
+// keeps a sweep inside its timeout during deep backlogs; oldest rows surface
+// first and the remainder is caught on later ticks.
+const orphanedQueuedScanLimit = 100
 
 // jobPurgeInterval bounds how often succeeded-job retention is enforced.
 // The first sweep after startup always purges (lastPurge is zero).
@@ -636,6 +660,12 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 		w.markStaleJobsSQLite(ctx, cutoff)
 	}
 
+	// Never-dispatched queued rows: dispatch arms the JobRequested fact before
+	// publishing, so a queued row with an empty stream is a crash-window
+	// orphan. Swept well before the 24h retention expiry so its artist and
+	// batch member leave pending within minutes, not a day.
+	w.markOrphanedQueuedJobs(ctx, time.Now().UTC().Add(-orphanedQueuedGrace).Format(jobTimestampFormat))
+
 	if w.app == nil {
 		return
 	}
@@ -694,6 +724,203 @@ func (w *Worker) markStaleJobs(ctx context.Context) {
 			log.Printf("[worker] Marked stale scrape job %s (artist=%s, request_id=%s) as failed", job.Id, artistID, requestID)
 			w.recordArtistFetchStatusWarn(ctx, artistID, "failed", requestID)
 		}
+	}
+}
+
+// markOrphanedQueuedJobs fails queued rows that never opened a job stream.
+// The row-first crash window (persist commits, the process dies before the
+// request's ScrapeRequested fact is appended) leaves rows that no redelivery
+// can resolve; without this sweep they wedge the queue and their artists stay
+// pending until the 24h queue_expired retention pass. Event-first per row on
+// the first pass: the ScrapeFailed(orphaned_no_dispatch) fact seeds and closes
+// the request's stream before any row flips; a stream that already contains
+// more than that seed pair was dispatched (or is being) and is skipped.
+func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
+	if w.jobStore == nil {
+		return
+	}
+	type orphanJob struct{ requestID, artistID string }
+	var candidates []orphanJob
+	if w.db != nil {
+		err := w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT request_id, artist_id FROM scrape_jobs WHERE status = 'queued' AND queued_at < ? ORDER BY queued_at ASC LIMIT ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, cutoff)
+			stmt.BindInt64(2, orphanedQueuedScanLimit)
+			for {
+				hasRow, err := stmt.Step()
+				if err != nil {
+					return err
+				}
+				if !hasRow {
+					break
+				}
+				candidates = append(candidates, orphanJob{requestID: stmt.ColumnText(0), artistID: stmt.ColumnText(1)})
+			}
+			return nil
+		})
+		if err != nil {
+			log.Printf("[worker] Warning: failed to query orphaned queued jobs (SQLite): %v", err)
+			return
+		}
+	} else if w.app != nil {
+		records := make([]*core.Record, 0)
+		err := w.app.RecordQuery("scrape_jobs").
+			WithContext(ctx).
+			AndWhere(dbx.NewExp("status = {:status} AND queued_at < {:cutoff}", dbx.Params{"status": "queued", "cutoff": cutoff})).
+			OrderBy("queued_at ASC").
+			Limit(50).
+			All(&records)
+		if err != nil {
+			log.Printf("[worker] Warning: failed to query orphaned queued jobs: %v", err)
+			return
+		}
+		for _, rec := range records {
+			candidates = append(candidates, orphanJob{requestID: rec.GetString("request_id"), artistID: rec.GetString("artist")})
+		}
+	} else {
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	marked := 0
+	for _, job := range candidates {
+		if ctx.Err() != nil {
+			return
+		}
+		if strings.TrimSpace(job.requestID) == "" {
+			continue
+		}
+		// Dispatch opens the stream before publishing, so a non-empty stream
+		// means this row was (or is being) dispatched — never an orphan. The
+		// one exception is the sweep's own seed pair, which a partial run may
+		// have recorded without landing the row flips: finish that repair
+		// without appending the fact again.
+		events, err := w.jobStore.Load(ctx, job.requestID)
+		if err != nil {
+			log.Printf("[worker] Warning: orphaned-job stream check %s failed: %v", job.requestID, err)
+			continue
+		}
+		if len(events) > 0 && !isOrphanedQueuedVerdict(events) {
+			continue
+		}
+		if len(events) == 0 {
+			if err := w.recordJobEvent(ctx, job.requestID, job.artistID, func(j *scrapejob.Job) error {
+				_, _, err := j.RecordFailed(orphanedQueuedReason, eventsourcing.Correlation{RequestID: job.requestID})
+				return err
+			}); err != nil {
+				log.Printf("[worker] Warning: orphaned-job fact for %s not recorded: %v", job.requestID, err)
+				continue
+			}
+		}
+		if w.db != nil {
+			w.markOrphanedQueuedRowFailedSQLite(ctx, job.requestID, cutoff)
+			// Direct read-model flip: the aggregate fold below converges
+			// artists that have streams; this covers artists whose first
+			// stream never opened, so batch members still leave pending.
+			w.markArtistFetchStatusFailedSQLite(ctx, job.artistID)
+		}
+		w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
+		w.recordArtistFetchStatusWarn(ctx, job.artistID, "failed", job.requestID)
+		marked++
+	}
+	if marked > 0 {
+		log.Printf("[worker] Marked %d orphaned queued job(s) without a dispatch fact", marked)
+	}
+}
+
+// isOrphanedQueuedVerdict reports whether a stream holds exactly the sweep's
+// own seed pair (ScrapeRequested + ScrapeFailed(orphaned_no_dispatch)), i.e.
+// the verdict was recorded but the row repair below may not have landed yet.
+func isOrphanedQueuedVerdict(events []eventsourcing.Event) bool {
+	if len(events) != 2 ||
+		events[0].EventType != scrapejob.EventTypeScrapeRequested ||
+		events[1].EventType != scrapejob.EventTypeScrapeFailed {
+		return false
+	}
+	var pl scrapejob.FailedPayload
+	if err := eventsourcing.DecodeEventPayload(events[1], &pl); err != nil {
+		return false
+	}
+	return pl.Error == orphanedQueuedReason
+}
+
+// markOrphanedQueuedRowFailedSQLite flips one queued row to
+// failed(orphaned_no_dispatch). Conditional on status and queued_at so a job
+// that started processing between the scan and the flip keeps its state.
+func (w *Worker) markOrphanedQueuedRowFailedSQLite(ctx context.Context, requestID, cutoff string) {
+	if w.db == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	now := time.Now().UTC().Format(jobTimestampFormat)
+	if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE scrape_jobs SET status = 'failed', finished_at = ?, error = ? WHERE request_id = ? AND status = 'queued' AND queued_at < ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, now)
+		stmt.BindText(2, orphanedQueuedReason)
+		stmt.BindText(3, requestID)
+		stmt.BindText(4, cutoff)
+		_, err := stmt.Step()
+		return err
+	}); err != nil {
+		log.Printf("[worker] Warning: failed to mark orphaned queued job %s failed (SQLite): %v", requestID, err)
+	}
+}
+
+// markArtistFetchStatusFailedSQLite flips the artist read model out of pending
+// for a swept request. Direct guarded flip, mirroring the retry-path
+// reconciliation: the aggregate fold (recordArtistFetchStatusWarn) covers
+// artists with event streams, this covers artists whose first stream never
+// opened. Only ever flips out of pending.
+func (w *Worker) markArtistFetchStatusFailedSQLite(ctx context.Context, artistID string) {
+	if w.db == nil || strings.TrimSpace(artistID) == "" {
+		return
+	}
+	if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE artists SET fetch_status = 'failed' WHERE id = ? AND fetch_status = 'pending';")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, artistID)
+		_, err := stmt.Step()
+		return err
+	}); err != nil {
+		log.Printf("[worker] Warning: failed to mark artist %s failed after orphaned sweep: %v", artistID, err)
+	}
+}
+
+// markOrphanedQueuedJobFailedPB mirrors the sweep to PocketBase: guarded job
+// flip plus artist failed if still pending (fires the artist.updated hook so
+// batch progress converges without waiting for the reconciler). Best-effort:
+// the SQLite read model stays authoritative when configured.
+func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, cutoff string) {
+	if w.app == nil || strings.TrimSpace(requestID) == "" {
+		return
+	}
+	err := w.app.RunInTransaction(func(txApp core.App) error {
+		var guard []*core.Record
+		guardErr := txApp.RecordQuery("scrape_jobs").
+			WithContext(ctx).
+			AndWhere(dbx.NewExp("request_id = {:request_id} AND status = {:status} AND queued_at < {:cutoff}",
+				dbx.Params{"request_id": requestID, "status": "queued", "cutoff": cutoff})).
+			Limit(1).
+			All(&guard)
+		if guardErr != nil {
+			return fmt.Errorf("re-check orphaned job guard for %s: %w", requestID, guardErr)
+		}
+		if len(guard) == 0 {
+			return nil
+		}
+		job := guard[0]
+		job.Set("status", "failed")
+		job.Set("finished_at", time.Now())
+		job.Set("error", orphanedQueuedReason)
+		if err := txApp.Save(job); err != nil {
+			return fmt.Errorf("fail orphaned job %s: %w", requestID, err)
+		}
+		return w.markStaleJobArtistFailed(ctx, txApp, job.Id, job.GetString("artist"))
+	})
+	if err != nil {
+		log.Printf("[worker] Warning: failed to mirror orphaned queued job %s to PocketBase: %v", requestID, err)
 	}
 }
 

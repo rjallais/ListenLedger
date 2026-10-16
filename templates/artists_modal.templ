@@ -7,7 +7,6 @@ package templates
 // (button, backdrop, or Escape). The backend can drive it via patch-signals.
 templ AddArtistModal(currentGenre string) {
 	<sb-modal
-		data-signals="{_add_artist_open: false}"
 		data-attr:open="$_add_artist_open"
 		data-on:sb-close="$_add_artist_open = false"
 		heading="Add New Artist"
@@ -22,7 +21,7 @@ templ AddArtistModal(currentGenre string) {
 templ AddArtistForm(currentGenre string) {
 	<form
 		id="add-artist-form"
-		data-indicator:_add_artist_loading
+		data-indicator:_add_artist_loading__root
 		data-on:submit__prevent="!$_add_artist_loading && @post('/api/artists', {contentType: 'form'})"
 	>
 		@AddArtistNameField()
@@ -131,7 +130,7 @@ templ AddArtistOptionalFields() {
 templ AddArtistModalActions() {
 	<div slot="footer" class="flex justify-end gap-2">
 		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
-		<button type="submit" form="add-artist-form" class="btn btn-primary gap-2" data-attr:disabled="$_add_artist_loading">
+		<button type="submit" form="add-artist-form" class="btn btn-primary gap-2" data-attr:disabled="$_add_artist_loading || false">
 			<span data-show="$_add_artist_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
 			<svg data-show="!$_add_artist_loading" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>

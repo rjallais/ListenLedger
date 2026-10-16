@@ -223,3 +223,19 @@ func TestParseSubjectDomainEventRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchProgressUpdatedRoundTrip(t *testing.T) {
+	in := NewBatchProgressUpdated("batch-1", 10, 5, false, map[string]int{"P0": 5})
+	data, err := MarshalBatchProgressUpdated(in)
+	if err != nil {
+		t.Fatalf("MarshalBatchProgressUpdated error = %v", err)
+	}
+	out, err := UnmarshalBatchProgressUpdated(data)
+	if err != nil {
+		t.Fatalf("UnmarshalBatchProgressUpdated error = %v", err)
+	}
+	if out.BatchID != "batch-1" || out.Total != 10 || out.Completed != 5 || out.Done != false || out.Stats["P0"] != 5 {
+		t.Fatalf("unexpected unmarshaled batch progress: %+v", out)
+	}
+}
+

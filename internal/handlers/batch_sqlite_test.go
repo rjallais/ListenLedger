@@ -138,3 +138,37 @@ func TestBatchReconciler_BackgroundConverges(t *testing.T) {
 		t.Fatalf("background reconciled = %+v, want Completed=1 Done=true", got)
 	}
 }
+
+// TestBatchProgress_LargeBatchAndExpiredCallerContext ensures that createBatchProgress
+// succeeds even if the caller's request context was canceled or depleted by prior steps,
+// and correctly provisions large batches (e.g. 100 artists).
+func TestBatchProgress_LargeBatchAndExpiredCallerContext(t *testing.T) {
+	h, tempDir := setupTestSQLiteDB(t)
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	defer func() { _ = h.db.Close() }()
+
+	expiredCtx, cancel := context.WithCancel(context.Background())
+	cancel() // deliberately pre-expired caller context
+
+	artistIDs := make([]string, 100)
+	for i := range artistIDs {
+		artistIDs[i] = "ar_bulk_" + string(rune('a'+(i%26))) + "_" + string(rune('0'+(i%10))) + "_" + time.Now().Format("150405.000000000")
+	}
+
+	snap, err := h.createBatchProgress(expiredCtx, artistIDs, map[string]int{"P3RockNotAdded": 100})
+	if err != nil {
+		t.Fatalf("createBatchProgress failed with pre-expired caller context: %v", err)
+	}
+	if snap.Total != 100 || snap.Completed != 0 || snap.Done {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+
+	ctx := context.Background()
+	got, ok := h.getBatchSnapshot(ctx, snap.ID)
+	if !ok {
+		t.Fatalf("batch %s not found in store", snap.ID)
+	}
+	if got.Total != 100 {
+		t.Fatalf("got total = %d, want 100", got.Total)
+	}
+}

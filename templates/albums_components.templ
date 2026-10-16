@@ -212,7 +212,6 @@ templ AddAlbumErrorNotice(errMsg string) {
 // (button, backdrop, or Escape). The backend can drive it via patch-signals.
 templ AddAlbumModal() {
 	<sb-modal
-		data-signals="{_add_album_open: false}"
 		data-attr:open="$_add_album_open"
 		data-on:sb-close="$_add_album_open = false"
 		heading="Add New Album"
@@ -227,7 +226,7 @@ templ AddAlbumModal() {
 templ AddAlbumForm() {
 	<form
 		id="add-album-form"
-		data-indicator:_add_album_loading
+		data-indicator:_add_album_loading__root
 		data-on:submit__prevent="!$_add_album_loading && @post('/api/albums', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
@@ -302,7 +301,7 @@ templ AddAlbumForm() {
 templ AddAlbumModalActions() {
 	<div slot="footer" class="flex justify-end gap-2">
 		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
-		<button type="submit" form="add-album-form" class="btn btn-primary" data-attr:disabled="$_add_album_loading">
+		<button type="submit" form="add-album-form" class="btn btn-primary" data-attr:disabled="$_add_album_loading || false">
 			<span data-show="$_add_album_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
 			Add Album
 		</button>

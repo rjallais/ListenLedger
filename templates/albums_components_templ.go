@@ -1097,7 +1097,7 @@ func AddAlbumModal() templ.Component {
 			templ_7745c5c3_Var56 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<sb-modal data-signals=\"{_add_album_open: false}\" data-attr:open=\"$_add_album_open\" data-on:sb-close=\"$_add_album_open = false\" heading=\"Add New Album\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 63, "<sb-modal data-attr:open=\"$_add_album_open\" data-on:sb-close=\"$_add_album_open = false\" heading=\"Add New Album\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -1143,14 +1143,14 @@ func AddAlbumForm() templ.Component {
 			templ_7745c5c3_Var57 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<form id=\"add-album-form\" data-indicator:_add_album_loading data-on:submit__prevent=\"!$_add_album_loading && @post('/api/albums', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-title\"><span class=\"label-text\">Album Title *</span></label> <input id=\"album-title\" type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-artist-name\"><span class=\"label-text\">Artist Name *</span></label> <input id=\"album-artist-name\" type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-status\"><span class=\"label-text\">Status</span></label> <select id=\"album-status\" name=\"status\" class=\"select select-bordered w-full\"><option value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 66, "<form id=\"add-album-form\" data-indicator:_add_album_loading__root data-on:submit__prevent=\"!$_add_album_loading && @post('/api/albums', {contentType: 'form'})\"><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-title\"><span class=\"label-text\">Album Title *</span></label> <input id=\"album-title\" type=\"text\" name=\"title\" placeholder=\"Enter album title\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-artist-name\"><span class=\"label-text\">Artist Name *</span></label> <input id=\"album-artist-name\" type=\"text\" name=\"artist_name\" placeholder=\"Enter artist name\" class=\"input input-bordered w-full\" required></div><div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"album-status\"><span class=\"label-text\">Status</span></label> <select id=\"album-status\" name=\"status\" class=\"select select-bordered w-full\"><option value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var58 string
 		templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.ResolveAttributeValue(StatusWaiting)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 264, Col: 33}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/albums_components.templ`, Line: 263, Col: 33}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var58)
 		if templ_7745c5c3_Err != nil {
@@ -1185,7 +1185,7 @@ func AddAlbumModalActions() templ.Component {
 			templ_7745c5c3_Var59 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"add-album-form\" class=\"btn btn-primary\" data-attr:disabled=\"$_add_album_loading\"><span data-show=\"$_add_album_loading\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> Add Album</button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 68, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"add-album-form\" class=\"btn btn-primary\" data-attr:disabled=\"$_add_album_loading || false\"><span data-show=\"$_add_album_loading\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> Add Album</button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

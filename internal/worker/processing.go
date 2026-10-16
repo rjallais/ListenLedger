@@ -371,7 +371,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 	startedAt := time.Now()
 	req := env.req
 
-	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
+	if provider == spotify.ProviderApify && w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale redelivery for already-succeeded request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}

@@ -3,18 +3,20 @@ package templates
 // ArtistsPage renders the artists page with pagination.
 templ ArtistsPage(artists []Artist, rockMetalCount, everythingElseCount int, currentGenre string, waitingCount int, pagination Pagination) {
 	@Layout("Artists", "artists") {
-		@ArtistsPageHeader()
-		@ArtistsGenreTabs(rockMetalCount, everythingElseCount, currentGenre)
-		@ArtistsTable(artists, currentGenre, pagination.CurrentPage, pagination.Limit)
-		if pagination.TotalPages > 1 {
-			@PaginationControls(pagination)
-		}
-		if waitingCount > 0 {
-			<div class="divider mt-10"></div>
-			@ArtistQueueSection(waitingCount)
-		}
-		@AddArtistModal(currentGenre)
-		@BatchRefreshModal()
+		<div data-signals="{_batch_refresh_open: false, _batch_refresh_loading: false, _add_artist_open: false, _add_artist_loading: false, batchID: '', batchCompleted: 0, batchTotal: 0, batchDone: true}">
+			@ArtistsPageHeader()
+			@ArtistsGenreTabs(rockMetalCount, everythingElseCount, currentGenre)
+			@ArtistsTable(artists, currentGenre, pagination.CurrentPage, pagination.Limit)
+			if pagination.TotalPages > 1 {
+				@PaginationControls(pagination)
+			}
+			if waitingCount > 0 {
+				<div class="divider mt-10"></div>
+				@ArtistQueueSection(waitingCount)
+			}
+			@AddArtistModal(currentGenre)
+			@BatchRefreshModal()
+		</div>
 	}
 }
 
@@ -26,7 +28,14 @@ templ ArtistsPageHeader() {
 				<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
 				</svg>
-				Batch Refresh
+				<span>Batch Refresh</span>
+				<span
+					data-show="!$batchDone && $batchID != ''"
+					class="badge badge-accent badge-sm font-mono ml-1"
+					style="display: none"
+				>
+					<span data-text="$batchCompleted + '/' + $batchTotal"></span>
+				</span>
 			</button>
 			<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_artist_open = true" aria-haspopup="dialog">
 				<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

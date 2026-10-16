@@ -1,17 +1,52 @@
 package templates
 
+import "fmt"
+
 // SongsPage renders the songs dashboard in three tiers.
 templ SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount int, playlistSort string) {
 	@Layout("Songs", "songs") {
-		<div class="flex justify-between items-center mb-6">
-			<h1 class="text-3xl font-bold">Songs Rotation</h1>
-			<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_song_open = true" aria-haspopup="dialog">
-				@IconPlus("h-5 w-5")
-				Add Song
-			</button>
+		<div data-signals={ fmt.Sprintf("{_add_song_open: false, _add_song_loading: false, _playlist_sort: '%s'}", playlistSort) }>
+			<div class="flex justify-between items-center mb-6">
+				<h1 class="text-3xl font-bold">Songs Rotation</h1>
+				<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_song_open = true" aria-haspopup="dialog">
+					@IconPlus("h-5 w-5")
+					Add Song
+				</button>
+			</div>
+			<p class="mb-4 text-base-content/70">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>
+			@SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort)
+			@AddSongModal()
+			<script>
+				// Reorders rows using the server-precomputed data-order-* indices.
+				// Datastar's core observer tears down and re-applies every binding in a
+				// moved subtree, and Rocket's observer rescans the whole mutation target
+				// once per record (O(n^2) for a 500-row tbody). To avoid that, each tbody
+				// is detached (1 mutation), we yield a microtask so the observers'
+				// transient registrations are dropped, reorder offline (0 mutations), then
+				// reattach (1 mutation).
+				async function sortSongsTable(sortMode) {
+					const attr = sortMode === 'release_asc' ? 'data-order-release' : 'data-order-added';
+					const jobs = [];
+					for (const tableId of ['songs-current', 'songs-waiting-removal']) {
+						const tbody = document.getElementById(tableId);
+						if (!tbody || tbody.children.length <= 1) continue;
+						const parent = tbody.parentNode;
+						const next = tbody.nextSibling;
+						tbody.remove();
+						jobs.push({ tbody, parent, next });
+					}
+					await Promise.resolve();
+					for (const { tbody, parent, next } of jobs) {
+						const keyed = Array.from(tbody.children, (row) => [Number(row.getAttribute(attr)) || 0, row]);
+						keyed.sort((a, b) => a[0] - b[0]);
+						tbody.append(...keyed.map((k) => k[1]));
+						parent.insertBefore(tbody, next);
+					}
+					const url = new URL(window.location);
+					url.searchParams.set('playlist_sort', sortMode);
+					window.history.replaceState({}, '', url);
+				}
+			</script>
 		</div>
-		<p class="mb-4 text-base-content/70">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>
-		@SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort)
-		@AddSongModal()
 	}
 }
