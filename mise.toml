@@ -68,8 +68,8 @@ description = "Watch and rebuild CSS/JS via embedded esbuild"
 run = "go run ./cmd/build --watch"
 
 [tasks."live:server"]
-description = "Run the server with Air hot-reloading (configured via .air.toml)"
-run = "go tool air"
+description = "Run the server with Air hot-reloading (forces LISTENLEDGER_EVENT_STORE=jetstream — the flip is one-way and is recorded on first boot)"
+run = "env LISTENLEDGER_EVENT_STORE=jetstream go tool air"
 
 [tasks.dev]
 description = "Print instructions to run development watchers in separate terminals"
@@ -84,8 +84,8 @@ description = "Download and sync Go module dependencies"
 run = "go mod tidy"
 
 [tasks.run]
-description = "Build and run the application"
-run = "go run . serve --http=localhost:8091"
+description = "Build and run the application (forces LISTENLEDGER_EVENT_STORE=jetstream — the flip is one-way and is recorded on first boot)"
+run = "env LISTENLEDGER_EVENT_STORE=jetstream go run . serve --http=localhost:8091"
 depends = ["build"]
 
 [tasks."browserless:up"]
@@ -134,3 +134,15 @@ run = "go test ./..."
 [tasks.tools]
 description = "Download and install Go tools defined in go.mod"
 run = "go mod tidy; go install tool"
+
+[tasks."tidal:login"]
+description = "Authenticate with TIDAL via OAuth PKCE using FNOX secrets"
+run = "fnox exec -- go run ./cmd/tidal_sync login"
+
+[tasks."tidal:plan"]
+description = "Plan TIDAL favorites synchronization and report proposed corrections"
+run = "env LISTENLEDGER_EVENT_STORE=jetstream fnox exec -- go run ./cmd/tidal_sync plan"
+
+[tasks."tidal:apply"]
+description = "Apply approved TIDAL proposals to the event store and catalog read model"
+run = "env LISTENLEDGER_EVENT_STORE=jetstream fnox exec -- go run ./cmd/tidal_sync apply"
