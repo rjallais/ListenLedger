@@ -35,10 +35,8 @@ import (
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/domain/batch"
-	"ListenLedger/internal/domain/correctionproposal"
 	"ListenLedger/internal/domain/scrapejob"
 	"ListenLedger/internal/domain/song"
-	"ListenLedger/internal/domain/tidalsync"
 	"ListenLedger/internal/eventsourcing"
 	_ "ListenLedger/migrations"
 )
@@ -194,7 +192,7 @@ func parseStreamTypes(value string) (map[string]struct{}, error) {
 			continue
 		}
 		switch streamType {
-		case artist.StreamTypeArtist, album.StreamTypeAlbum, song.StreamTypeSong, scrapejob.StreamTypeScrapeJob, batch.StreamTypeBatch, tidalsync.StreamTypeTidalSync, correctionproposal.StreamTypeCorrectionProposal:
+		case artist.StreamTypeArtist, album.StreamTypeAlbum, song.StreamTypeSong, scrapejob.StreamTypeScrapeJob, batch.StreamTypeBatch:
 			selected[streamType] = struct{}{}
 		default:
 			return nil, fmt.Errorf("unknown stream type %q", streamType)

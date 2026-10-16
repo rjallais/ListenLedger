@@ -28,6 +28,7 @@ import (
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/songbackfill"
+	"ListenLedger/internal/storeutil"
 )
 
 const (
@@ -133,7 +134,7 @@ func main() {
 	}
 	log.Printf("[backfill_song_metadata] event store mode: %s", mode)
 
-	if *apply && !*liveOK && os.Getenv("LISTENLEDGER_BACKFILL_LIVE_OK") != "1" && isLiveDataDir(*dataDir) {
+	if *apply && !*liveOK && os.Getenv("LISTENLEDGER_BACKFILL_LIVE_OK") != "1" && storeutil.IsLiveDataDir(*dataDir) {
 		log.Fatalf("[backfill_song_metadata] refusing --apply against the live data dir: stop the app first, or point --data-dir at a copy, or pass --live-ok (a second server on the live NATS store would corrupt it while the app runs)")
 	}
 

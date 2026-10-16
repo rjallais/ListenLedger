@@ -575,12 +575,18 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 		count = 50
 	}
 	if h.db != nil && h.app != nil {
+		sqliteCutoff := cutoff
+		if parsed, err := time.Parse("2006-01-02 15:04:05.000Z", cutoff); err == nil {
+			sqliteCutoff = parsed.Format(time.RFC3339Nano)
+		} else if parsed, err := time.Parse(time.RFC3339, cutoff); err == nil {
+			sqliteCutoff = parsed.Format(time.RFC3339Nano)
+		}
 		var orderedIDs []string
 		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
 			query := `SELECT id FROM artists
 				WHERE spotify_id != '' AND spotify_id IS NOT NULL
 				  AND (fetch_status IS NULL OR fetch_status != 'pending')
-				  AND (last_updated IS NULL OR last_updated = '' OR last_updated < ?)
+				  AND (last_updated IS NULL OR last_updated = '' OR replace(last_updated, ' ', 'T') < ?)
 				ORDER BY
 				  CASE
 				    WHEN fetch_status = 'pending' OR list_status = 'waiting' THEN 0
@@ -596,7 +602,7 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 				LIMIT ?`
 			stmt := tx.Prep(query)
 			defer func() { _ = stmt.Reset() }()
-			stmt.BindText(1, cutoff)
+			stmt.BindText(1, sqliteCutoff)
 			stmt.BindInt64(2, int64(count))
 			for {
 				hasRow, err := stmt.Step()

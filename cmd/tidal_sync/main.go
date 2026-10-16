@@ -22,7 +22,6 @@ import (
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/pocketbase/pocketbase"
-	"github.com/pocketbase/pocketbase/core"
 	"golang.org/x/text/unicode/norm"
 	"zombiezen.com/go/sqlite"
 
@@ -32,6 +31,7 @@ import (
 	"ListenLedger/internal/domain/song"
 	syncdomain "ListenLedger/internal/domain/tidalsync"
 	"ListenLedger/internal/projections"
+	"ListenLedger/internal/songbackfill"
 	"ListenLedger/internal/storeutil"
 	"ListenLedger/internal/tidal"
 	"ListenLedger/internal/tidalsync"
@@ -161,6 +161,7 @@ func runPlan(ctx context.Context, args []string) error {
 	minConf := fs.Float64("min-confidence", 0.85, "Minimum confidence threshold")
 	autoLinkThresh := fs.Float64("auto-link-threshold", 0.90, "Auto-link confidence threshold")
 	dryRun := fs.Bool("dry-run", true, "Plan without writing events to store")
+	liveOK := fs.Bool("live-ok", false, "Allow writing events to live data directory")
 	fillImpreciseDates := fs.Bool("fill-imprecise-dates", false, "Propose filling imprecise release dates (day defaulted to 01 or year-only) into existing catalog songs")
 	reportDir := fs.String("report-dir", "backfill_reports", "Directory to write reports")
 	_ = fs.Parse(args)
@@ -178,6 +179,9 @@ func runPlan(ctx context.Context, args []string) error {
 	authCfg := tidal.AuthConfig{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
+		PersistRefreshToken: func(c context.Context, token string) error {
+			return tidal.SaveSecret(c, "TIDAL_REFRESH_TOKEN", token)
+		},
 	}
 	token, err := tidal.RefreshAccessToken(ctx, http.DefaultClient, authCfg, refreshToken)
 	if err != nil {
@@ -219,6 +223,10 @@ func runPlan(ctx context.Context, args []string) error {
 
 	// If not dry-run, append tidalsync run stream
 	if !*dryRun {
+		if storeutil.IsLiveDataDir(*dataDir) && !*liveOK {
+			return errors.New("cannot write events against live data dir without --live-ok (stop the app first)")
+		}
+
 		store, cleanup, err := storeutil.OpenEventStore(ctx, *dataDir, database)
 		if err != nil {
 			return fmt.Errorf("opening authoritative event store: %w", err)
@@ -229,8 +237,18 @@ func runPlan(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("creating sync aggregate: %w", err)
 		}
-		if err := syncAgg.RecordFavoritesObserved(1, tracks, nil, nil); err != nil {
-			return fmt.Errorf("recording observed tracks: %w", err)
+		if len(tracks) == 0 {
+			if err := syncAgg.RecordFavoritesObserved(1, nil, nil, nil); err != nil {
+				return fmt.Errorf("recording observed tracks: %w", err)
+			}
+		} else {
+			for page, chunk := 1, tracks; len(chunk) > 0; page++ {
+				n := min(len(chunk), 500)
+				if err := syncAgg.RecordFavoritesObserved(page, chunk[:n], nil, nil); err != nil {
+					return fmt.Errorf("recording observed tracks page %d: %w", page, err)
+				}
+				chunk = chunk[n:]
+			}
 		}
 		if err := syncAgg.RecordCompleted(time.Now().UTC()); err != nil {
 			return fmt.Errorf("completing sync: %w", err)
@@ -290,6 +308,16 @@ func runPlan(ctx context.Context, args []string) error {
 	}
 
 	return nil
+}
+
+func afterString(m map[string]any, k, fallback string) string {
+	if m == nil {
+		return fallback
+	}
+	if v, ok := m[k].(string); ok && v != "" {
+		return v
+	}
+	return fallback
 }
 
 func runApply(ctx context.Context, args []string) error {
@@ -378,7 +406,8 @@ func runApply(ctx context.Context, args []string) error {
 			album, _ := p.After["album"].(string)
 			relDate, _ := p.After["release_date"].(string)
 			relType, _ := p.After["release_type"].(string)
-			newSong, err := song.NewSong(p.TargetID, title, artist, album, relDate, relType, "", 0, 0, 0, false)
+			relYear := int64(songbackfill.ParseReleaseYear(relDate))
+			newSong, err := song.NewSong(p.TargetID, title, artist, album, relDate, relType, "", relYear, 0, 0, false)
 			if err != nil {
 				p.Note = err.Error()
 				continue
@@ -394,31 +423,36 @@ func runApply(ctx context.Context, args []string) error {
 		}
 
 		// Apply specific change
+		var cmdErr error
 		switch p.Kind {
 		case "addition":
 			tidalID, _ := p.After["tidal_id"].(string)
 			if tidalID != "" {
-				_, _ = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
+				_, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
 			}
 		case "link":
 			tidalID, _ := p.After["tidal_id"].(string)
-			_, _ = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
+			_, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
 		case "fill":
-			album, _ := p.After["album"].(string)
-			relDate, _ := p.After["release_date"].(string)
-			relType, _ := p.After["release_type"].(string)
-			_, _ = songAgg.EnrichMetadata(album, relDate, relType, "tidal")
+			album := afterString(p.After, "album", songAgg.Album)
+			relDate := afterString(p.After, "release_date", songAgg.ReleaseDate)
+			relType := afterString(p.After, "release_type", songAgg.ReleaseType)
+			_, cmdErr = songAgg.EnrichMetadata(album, relDate, relType, "tidal")
 		case "album_name", "release_type":
-			album, _ := p.After["album"].(string)
-			relDate, _ := p.After["release_date"].(string)
-			relType, _ := p.After["release_type"].(string)
-			_, _ = songAgg.CorrectMetadata(album, relDate, relType, "tidal")
+			album := afterString(p.After, "album", songAgg.Album)
+			relDate := afterString(p.After, "release_date", songAgg.ReleaseDate)
+			relType := afterString(p.After, "release_type", songAgg.ReleaseType)
+			_, cmdErr = songAgg.CorrectMetadata(album, relDate, relType, "tidal")
 		case "credit":
 			artist, _ := p.After["artist_name"].(string)
-			_, _ = songAgg.CorrectArtistCredits(artist, "tidal")
+			_, cmdErr = songAgg.CorrectArtistCredits(artist, "tidal")
 		case "duplicate":
 			canonicalID, _ := p.After["duplicate_of"].(string)
-			_, _ = songAgg.MarkDuplicate(canonicalID, "tidal")
+			_, cmdErr = songAgg.MarkDuplicate(canonicalID, "tidal")
+		}
+		if cmdErr != nil {
+			p.Note = cmdErr.Error()
+			continue
 		}
 
 		events, err := songRepo.Save(ctx, songAgg)
@@ -433,7 +467,7 @@ func runApply(ctx context.Context, args []string) error {
 		}
 
 		if pbApp != nil {
-			if err := mirrorSongToPB(pbApp, songAgg); err != nil {
+			if err := storeutil.MirrorSongToPB(pbApp, songAgg); err != nil {
 				logger.Warn("mirroring song to PocketBase failed", "song_id", songAgg.AggregateID(), "error", err)
 			}
 		}
@@ -444,10 +478,21 @@ func runApply(ctx context.Context, args []string) error {
 			propID, rep.RunID, p.TargetType, p.TargetID, p.Kind,
 			p.Before, p.After, p.Evidence, p.Confidence, p.TidalTrackID, now,
 		)
-		if err == nil {
-			_ = propAgg.Approve(now, "applied via CLI")
-			_ = propAgg.MarkApplied(now)
-			_, _ = propRepo.Save(ctx, propAgg)
+		if err != nil {
+			p.Note = fmt.Sprintf("creating proposal: %v", err)
+			continue
+		}
+		if err := propAgg.Approve(now, "applied via CLI"); err != nil {
+			p.Note = fmt.Sprintf("approving proposal: %v", err)
+			continue
+		}
+		if err := propAgg.MarkApplied(now); err != nil {
+			p.Note = fmt.Sprintf("marking proposal applied: %v", err)
+			continue
+		}
+		if _, err := propRepo.Save(ctx, propAgg); err != nil {
+			p.Note = fmt.Sprintf("saving proposal: %v", err)
+			continue
 		}
 
 		p.Applied = true
@@ -460,8 +505,11 @@ func runApply(ctx context.Context, args []string) error {
 
 	// Update report with applied flags
 	updatedJSON, err := json.Marshal(rep)
-	if err == nil {
-		_ = os.WriteFile(reportPath, updatedJSON, 0644)
+	if err != nil {
+		return fmt.Errorf("marshaling updated report JSON: %w", err)
+	}
+	if err := os.WriteFile(reportPath, updatedJSON, 0644); err != nil {
+		return fmt.Errorf("writing updated report JSON: %w", err)
 	}
 
 	fmt.Printf("\n✓ Successfully applied %d proposals into event store and catalog read model!\n", appliedCount)
@@ -583,32 +631,4 @@ func findLatestReport(reportDir string) (string, error) {
 	}
 	slices.Sort(files)
 	return files[len(files)-1], nil
-}
-
-func mirrorSongToPB(app *pocketbase.PocketBase, songAgg *song.Song) error {
-	if app == nil || songAgg == nil {
-		return nil
-	}
-	record, err := app.FindRecordById("songs", songAgg.AggregateID())
-	if err != nil {
-		collection, err := app.FindCollectionByNameOrId("songs")
-		if err != nil {
-			return fmt.Errorf("finding songs collection: %w", err)
-		}
-		record = core.NewRecord(collection)
-		record.Id = songAgg.AggregateID()
-	}
-	record.Set("title", songAgg.Title)
-	record.Set("artist_name", songAgg.ArtistName)
-	record.Set("album", songAgg.Album)
-	record.Set("release_date", songAgg.ReleaseDate)
-	record.Set("release_year", songAgg.ReleaseYear)
-	record.Set("release_type", songAgg.ReleaseType)
-	if songAgg.SpotifyID != "" {
-		record.Set("spotify_id", songAgg.SpotifyID)
-	}
-	record.Set("is_recent", songAgg.IsRecent)
-	record.Set("tidal_id", songAgg.TidalID)
-	record.Set("duplicate_of", songAgg.DuplicateOf)
-	return app.Save(record)
 }

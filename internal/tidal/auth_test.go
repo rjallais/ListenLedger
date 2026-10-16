@@ -1,6 +1,7 @@
 package tidal
 
 import (
+	"context"
 	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +131,12 @@ func TestExchangeCodeAndRefresh(t *testing.T) {
 		t.Errorf("expected user id '987654', got %q", token.UserID)
 	}
 
+	var savedToken string
+	cfg.PersistRefreshToken = func(ctx context.Context, token string) error {
+		savedToken = token
+		return nil
+	}
+
 	refreshed, err := RefreshAccessToken(ctx, server.Client(), cfg, token.RefreshToken)
 	if err != nil {
 		t.Fatalf("RefreshAccessToken() error = %v", err)
@@ -139,5 +146,8 @@ func TestExchangeCodeAndRefresh(t *testing.T) {
 	}
 	if refreshed.RefreshToken != "refresh-456" {
 		t.Errorf("expected rotated refresh token 'refresh-456', got %q", refreshed.RefreshToken)
+	}
+	if savedToken != "refresh-456" {
+		t.Errorf("expected persisted rotated token 'refresh-456', got %q", savedToken)
 	}
 }

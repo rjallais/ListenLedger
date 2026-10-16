@@ -16,6 +16,7 @@
 
 # Project specific ignores
 .mise.local.toml
+internal/**/fnox.toml
 
 # Build artifacts and temp files
 bin/

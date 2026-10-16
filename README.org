@@ -124,10 +124,10 @@ fnox exec -- go run ./cmd/tidal_sync login
 # 2. Plan synchronization (dry-run default; emits JSON and CSV reports in backfill_reports/)
 fnox exec -- go run ./cmd/tidal_sync plan --country BR
 
-# 3. Apply approved proposals
-fnox exec -- go run ./cmd/tidal_sync apply --approve-all-above 0.90
+# 3. Apply approved proposals (stop the app first, or pass --live-ok)
+fnox exec -- go run ./cmd/tidal_sync apply --approve-all-above 0.90 --live-ok
 #+end_src
-  Backfill safety: review the JSON report in =<data-dir>/backfill_reports/= and run =cmd/safebackup= before using =--apply=. If the web app is running, stop it first or dry-run against a copied =pb_data/= directory — the backfill tools boot an embedded NATS server on the data directory, and a second server on a live store corrupts it.
+  Backfill safety: review the JSON report in =backfill_reports/= and run =cmd/safebackup= before using =--apply=. If the web app is running, stop it first or run with =--live-ok= or against a backup copy of the data directory — the sync and backfill tools boot an embedded NATS server on the data directory, and a second server on a live store corrupts it.
 
 * Troubleshooting
 - =encoding/json/v2= is stable in Go 1.27; no experiment flag is required.
