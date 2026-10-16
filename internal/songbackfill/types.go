@@ -110,6 +110,13 @@ type TrackCandidate struct {
 	Source      string
 	Title       string
 	ArtistNames []string
+	// AlbumName and ReleaseDate power metadata enrichment (missing album /
+	// release data); artist-only backfills ignore them. ReleaseType is the
+	// distributor type from the album title suffix ("- Single", "- EP"),
+	// empty when the title carries none.
+	AlbumName   string
+	ReleaseDate string
+	ReleaseType string
 	ReleaseYear int
 	Confidence  float64
 }

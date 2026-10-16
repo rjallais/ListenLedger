@@ -8,12 +8,18 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-func normalizeEllipsis(value string) string {
+// NormalizeEllipsis normalizes unicode ellipses to three dots.
+func NormalizeEllipsis(value string) string {
 	value = strings.ReplaceAll(value, "…", "...")
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
-func normalizeKey(value string) string {
+func normalizeEllipsis(value string) string {
+	return NormalizeEllipsis(value)
+}
+
+// NormalizeKey normalizes artist and title strings for fuzzy matching.
+func NormalizeKey(value string) string {
 	value = normalizeEllipsis(value)
 	value = strings.ToLower(value)
 	value = norm.NFD.String(value)
@@ -41,6 +47,10 @@ func normalizeKey(value string) string {
 	}
 
 	return strings.TrimSpace(strings.Join(strings.Fields(builder.String()), " "))
+}
+
+func normalizeKey(value string) string {
+	return NormalizeKey(value)
 }
 
 func normalizeLooseKey(value string) string {
@@ -112,4 +122,10 @@ func parseReleaseYear(value string) int {
 		return 0
 	}
 	return year
+}
+
+// ParseReleaseYear extracts the leading 4-digit year from a release date
+// ("2019-01-10" -> 2019). Zero when no year is readable.
+func ParseReleaseYear(value string) int {
+	return parseReleaseYear(value)
 }

@@ -191,6 +191,75 @@ func projectSongEvent(tx *sqlite.Conn, evt eventsourcing.Event) error {
 		if _, err := stmt.Step(); err != nil {
 			return fmt.Errorf("updating song recent flag: %w", err)
 		}
+	case song.EventTypeSongMetadataEnriched:
+		var pl song.MetadataEnrichedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			return err
+		}
+		// The payload is the merged post-state, so redelivery rewrites the
+		// same values and stays idempotent. release_type keeps the row's
+		// value when the payload's is empty (pre-field v1 events).
+		stmt := tx.Prep("UPDATE songs SET album = ?, release_date = ?, release_year = ?, release_type = COALESCE(NULLIF(?, ''), release_type) WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, pl.Album)
+		stmt.BindText(2, pl.ReleaseDate)
+		stmt.BindInt64(3, pl.ReleaseYear)
+		stmt.BindText(4, pl.ReleaseType)
+		stmt.BindText(5, pl.SongID)
+		if _, err := stmt.Step(); err != nil {
+			return fmt.Errorf("updating song metadata: %w", err)
+		}
+	case song.EventTypeTidalIDLinked:
+		var pl song.TidalIDLinkedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			return err
+		}
+		stmt := tx.Prep("UPDATE songs SET tidal_id = ? WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, pl.TidalID)
+		stmt.BindText(2, pl.SongID)
+		if _, err := stmt.Step(); err != nil {
+			return fmt.Errorf("updating song tidal id: %w", err)
+		}
+	case song.EventTypeSongMetadataCorrected:
+		var pl song.MetadataCorrectedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			return err
+		}
+		stmt := tx.Prep("UPDATE songs SET album = ?, release_date = ?, release_year = ?, release_type = ? WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, pl.Album)
+		stmt.BindText(2, pl.ReleaseDate)
+		stmt.BindInt64(3, pl.ReleaseYear)
+		stmt.BindText(4, pl.ReleaseType)
+		stmt.BindText(5, pl.SongID)
+		if _, err := stmt.Step(); err != nil {
+			return fmt.Errorf("correcting song metadata: %w", err)
+		}
+	case song.EventTypeSongArtistCreditsCorrected:
+		var pl song.ArtistCreditsCorrectedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			return err
+		}
+		stmt := tx.Prep("UPDATE songs SET artist_name = ? WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, pl.ArtistName)
+		stmt.BindText(2, pl.SongID)
+		if _, err := stmt.Step(); err != nil {
+			return fmt.Errorf("correcting song artist credits: %w", err)
+		}
+	case song.EventTypeSongMarkedDuplicate:
+		var pl song.MarkedDuplicatePayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			return err
+		}
+		stmt := tx.Prep("UPDATE songs SET duplicate_of = ? WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, pl.CanonicalID)
+		stmt.BindText(2, pl.SongID)
+		if _, err := stmt.Step(); err != nil {
+			return fmt.Errorf("marking song duplicate: %w", err)
+		}
 	}
 	return nil
 }
