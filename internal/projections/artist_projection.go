@@ -8,12 +8,10 @@ import (
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
-	"ListenLedger/internal/messaging"
 )
 
 // ListenerSnapshot represents a point-in-time monthly listener record for trend analysis.
@@ -29,12 +27,11 @@ type ListenerSnapshot struct {
 	ScrapedAt         time.Time `json:"scraped_at"`
 }
 
-// ArtistProjection projects Artist events into SQLite read models and publishes to NATS JetStream.
+// ArtistProjection projects Artist events into SQLite read models.
 type ArtistProjection struct {
 	log *slog.Logger
 	db  *toolbeltdb.Database
 	nc  *nats.Conn
-	js  jetstream.JetStream
 }
 
 // NewArtistProjection creates a new ArtistProjection instance.
@@ -44,13 +41,6 @@ func NewArtistProjection(log *slog.Logger, db *toolbeltdb.Database, nc *nats.Con
 		db:  db,
 		nc:  nc,
 	}
-}
-
-// SetJetStream wires the durable JetStream context for domain.events.>
-// publishing. When set, Project publishes each event durably (MsgID=event ID)
-// in addition to the ephemeral core-NATS fanout for live Datastar SSE morphing.
-func (p *ArtistProjection) SetJetStream(js jetstream.JetStream) {
-	p.js = js
 }
 
 // ResetForReplay clears event-derived artist history and stale artist rows.
@@ -82,7 +72,14 @@ func (p *ArtistProjection) ResetForReplay(ctx context.Context) error {
 	return nil
 }
 
-// Project synchronously applies events to SQLite read models and publishes to NATS.
+// Project synchronously applies events to SQLite read models.
+//
+// It does not publish to JetStream: durable DOMAIN_EVENTS delivery belongs to
+// the write path — the SQLite store's outbox relay (the outbox row commits
+// atomically with the event) or, in jetstream mode, JetStreamStore.Append
+// itself. Ephemeral UI fanout lives on artist.updated / queue.updated via
+// the PocketBase hooks path with structured ArtistUpdated payloads; no
+// subscriber reads core domain.events.*.
 func (p *ArtistProjection) Project(ctx context.Context, agg *artist.Artist, events []eventsourcing.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -99,30 +96,6 @@ func (p *ArtistProjection) Project(ctx context.Context, agg *artist.Artist, even
 	if err != nil {
 		return fmt.Errorf("projecting artist events: %w", err)
 	}
-
-	// Publish durable domain events to JetStream (append-only log, source of
-	// truth). Ephemeral UI fanout lives on artist.updated / queue.updated via
-	// the PocketBase hooks path with structured ArtistUpdated payloads — the
-	// former core-NATS domain.events.* duplicate and the raw-bytes legacy
-	// alias are gone: no subscriber reads core domain.events.*, and both SSE
-	// and batch subscribers unmarshal artist.updated as ArtistUpdated.
-	if p.js != nil {
-		for _, evt := range events {
-			subject := messaging.SubjectDomainEvent(evt.StreamType, evt.StreamID, evt.EventType)
-			data, err := evt.Bytes()
-			if err != nil {
-				p.log.Error("failed encoding domain event as RON", "subject", subject, "error", err)
-				continue
-			}
-			pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, pubErr := messaging.PublishDomainEvent(pubCtx, p.js, subject, evt.ID, data)
-			cancel()
-			if pubErr != nil {
-				p.log.Error("failed publishing domain event to JetStream", "subject", subject, "error", pubErr)
-			}
-		}
-	}
-
 	return nil
 }
 

@@ -290,3 +290,36 @@ func TestSQLiteStore_ReplaceRefusesWithoutOptIn(t *testing.T) {
 		t.Fatalf("Replace with opt-in: %v", err)
 	}
 }
+
+func TestSQLiteStore_AppendBatch(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	e1, err := eventsourcing.NewEvent("batch-s1", "artist", 1, "ArtistCreated", map[string]string{"name": "One"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent e1: %v", err)
+	}
+	e2, err := eventsourcing.NewEvent("batch-s2", "artist", 1, "ArtistCreated", map[string]string{"name": "Two"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent e2: %v", err)
+	}
+
+	err = store.AppendBatch(ctx, []eventsourcing.StreamAppend{
+		{StreamID: "batch-s1", ExpectedVersion: 0, Events: []eventsourcing.Event{e1}},
+		{StreamID: "batch-s2", ExpectedVersion: 0, Events: []eventsourcing.Event{e2}},
+	})
+	if err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+
+	for _, id := range []string{"batch-s1", "batch-s2"} {
+		evts, err := store.Load(ctx, id)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", id, err)
+		}
+		if len(evts) != 1 || evts[0].Version != 1 {
+			t.Fatalf("Load(%s) = %+v, want 1 event at v1", id, evts)
+		}
+	}
+}

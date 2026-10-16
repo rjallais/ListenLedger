@@ -2,9 +2,10 @@
 //
 // Write path: SQLiteStore.Append writes events + outbox rows in one
 // transaction. This relay publishes unpublished rows (MsgID = event ID) and
-// marks them published. Projections keep their synchronous publish for
-// low-latency SSE; the relay is the durability backstop that closes the
-// dual-write loss window (commit succeeded, sync publish crashed).
+// marks them published. It is the single DOMAIN_EVENTS publisher in sqlite
+// mode: projections do not publish synchronously, so each event reaches
+// JetStream exactly once, at most one PollInterval after commit, and the
+// outbox row commit closes the dual-write loss window.
 package outbox
 
 import (

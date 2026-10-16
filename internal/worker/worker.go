@@ -194,11 +194,6 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 			}
 			w.artistRepo = artist.NewRepository(events)
 			w.artistProjection = projections.NewArtistProjection(slog.Default(), db, w.nc)
-			// Durable domain.events.> publishing (append-only log = source of truth).
-			// Core-NATS fanout for live SSE stays as the ephemeral UI hint.
-			if w.js != nil {
-				w.artistProjection.SetJetStream(w.js)
-			}
 			w.jobStore = events
 			w.jobRepo = scrapejob.NewRepository(events)
 		}

@@ -17,10 +17,25 @@ type Store interface {
 	Load(ctx context.Context, streamID string) ([]Event, error)
 }
 
+// StreamAppend represents uncommitted events to append to a single stream.
+type StreamAppend struct {
+	StreamID        string
+	ExpectedVersion int64
+	Events          []Event
+}
+
+// BatchAppender is an optional Store capability for committing events across
+// multiple streams in a single atomic transaction.
+type BatchAppender interface {
+	AppendBatch(ctx context.Context, batches []StreamAppend) error
+}
+
 // SQLiteStore is an event store backed by SQLite with optimistic concurrency protection.
 type SQLiteStore struct {
 	db *toolbeltdb.Database
 }
+
+var _ BatchAppender = (*SQLiteStore)(nil)
 
 // StreamInfo identifies a stream and its aggregate type without loading payloads.
 type StreamInfo struct {
@@ -54,68 +69,84 @@ func (s *SQLiteStore) Append(ctx context.Context, streamID string, expectedVersi
 	if len(events) == 0 {
 		return nil
 	}
-	if err := validateEventBatch(streamID, expectedVersion, events); err != nil {
-		return fmt.Errorf("validating event batch: %w", err)
+	return s.AppendBatch(ctx, []StreamAppend{{
+		StreamID:        streamID,
+		ExpectedVersion: expectedVersion,
+		Events:          events,
+	}})
+}
+
+// AppendBatch persists uncommitted events across multiple streams in a single
+// atomic SQLite transaction, amortizing fsync cost for bulk operations.
+func (s *SQLiteStore) AppendBatch(ctx context.Context, batches []StreamAppend) error {
+	nonEmpty := 0
+	for _, b := range batches {
+		if len(b.Events) == 0 {
+			continue
+		}
+		if err := validateEventBatch(b.StreamID, b.ExpectedVersion, b.Events); err != nil {
+			return fmt.Errorf("validating event batch: %w", err)
+		}
+		nonEmpty++
+	}
+	if nonEmpty == 0 {
+		return nil
 	}
 
 	return s.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-		// Use the stream index to fetch only the latest event instead of scanning
-		// an artist's full history for every append.
 		queryVersion := tx.Prep("SELECT version, stream_type FROM events WHERE stream_id = ? ORDER BY version DESC LIMIT 1;")
 		defer func() { _ = queryVersion.Reset() }()
-		queryVersion.BindText(1, streamID)
 
-		hasRow, err := queryVersion.Step()
-		if err != nil {
-			return fmt.Errorf("checking stream version: %w", err)
-		}
-
-		var currentVersion int64
-		var existingStreamType string
-		if hasRow {
-			currentVersion = queryVersion.ColumnInt64(0)
-			existingStreamType = queryVersion.ColumnText(1)
-		}
-
-		if currentVersion != expectedVersion {
-			return fmt.Errorf("%w: stream %s expected version %d, but found %d",
-				ErrConcurrencyConflict, streamID, expectedVersion, currentVersion)
-		}
-		if existingStreamType != "" && existingStreamType != events[0].StreamType {
-			return fmt.Errorf("stream %s has aggregate type %q, cannot append type %q", streamID, existingStreamType, events[0].StreamType)
-		}
-
-		// 2. Insert all events atomically
 		insertStmt := tx.Prep("INSERT INTO events (id, stream_id, stream_type, version, event_type, payload, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);")
 		defer func() { _ = insertStmt.Reset() }()
 
-		for _, evt := range events {
-			if err := insertEvent(insertStmt, evt); err != nil {
-				// Version races (duplicate stream_id+version via
-				// uq_stream_version) are retryable concurrency conflicts.
-				// Any other UNIQUE failure (e.g. a duplicate events.id
-				// primary key) is a bug: surface it as an ordinary error
-				// so callers never retry-loop on it.
-				if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique &&
-					(strings.Contains(err.Error(), "uq_stream_version") ||
-						strings.Contains(err.Error(), "events.stream_id")) {
-					return fmt.Errorf("%w: %s v%d", ErrConcurrencyConflict, streamID, evt.Version)
-				}
-				return fmt.Errorf("inserting event %s v%d: %w", streamID, evt.Version, err)
-			}
-		}
-
-		// 3. Enqueue the same events in the outbox in the SAME transaction.
-		// The relay publishes them to JetStream DOMAIN_EVENTS; if this commit
-		// succeeds but the synchronous projection publish crashes, the relay
-		// backstops it. MsgID = event ID keeps the double-publish idempotent.
 		outboxStmt := tx.Prep("INSERT OR IGNORE INTO outbox (event_id) VALUES (?);")
 		defer func() { _ = outboxStmt.Reset() }()
-		for _, evt := range events {
-			_ = outboxStmt.Reset()
-			outboxStmt.BindText(1, evt.ID)
-			if _, err := outboxStmt.Step(); err != nil {
-				return fmt.Errorf("enqueueing outbox event %s: %w", evt.ID, err)
+
+		for _, b := range batches {
+			if len(b.Events) == 0 {
+				continue
+			}
+			_ = queryVersion.Reset()
+			queryVersion.BindText(1, b.StreamID)
+
+			hasRow, err := queryVersion.Step()
+			if err != nil {
+				return fmt.Errorf("checking stream version: %w", err)
+			}
+
+			var currentVersion int64
+			var existingStreamType string
+			if hasRow {
+				currentVersion = queryVersion.ColumnInt64(0)
+				existingStreamType = queryVersion.ColumnText(1)
+			}
+
+			if currentVersion != b.ExpectedVersion {
+				return fmt.Errorf("%w: stream %s expected version %d, but found %d",
+					ErrConcurrencyConflict, b.StreamID, b.ExpectedVersion, currentVersion)
+			}
+			if existingStreamType != "" && existingStreamType != b.Events[0].StreamType {
+				return fmt.Errorf("stream %s has aggregate type %q, cannot append type %q", b.StreamID, existingStreamType, b.Events[0].StreamType)
+			}
+
+			for _, evt := range b.Events {
+				if err := insertEvent(insertStmt, evt); err != nil {
+					if sqlite.ErrCode(err) == sqlite.ResultConstraintUnique &&
+						(strings.Contains(err.Error(), "uq_stream_version") ||
+							strings.Contains(err.Error(), "events.stream_id")) {
+						return fmt.Errorf("%w: %s v%d", ErrConcurrencyConflict, b.StreamID, evt.Version)
+					}
+					return fmt.Errorf("inserting event %s v%d: %w", b.StreamID, evt.Version, err)
+				}
+			}
+
+			for _, evt := range b.Events {
+				_ = outboxStmt.Reset()
+				outboxStmt.BindText(1, evt.ID)
+				if _, err := outboxStmt.Step(); err != nil {
+					return fmt.Errorf("enqueueing outbox event %s: %w", evt.ID, err)
+				}
 			}
 		}
 
