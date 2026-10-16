@@ -12,6 +12,7 @@ import (
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
+	"ListenLedger/internal/domain/batch"
 	"ListenLedger/internal/domain/scrapejob"
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
@@ -163,6 +164,55 @@ func seedAuditDB(ctx context.Context, t *testing.T, dataDir string) {
 	appendAgg("req_open_norow", 0, job.UncommittedEvents()...)
 
 	jobRow("req_nostream", "queued")
+
+	// Batches: match, mismatch (completed count off), missing row, unlogged row.
+	newBatch := func(id string, artists []string) *batch.Batch {
+		b, err := batch.NewBatch(id, artists, map[string]int{"priority": 1})
+		if err != nil {
+			t.Fatalf("NewBatch: %v", err)
+		}
+		return b
+	}
+	batchRow := func(id string, total, completed, done int64) {
+		exec("INSERT INTO batches (id, total, completed, done) VALUES (?, ?, ?, ?);",
+			func(s *sqlite.Stmt) {
+				s.BindText(1, id)
+				s.BindInt64(2, total)
+				s.BindInt64(3, completed)
+				s.BindInt64(4, done)
+			})
+	}
+	memberRow := func(batchID, artistID string, done int64) {
+		exec("INSERT INTO batch_members (batch_id, artist_id, done) VALUES (?, ?, ?);",
+			func(s *sqlite.Stmt) {
+				s.BindText(1, batchID)
+				s.BindText(2, artistID)
+				s.BindInt64(3, done)
+			})
+	}
+
+	bMatch := newBatch("bt_match", []string{"ar_1", "ar_2"})
+	if _, _, err := bMatch.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	appendAgg("bt_match", 0, bMatch.UncommittedEvents()...)
+	batchRow("bt_match", 2, 1, 0)
+	memberRow("bt_match", "ar_1", 1)
+	memberRow("bt_match", "ar_2", 0)
+
+	bStale := newBatch("bt_stale", []string{"ar_1", "ar_2"})
+	if _, _, err := bStale.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	appendAgg("bt_stale", 0, bStale.UncommittedEvents()...)
+	batchRow("bt_stale", 2, 0, 0)
+	memberRow("bt_stale", "ar_1", 0)
+	memberRow("bt_stale", "ar_2", 0)
+
+	bNoRow := newBatch("bt_norow", []string{"ar_1"})
+	appendAgg("bt_norow", 0, bNoRow.UncommittedEvents()...)
+
+	batchRow("bt_nostream", 1, 1, 1)
 }
 
 func TestAuditFindsDivergence(t *testing.T) {
@@ -175,6 +225,7 @@ func TestAuditFindsDivergence(t *testing.T) {
 		album.StreamTypeAlbum:         {},
 		song.StreamTypeSong:           {},
 		scrapejob.StreamTypeScrapeJob: {},
+		batch.StreamTypeBatch:         {},
 	}
 	rep, err := audit(ctx, dataDir, selected, 20)
 	if err != nil {
@@ -198,6 +249,12 @@ func TestAuditFindsDivergence(t *testing.T) {
 	}
 	if rep.Jobs.Mismatched != 1 || rep.Jobs.MissingRows != 1 || rep.Jobs.UnloggedRows != 1 {
 		t.Fatalf("jobs = %+v, want 1 mismatch + 1 missing + 1 unlogged", rep.Jobs)
+	}
+	if rep.Batches.Checked != 3 {
+		t.Fatalf("batches checked = %d, want 3", rep.Batches.Checked)
+	}
+	if rep.Batches.Mismatched != 1 || rep.Batches.MissingRows != 1 || rep.Batches.UnloggedRows != 1 {
+		t.Fatalf("batches = %+v, want 1 mismatch + 1 missing + 1 unlogged", rep.Batches)
 	}
 	if rep.PurgedInfos != 1 {
 		t.Fatalf("purged infos = %d, want 1", rep.PurgedInfos)

@@ -73,3 +73,38 @@ func TestCompareMirrorsSampleCap(t *testing.T) {
 		t.Fatalf("samples = %d, want capped at 2", len(rep.Samples))
 	}
 }
+
+func TestCompareMirrorsSongsWithTidalFields(t *testing.T) {
+	fields := []string{"title", "artist_name", "is_recent", "album", "release_date", "release_year", "release_type", "spotify_id", "tidal_id", "duplicate_of"}
+	pb := []mirrorRow{
+		mirrorRowFor("s1", map[string]any{
+			"title": "Master of Puppets", "artist_name": "Metallica", "is_recent": int64(0),
+			"album": "Master of Puppets", "release_date": "1986-03-03", "release_year": int64(1986),
+			"release_type": "album", "spotify_id": "sp_s1", "tidal_id": "td_s1", "duplicate_of": "",
+		}),
+		mirrorRowFor("s2", map[string]any{
+			"title": "Battery", "artist_name": "Metallica", "is_recent": int64(1),
+			"album": "Master of Puppets", "release_date": "1986-03-03", "release_year": int64(1986),
+			"release_type": "album", "spotify_id": "sp_s2", "tidal_id": "td_s2_pb", "duplicate_of": "",
+		}),
+	}
+	lite := []mirrorRow{
+		mirrorRowFor("s1", map[string]any{
+			"title": "Master of Puppets", "artist_name": "Metallica", "is_recent": int64(0),
+			"album": "Master of Puppets", "release_date": "1986-03-03", "release_year": int64(1986),
+			"release_type": "album", "spotify_id": "sp_s1", "tidal_id": "td_s1", "duplicate_of": "",
+		}),
+		mirrorRowFor("s2", map[string]any{
+			"title": "Battery", "artist_name": "Metallica", "is_recent": int64(1),
+			"album": "Master of Puppets", "release_date": "1986-03-03", "release_year": int64(1986),
+			"release_type": "album", "spotify_id": "sp_s2", "tidal_id": "td_s2_sqlite", "duplicate_of": "",
+		}),
+	}
+	rep := compareMirrors("song", fields, pb, lite, 20)
+	if !rep.hasMismatch() {
+		t.Fatal("hasMismatch should be true because s2 tidal_id differs")
+	}
+	if rep.Mismatched != 1 {
+		t.Fatalf("mismatched = %d, want 1", rep.Mismatched)
+	}
+}
