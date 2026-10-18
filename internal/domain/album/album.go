@@ -68,7 +68,7 @@ func validStatus(status string) bool {
 }
 
 // NewAlbum records AlbumCreated. Status defaults to "waiting".
-func NewAlbum(id, title, artistName, status string, collectionSongs, totalSongs int64) (*Album, error) {
+func NewAlbum(id, title, artistName, status string, collectionSongs, totalSongs int64, opts ...eventsourcing.AggregateOption) (*Album, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, ErrEmptyTitle
@@ -84,7 +84,7 @@ func NewAlbum(id, title, artistName, status string, collectionSongs, totalSongs 
 		return nil, ErrInvalidStatus
 	}
 
-	agg := &Album{BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeAlbum)}
+	agg := &Album{BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeAlbum, opts...)}
 	evt, err := agg.RecordThat(EventTypeAlbumCreated, CreatedPayload{
 		ID: id, Title: title, ArtistName: artistName, Status: status,
 		CollectionSongs: collectionSongs, TotalSongs: totalSongs,
@@ -154,6 +154,8 @@ func (a *Album) apply(evt eventsourcing.Event) error {
 			return fmt.Errorf("unmarshaling %s: %w", evt.EventType, err)
 		}
 		a.CollectionSongs, a.TotalSongs = pl.CollectionSongs, pl.TotalSongs
+	default:
+		return fmt.Errorf("album: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

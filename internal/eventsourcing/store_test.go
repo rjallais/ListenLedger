@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -127,6 +128,30 @@ func TestEventBytes_LegacyJSONPayload(t *testing.T) {
 	}
 	if _, err := native.Bytes(); err != nil {
 		t.Fatalf("Bytes() for RON payload error = %v", err)
+	}
+}
+
+func TestEventBytes_SkipsDataField(t *testing.T) {
+	evtWithData, err := eventsourcing.NewEvent("artist-1", "artist", 1, "ArtistCreated",
+		map[string]any{"id": "artist-1", "name": "N"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent() error = %v", err)
+	}
+	bytesWithData, err := evtWithData.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes() with Data error = %v", err)
+	}
+
+	evtWithoutData := evtWithData
+	evtWithoutData.Data = nil
+	bytesWithoutData, err := evtWithoutData.Bytes()
+	if err != nil {
+		t.Fatalf("Bytes() without Data error = %v", err)
+	}
+
+	if !bytes.Equal(bytesWithData, bytesWithoutData) {
+		t.Fatalf("Bytes() output with Data (%d bytes) != without Data (%d bytes)",
+			len(bytesWithData), len(bytesWithoutData))
 	}
 }
 
@@ -321,5 +346,59 @@ func TestSQLiteStore_AppendBatch(t *testing.T) {
 		if len(evts) != 1 || evts[0].Version != 1 {
 			t.Fatalf("Load(%s) = %+v, want 1 event at v1", id, evts)
 		}
+	}
+}
+
+// TestEventTypeCensusSamplesNewestEnd asserts the census samples both ends
+// of each type: a payload that only breaks on the newest event must surface
+// in the sample even when the limit is smaller than the type's count.
+func TestEventTypeCensusSamplesNewestEnd(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	ids := make([]string, 0, 4)
+	for v := range int64(2) {
+		evt, err := eventsourcing.NewEvent("ar_census", "artist", v+1, "ArtistMonthlyListenersScraped",
+			map[string]any{"monthly_listeners": int64(100 + v)}, nil)
+		if err != nil {
+			t.Fatalf("NewEvent v%d: %v", v+1, err)
+		}
+		if err := store.Append(ctx, "ar_census", v, evt); err != nil {
+			t.Fatalf("Append v%d: %v", v+1, err)
+		}
+		ids = append(ids, evt.ID)
+	}
+	broken, err := eventsourcing.NewEvent("ar_census", "artist", 3, "ArtistMonthlyListenersScraped",
+		map[string]any{"id": 42}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent broken: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 2, broken); err != nil {
+		t.Fatalf("Append broken: %v", err)
+	}
+	ids = append(ids, broken.ID)
+
+	census, err := store.EventTypeCensus(ctx, 2)
+	if err != nil {
+		t.Fatalf("EventTypeCensus: %v", err)
+	}
+	var samples []string
+	for _, entry := range census {
+		if entry.EventType != "ArtistMonthlyListenersScraped" {
+			continue
+		}
+		if count := int64(len(entry.Samples)); count != 3 {
+			t.Fatalf("samples = %d, want 3 (limit 2 from each end, deduped)", count)
+		}
+		for _, s := range entry.Samples {
+			samples = append(samples, s.ID)
+		}
+	}
+	if samples == nil {
+		t.Fatal("census missing ArtistMonthlyListenersScraped")
+	}
+	if newest := ids[len(ids)-1]; !slices.Contains(samples, newest) {
+		t.Fatalf("newest event %s not sampled: %v", newest, samples)
 	}
 }

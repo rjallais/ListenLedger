@@ -5,10 +5,25 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"strconv"
 	"time"
-	"uuid"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/starfederation/ron-go"
+)
+
+// NATS message headers carrying the domain event envelope (Rita-style header
+// envelope). Readers inspect these headers in O(1) for tip/version/parity
+// verification without decoding the message body, falling back to
+// UnmarshalEvent for pre-header messages.
+const (
+	HeaderStreamID      = "LL-Stream-ID"
+	HeaderStreamType    = "LL-Stream-Type"
+	HeaderVersion       = "LL-Version"
+	HeaderEventType     = "LL-Event-Type"
+	HeaderCreatedAt     = "LL-Created-At"
+	HeaderSchemaVersion = "LL-Schema-Version"
 )
 
 // Event represents an immutable domain event envelope.
@@ -22,12 +37,83 @@ type Event struct {
 	Payload        []byte    `json:"payload"`
 	Metadata       []byte    `json:"metadata"`
 	CreatedAt      time.Time `json:"created_at"`
+	// Data holds the in-memory typed payload when constructed via NewEvent /
+	// RecordThat or pre-decoded by the registry, avoiding redundant RON/JSON
+	// unmarshaling during in-process command folding and projection.
+	Data any `json:"-" ron:"-"`
+}
+
+// SetEventHeaders stamps the domain event's envelope metadata into NATS
+// message headers so JetStream consumers and tip checks can inspect identity
+// and version without decoding the RON body.
+func SetEventHeaders(h nats.Header, evt Event) {
+	if h == nil {
+		return
+	}
+	if evt.ID != "" {
+		h.Set(jetstream.MsgIDHeader, evt.ID)
+	}
+	if evt.StreamID != "" {
+		h.Set(HeaderStreamID, evt.StreamID)
+	}
+	if evt.StreamType != "" {
+		h.Set(HeaderStreamType, evt.StreamType)
+	}
+	if evt.Version > 0 {
+		h.Set(HeaderVersion, strconv.FormatInt(evt.Version, 10))
+	}
+	if evt.EventType != "" {
+		h.Set(HeaderEventType, evt.EventType)
+	}
+	if !evt.CreatedAt.IsZero() {
+		h.Set(HeaderCreatedAt, evt.CreatedAt.UTC().Format(time.RFC3339Nano))
+	}
+	h.Set(HeaderSchemaVersion, strconv.Itoa(CurrentSchemaVersionFor(evt.EventType)))
+}
+
+// EventHeaderMeta extracts the envelope identity and version from NATS
+// message headers in O(1). It returns ok=false when headers are absent
+// (pre-header messages) or malformed so callers fall back to UnmarshalEvent.
+func EventHeaderMeta(h nats.Header) (id, streamID, streamType, eventType string, version int64, ok bool) {
+	if len(h) == 0 {
+		return "", "", "", "", 0, false
+	}
+	vStr := h.Get(HeaderVersion)
+	if vStr == "" {
+		return "", "", "", "", 0, false
+	}
+	v, err := strconv.ParseInt(vStr, 10, 64)
+	if err != nil || v <= 0 {
+		return "", "", "", "", 0, false
+	}
+	id = h.Get(jetstream.MsgIDHeader)
+	streamID = h.Get(HeaderStreamID)
+	streamType = h.Get(HeaderStreamType)
+	eventType = h.Get(HeaderEventType)
+	if id == "" || streamID == "" || streamType == "" || eventType == "" {
+		return "", "", "", "", 0, false
+	}
+	return id, streamID, streamType, eventType, v, true
 }
 
 // NewEvent creates an event envelope with generated ID and RON payload.
+// When eventType is empty, it is inferred from the payload's registered type.
 // The writer schema version is stamped into map metadata ("schema_version",
 // defaulting pre-versioning readers to v1); see version.go.
 func NewEvent(streamID, streamType string, version int64, eventType string, payload any, metadata any) (Event, error) {
+	return newEvent(UUIDIDGen{}, WallClock{}, streamID, streamType, version, eventType, payload, metadata)
+}
+
+// newEvent stamps identity and time from the injected edges. Aggregates pass
+// their configured IDGen and Clock so tests can pin IDs and timestamps.
+func newEvent(idgen IDGen, clock Clock, streamID, streamType string, version int64, eventType string, payload any, metadata any) (Event, error) {
+	if eventType == "" {
+		inferred, ok := EventTypeOf(payload)
+		if !ok {
+			return Event{}, fmt.Errorf("%w: cannot infer event type from %T", ErrPayloadNotRegistered, payload)
+		}
+		eventType = inferred
+	}
 	metadata = stampSchemaVersion(eventType, metadata)
 	payloadBytes, err := ron.Marshal(payload)
 	if err != nil {
@@ -40,14 +126,15 @@ func NewEvent(streamID, streamType string, version int64, eventType string, payl
 	}
 
 	return Event{
-		ID:         "evt_" + uuid.New().String(),
+		ID:         idgen.NewEventID(),
 		StreamID:   streamID,
 		StreamType: streamType,
 		Version:    version,
 		EventType:  eventType,
 		Payload:    payloadBytes,
 		Metadata:   metadataBytes,
-		CreatedAt:  time.Now().UTC(),
+		CreatedAt:  clock.Now(),
+		Data:       payload,
 	}, nil
 }
 
@@ -139,6 +226,7 @@ func normalizeRONTimeArray(payload []byte) ([]byte, error) {
 
 // Bytes serializes the event envelope as RON, embedding payload and metadata as values.
 func (e Event) Bytes() ([]byte, error) {
+	e.Data = nil // in-memory only; never part of the wire envelope
 	data, err := ron.Marshal(eventEnvelope{
 		ID:         e.ID,
 		StreamID:   e.StreamID,

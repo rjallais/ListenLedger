@@ -5,11 +5,26 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
 )
+
+// TestReplayRejectsUnknownEventType pins the strict fold contract: a fact
+// this binary cannot fold must fail Replay instead of silently vanishing
+// from the row. cmd/audit's census (undecodable_events) is the deployment
+// gate; retiring an event type requires explicit no-op cases in the folds.
+func TestReplayRejectsUnknownEventType(t *testing.T) {
+	unknown, err := eventsourcing.NewEvent("ar_unknown", artist.StreamTypeArtist, 1, "ArtistNotAnEvent", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if _, err := artist.Replay("ar_unknown", []eventsourcing.Event{unknown}); err == nil {
+		t.Fatal("Replay(unknown event type) = nil, want an error")
+	}
+}
 
 func TestArtist_Lifecycle(t *testing.T) {
 	artistID := "artist_123"
@@ -118,8 +133,12 @@ func TestRepository_SaveBatch(t *testing.T) {
 		t.Fatalf("SetFetchStatus a2: %v", err)
 	}
 
-	if err := repo.SaveBatch(ctx, []*artist.Artist{a1, a2}); err != nil {
+	saved, err := repo.SaveBatch(ctx, []*artist.Artist{a1, a2})
+	if err != nil {
 		t.Fatalf("SaveBatch: %v", err)
+	}
+	if len(saved) != 4 {
+		t.Fatalf("expected 4 saved events (2 per artist), got %d", len(saved))
 	}
 	if len(a1.UncommittedEvents()) != 0 || len(a2.UncommittedEvents()) != 0 {
 		t.Fatal("expected UncommittedEvents to be cleared after SaveBatch")
@@ -186,5 +205,41 @@ func TestRepository_LoadHealsMissingSnapshotOnLongStream(t *testing.T) {
 	}
 	if again.Version() != version || again.MonthlyListeners != loaded.MonthlyListeners {
 		t.Fatalf("snapshot load = v%d/%d, want v%d/%d", again.Version(), again.MonthlyListeners, version, loaded.MonthlyListeners)
+	}
+}
+
+// TestArtistInjectedClockPinsPayloadTime proves domain constructors forward
+// aggregate options and that domain payload timestamps read the injected
+// clock: both the envelope and the ScrapedAt payload stay deterministic.
+func TestArtistInjectedClockPinsPayloadTime(t *testing.T) {
+	fixed := time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC)
+	clock := eventsourcing.NewFakeClock(fixed)
+
+	agg, err := artist.NewArtist("artist-clock", "Tool", "2yEwvVSSOPueGk6Mtu2FeT", "rock_metal", "included",
+		eventsourcing.WithClock(clock), eventsourcing.WithIDGen(&eventsourcing.SeqIDGen{}))
+	if err != nil {
+		t.Fatalf("NewArtist() error = %v", err)
+	}
+
+	created := agg.UncommittedEvents()[0]
+	if created.ID != "evt_1" || !created.CreatedAt.Equal(fixed) {
+		t.Fatalf("created event = %s at %s, want evt_1 at %s", created.ID, created.CreatedAt, fixed)
+	}
+
+	clock.Advance(30 * time.Minute)
+	if err := agg.RecordMonthlyListeners(4200000, "local_headless", 450); err != nil {
+		t.Fatalf("RecordMonthlyListeners() error = %v", err)
+	}
+
+	scraped := agg.UncommittedEvents()[1]
+	if !scraped.CreatedAt.Equal(fixed.Add(30 * time.Minute)) {
+		t.Errorf("scrape envelope CreatedAt = %s, want %s", scraped.CreatedAt, fixed.Add(30*time.Minute))
+	}
+	var payload artist.ListenersScrapedPayload
+	if err := eventsourcing.DecodeEventPayload(scraped, &payload); err != nil {
+		t.Fatalf("decoding payload: %v", err)
+	}
+	if !payload.ScrapedAt.Equal(fixed.Add(30 * time.Minute)) {
+		t.Errorf("payload ScrapedAt = %s, want %s", payload.ScrapedAt, fixed.Add(30*time.Minute))
 	}
 }

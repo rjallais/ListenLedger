@@ -83,7 +83,7 @@ type Job struct {
 }
 
 // NewScrapeJob opens the lifecycle with ScrapeRequested.
-func NewScrapeJob(requestID, artistID, commandType string) (*Job, error) {
+func NewScrapeJob(requestID, artistID, commandType string, opts ...eventsourcing.AggregateOption) (*Job, error) {
 	if requestID == "" {
 		return nil, fmt.Errorf("scrapejob: request_id cannot be empty")
 	}
@@ -91,7 +91,7 @@ func NewScrapeJob(requestID, artistID, commandType string) (*Job, error) {
 		return nil, fmt.Errorf("scrapejob: artist_id cannot be empty")
 	}
 	agg := &Job{
-		BaseAggregate: eventsourcing.NewBaseAggregate(requestID, StreamTypeScrapeJob),
+		BaseAggregate: eventsourcing.NewBaseAggregate(requestID, StreamTypeScrapeJob, opts...),
 		requestID:     requestID,
 		artistID:      artistID,
 	}
@@ -259,6 +259,8 @@ func (j *Job) apply(evt eventsourcing.Event) error {
 		}
 		j.status = StatusDeadLettered
 		j.closed = true
+	default:
+		return fmt.Errorf("scrapejob: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

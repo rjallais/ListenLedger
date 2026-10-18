@@ -46,8 +46,8 @@ go run ./cmd/replay --dry-run
 go run ./cmd/audit
 go run ./cmd/audit --pb-mirror
 fnox exec -- go run ./cmd/tidal_sync login
-fnox exec -- go run ./cmd/tidal_sync plan
-fnox exec -- go run ./cmd/tidal_sync apply
+fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/tidal_sync plan
+fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/tidal_sync apply
 ```
 
 ## Code Style Guidelines
@@ -133,6 +133,8 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - **Scrape job tracking**: `scrape_jobs` stores queued/processing/succeeded/failed attempts and powers `/api/queue` plus `/api/queue/retry` (see `migrations/1760500000_scrape_jobs.go`, `internal/handlers/queue.go`, `internal/worker/jobs.go`).
 - **Spotify providers**: local headless (go-rod), self-hosted Browserless (OCI container via `docker-compose.yml`), cloud Browserless, ScrapingAnt, ScraperAPI, Apify. Each provider runs a pull-based goroutine pool in the worker; there is no fixed fallback order. Quota exhaustion is signalled by `spotify.ErrQuotaExhausted` and causes the provider's pool to shut down gracefully.
 - **SSE UI updates**: `/api/events` uses Datastar fragments from `internal/handlers/handlers.go`.
+- **Read-model healer**: `internal/heal` tails `DOMAIN_EVENTS` on durable consumer `READ_MODEL_HEALER` and re-projects artist/album/song streams whose `read_model_positions` lag the log (inline projections stay the fast path; other stream types are acked untouched). Default on; `READ_MODEL_HEALER=false` disables it.
+- **Event log tail**: `eventsourcing.Store.Watch` streams events after a global position (SQLite polls; JetStream uses an ephemeral consumer deleted on `Stop`).
 - **Ops status**: `/api/admin/status` reports outbox lag, projection/relay checkpoints, saga states, and the active batch (read-only; same open-endpoint posture as `/api/queue` and `/api/quota`).
 - **Batch refresh UI**: `/api/refresh/batch` tracks progress in memory (`Handler.batches`) at this level — restarts lose it; durable SQLite progress with a background reconciler lands with the event-sourcing stack.
 - **Quota checks**: `/api/quota` in `internal/handlers/handlers.go` calls `internal/quota` (ScrapingAnt usage API, Apify `/v2/users/me/limits` for both USD budget and actor memory; Browserless/ScraperAPI assumed available). The `quota.Checker` struct exposes `ScrapingAntAPIBase`, `ScraperAPIBase`, and `ApifyAPIBase` fields that default to production URLs but can be overridden in unit tests with `httptest.NewServer` URLs. At runtime, `spotify.ErrQuotaExhausted` propagates from provider HTTP responses (401/402/403/429) through `internal/fetcher` (which skips retries on quota errors) to `internal/worker` (which NAKs the message and shuts down the provider pool).
@@ -168,6 +170,7 @@ func TestScrapeRequestedRoundTrip(t *testing.T) {
 - `cmd/replay` rebuilds disposable read models from the event log; dry run is the default (`--dry-run` plan only). Rebuild in staging first, then production with `--data-dir <backup> --apply`; live `--apply` requires `--live-ok`. Every `--apply` records per-projection checkpoints (`artist/album/song/batch`); re-run with `--since-checkpoint` to re-project only streams touched after the saved floor (no reset).
 - Legacy album/song rows predate the event log (PB-only catalog); `go run ./cmd/audit` reports them as unlogged rows. They seed `AlbumCreated`/`SongCreated` facts on next write (song creation seeds album/artist deltas too) — convergence is lazy, tracked by audit, not backfilled.
 - Artist `total_songs` rank is computed at read time (`dynamicTotalSongs`); the stored column is frozen legacy (rank recalc writes removed, rank is never logged as a fact) — do not read or write it for display. Album `total_songs` is real catalog data and unaffected.
+- Aggregate/reprojection folds fail fast on unknown event types (a mistyped fact must never silently vanish from a row). Retiring an event type therefore needs a no-op case in every domain fold and projection for it, or streams carrying it stop replaying. Before rollout and after any event-type change run `go run ./cmd/audit` and require `undecodable_events == 0` (the whole-log census also flags event types with no registered payload).
 
 ## Skills
 A skill is a set of local instructions in a `SKILL.md` file.

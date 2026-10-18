@@ -8,8 +8,10 @@
 //
 // Jetstream mode notes: JetStreamStore is a SnapshotStore (KV bucket
 // "snapshots", anchored to a DOMAIN_EVENTS sequence), so artist repositories
-// keep their O(tail) loads; write sites must use
-// AppendWithRetry (JetStream publishes are non-atomic); the SQLite events
+// keep their O(tail) loads; single-stream writes go through AppendWithRetry
+// (Append publishes per event, so a multi-event stream append can split),
+// while AppendBatch commits all streams in one server-atomic batch; the
+// SQLite events
 // table freezes (admin/audit/replay tooling reads stale history — the audit
 // tool is the parity checker before flipping production).
 package eventsourcing
@@ -172,13 +174,13 @@ func CheckJetStreamParity(ctx context.Context, db *toolbeltdb.Database, js jetst
 		if err != nil {
 			return fmt.Errorf("eventsourcing: parity check failed: stream %s has no JetStream tip: %w", tip.StreamID, err)
 		}
-		lastEvt, err := UnmarshalEvent(last.Data)
+		lastID, _, _, _, lastVersion, err := rawMsgEnvelope(last)
 		if err != nil {
 			return fmt.Errorf("eventsourcing: parity check failed: stream %s tip undecodable: %w", tip.StreamID, err)
 		}
-		if lastEvt.Version != tip.Version || lastEvt.ID != tip.EventID {
+		if lastVersion != tip.Version || lastID != tip.EventID {
 			return fmt.Errorf("eventsourcing: parity check failed: stream %s tip is v%d %s in SQLite, v%d %s in JetStream",
-				tip.StreamID, tip.Version, tip.EventID, lastEvt.Version, lastEvt.ID)
+				tip.StreamID, tip.Version, tip.EventID, lastVersion, lastID)
 		}
 	}
 	// Record the flip: later boots skip re-verification (see above). A

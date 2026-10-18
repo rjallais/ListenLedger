@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/appdir"
 	"ListenLedger/internal/domain/song"
@@ -130,7 +131,7 @@ func CheckPortAvailable(port string) bool {
 }
 
 // MirrorSongToPB mirrors song aggregate fields into the PocketBase songs collection.
-func MirrorSongToPB(app *pocketbase.PocketBase, songAgg *song.Song) error {
+func MirrorSongToPB(ctx context.Context, app *pocketbase.PocketBase, songAgg *song.Song) error {
 	if app == nil || songAgg == nil {
 		return nil
 	}
@@ -155,5 +156,66 @@ func MirrorSongToPB(app *pocketbase.PocketBase, songAgg *song.Song) error {
 	record.Set("is_recent", songAgg.IsRecent)
 	record.Set("tidal_id", songAgg.TidalID)
 	record.Set("duplicate_of", songAgg.DuplicateOf)
-	return app.Save(record)
+	return app.SaveWithContext(ctx, record)
+}
+
+// SeedSongFromRow builds a SongCreated aggregate from the SQLite songs read
+// model for legacy rows predating the event log. It returns the unsaved
+// aggregate (with pending creation); callers apply their change on it and
+// save once, so creation and the change project together (creation uses
+// ON CONFLICT DO NOTHING, preserving the existing row).
+func SeedSongFromRow(ctx context.Context, database *toolbeltdb.Database, id string) (*song.Song, error) {
+	var (
+		title, artistName, album, releaseDate, releaseType, spotifyID string
+		tidalID, duplicateOf                                          string
+		releaseYear, isRecent, batchSeq, batchPos                     int64
+		found                                                         bool
+	)
+	err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT title, artist_name, album, release_date, release_type, spotify_id, release_year, tidal_id, duplicate_of, is_recent, recent_batch_seq, recent_batch_pos FROM songs WHERE id = ? LIMIT 1;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, id)
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			return nil
+		}
+		found = true
+		title = stmt.ColumnText(0)
+		artistName = stmt.ColumnText(1)
+		album = stmt.ColumnText(2)
+		releaseDate = stmt.ColumnText(3)
+		releaseType = stmt.ColumnText(4)
+		spotifyID = stmt.ColumnText(5)
+		releaseYear = stmt.ColumnInt64(6)
+		tidalID = stmt.ColumnText(7)
+		duplicateOf = stmt.ColumnText(8)
+		isRecent = stmt.ColumnInt64(9)
+		batchSeq = stmt.ColumnInt64(10)
+		batchPos = stmt.ColumnInt64(11)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading song row %s: %w", id, err)
+	}
+	if !found {
+		return nil, fmt.Errorf("seeding song %s: %w", id, eventsourcing.ErrStreamNotFound)
+	}
+	seed, err := song.NewSong(id, title, artistName, album, releaseDate, releaseType, spotifyID, releaseYear, batchSeq, batchPos, isRecent != 0)
+	if err != nil {
+		return nil, fmt.Errorf("seeding song %s: %w", id, err)
+	}
+	if tidalID != "" {
+		if _, err := seed.LinkTidalID(tidalID, "legacy_seed", 1.0); err != nil {
+			return nil, fmt.Errorf("seeding song %s tidal link: %w", id, err)
+		}
+	}
+	if duplicateOf != "" {
+		if _, err := seed.MarkDuplicate(duplicateOf, "legacy_seed"); err != nil {
+			return nil, fmt.Errorf("seeding song %s duplicate: %w", id, err)
+		}
+	}
+	return seed, nil
 }

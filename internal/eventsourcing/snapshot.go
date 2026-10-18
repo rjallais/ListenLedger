@@ -16,11 +16,12 @@ import (
 // (TalkPython #548 guidance: <2000 events replay directly), writers store a
 // snapshot and loaders replay only events after it.
 type Snapshot struct {
-	StreamID   string
-	StreamType string
-	Version    int64
-	Payload    []byte
-	CreatedAt  time.Time
+	StreamID       string
+	StreamType     string
+	Version        int64
+	GlobalPosition int64
+	Payload        []byte
+	CreatedAt      time.Time
 }
 
 // SnapshotStore is a Store with snapshot support for long-lived streams.
@@ -120,7 +121,7 @@ func (s *SQLiteStore) LoadAfter(ctx context.Context, streamID string, afterVersi
 	var events []Event
 
 	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		query := tx.Prep("SELECT id, stream_id, stream_type, version, event_type, payload, metadata, created_at FROM events WHERE stream_id = ? AND version > ? ORDER BY version ASC;")
+		query := tx.Prep("SELECT rowid, " + eventColumns + " FROM events WHERE stream_id = ? AND version > ? ORDER BY version ASC;")
 		defer func() { _ = query.Reset() }()
 		query.BindText(1, streamID)
 		query.BindInt64(2, afterVersion)
@@ -134,22 +135,7 @@ func (s *SQLiteStore) LoadAfter(ctx context.Context, streamID string, afterVersi
 				break
 			}
 
-			tStr := query.ColumnText(7)
-			t, _ := time.Parse(time.RFC3339Nano, tStr)
-			if t.IsZero() {
-				t, _ = time.Parse("2006-01-02 15:04:05", tStr)
-			}
-
-			events = append(events, Event{
-				ID:         query.ColumnText(0),
-				StreamID:   query.ColumnText(1),
-				StreamType: query.ColumnText(2),
-				Version:    query.ColumnInt64(3),
-				EventType:  query.ColumnText(4),
-				Payload:    []byte(query.ColumnText(5)),
-				Metadata:   []byte(query.ColumnText(6)),
-				CreatedAt:  t,
-			})
+			events = append(events, scanEventRow(query, true))
 		}
 		return nil
 	})

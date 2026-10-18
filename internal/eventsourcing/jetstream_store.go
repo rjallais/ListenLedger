@@ -13,9 +13,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/synadia-io/orbit.go/jetstreamext"
 
 	"ListenLedger/internal/messaging"
 )
@@ -31,6 +34,9 @@ const (
 	// millisecond here is tail latency on every read. A timeout failure is
 	// benign — the 30s inactivity threshold reaps the consumer.
 	consumerDeleteTimeout = 2 * time.Second
+	// maxAtomicBatchMsgs caps the number of messages in a single atomic batch
+	// (matching the server-side jetstream.limits.batch.max_msgs limit, default 1000).
+	maxAtomicBatchMsgs = 1000
 )
 
 // JetStreamStore is an event store backed by JetStream DOMAIN_EVENTS.
@@ -45,33 +51,20 @@ func NewJetStreamStore(js jetstream.JetStream) *JetStreamStore {
 
 // Compile-time: JetStreamStore satisfies the write-path read contract.
 var _ Store = (*JetStreamStore)(nil)
+var _ BatchAppender = (*JetStreamStore)(nil)
+var _ SequencedAppender = (*JetStreamStore)(nil)
 
 // Append publishes events to their per-type subjects with per-aggregate OCC
 // and MsgID dedup on the event ID. A CAS miss surfaces as
 // ErrConcurrencyConflict, same contract as SQLite.
-//
-// OCC is scoped to the aggregate ID across all stream types (wildcard
-// domain.events.*.<id>.*), matching the Load replay scope: SQLite keys
-// history by stream ID with a type-consistency guard, so the JetStream check
-// must too. A lookup of the aggregate's latest persisted event both rejects
-// a stale expectedVersion and anchors the publishes with
-// WithExpectLastSequenceForSubject, so a concurrent append to this aggregate
-// between the reload and the publish fails the batch. Concurrent appends to
-// *other* aggregates share nothing in this scope (the old stream-wide anchor
-// false-conflicted on those). The wildcard check is server-enforced —
-// verified against the pinned server sources, not assumed.
-//
-// Each publish in a multi-event batch anchors to the preceding publish's
-// acknowledgement Sequence, not to base+i: scope sequences are not
-// consecutive within one aggregate when other aggregates interleave, so
-// base+i would false-conflict after the first event persisted.
-//
-// Partial-write contract: publishes are per-event (JetStream has no
-// multi-publish transaction in this client), so a mid-batch failure can
-// leave a prefix persisted. On any error the caller must reload the stream
-// and retry only the unwritten tail; already-persisted versions resurface as
-// ErrConcurrencyConflict, never as silent duplicates.
 func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error {
+	return s.AppendSequenced(ctx, streamID, expectedVersion, 0, events...)
+}
+
+// AppendSequenced publishes events with a known stream sequence anchor (when
+// expectedLastSeq > 0 or expectedVersion == 0), skipping the pre-flight
+// GetLastMsgForSubject round-trip while still enforcing server-side OCC.
+func (s *JetStreamStore) AppendSequenced(ctx context.Context, streamID string, expectedVersion int64, expectedLastSeq uint64, events ...Event) error {
 	if s.js == nil {
 		return fmt.Errorf("jetstream store: JetStream not configured")
 	}
@@ -81,57 +74,9 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 	// Validate the whole batch before publishing anything: a version skew
 	// must fail without mutating the stream. Batch identity matches SQLite
 	// (one stream ID, one aggregate type, consecutive versions).
-	streamType := events[0].StreamType
-	if streamType == "" {
-		return fmt.Errorf("jetstream store: event %s has an empty stream type", events[0].ID)
-	}
-	for i, evt := range events {
-		want := expectedVersion + int64(i) + 1
-		if evt.Version != want {
-			return fmt.Errorf("%w: stream %s event %d has version %d, want %d",
-				ErrConcurrencyConflict, streamID, i, evt.Version, want)
-		}
-		if evt.StreamID != streamID {
-			return fmt.Errorf("jetstream store: event %s belongs to stream %s, want %s",
-				evt.ID, evt.StreamID, streamID)
-		}
-		if evt.StreamType != streamType {
-			return fmt.Errorf("jetstream store: stream %s has mixed aggregate types %q and %q",
-				streamID, streamType, evt.StreamType)
-		}
-	}
-	stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
+	scope, anchor, err := s.resolveAnchor(ctx, nil, streamID, expectedVersion, expectedLastSeq, events)
 	if err != nil {
-		return fmt.Errorf("jetstream store: stream: %w", err)
-	}
-	scope := messaging.SubjectDomainEventScope(streamID)
-	// Layer 1: reject a stale reader. Reload the aggregate's latest
-	// persisted event and compare its version against expectedVersion. Fail
-	// closed on read errors — an unreadable log must not accept writes.
-	last, err := stream.GetLastMsgForSubject(ctx, scope)
-	if err != nil && !errors.Is(err, jetstream.ErrMsgNotFound) {
-		return fmt.Errorf("jetstream store: reload %s: %w", streamID, err)
-	}
-	var anchor uint64
-	var maxVersion int64
-	var existingType string
-	if err == nil && last != nil {
-		lastEvt, err := UnmarshalEvent(last.Data)
-		if err != nil {
-			return fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
-		}
-		anchor = last.Sequence
-		maxVersion = lastEvt.Version
-		existingType = lastEvt.StreamType
-	}
-	if maxVersion != expectedVersion {
-		return fmt.Errorf("%w: stream %s expected version %d, but found %d",
-			ErrConcurrencyConflict, streamID, expectedVersion, maxVersion)
-	}
-	// Same order as SQLite: version first, then the aggregate-type guard.
-	if existingType != "" && existingType != streamType {
-		return fmt.Errorf("jetstream store: stream %s has aggregate type %q, cannot append type %q",
-			streamID, existingType, streamType)
+		return err
 	}
 	// Layer 2: publish under the per-aggregate anchor, advancing it from
 	// each acknowledgement. A concurrent append to this aggregate between
@@ -143,17 +88,197 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 		if err != nil {
 			return fmt.Errorf("jetstream store: marshal %s: %w", evt.ID, err)
 		}
+		msg := nats.NewMsg(subject)
+		msg.Data = data
+		SetEventHeaders(msg.Header, evt)
 		opts := []jetstream.PublishOpt{
 			jetstream.WithMsgID(evt.ID),
 			jetstream.WithExpectLastSequenceForSubject(anchor, scope),
 		}
-		ack, err := s.js.Publish(ctx, subject, data, opts...)
+		ack, err := s.js.PublishMsg(ctx, msg, opts...)
 		if err != nil {
 			return wrapPublishError(streamID, evt.ID, err)
 		}
 		if ack != nil {
 			anchor = ack.Sequence
 		}
+	}
+	return nil
+}
+
+// resolveAnchor validates one stream append and returns its subject scope and
+// last-sequence anchor; nothing is published. When expectedVersion == 0 (new
+// stream, anchor must be 0) or knownSeq > 0 (caller loaded the aggregate and
+// recorded its stream sequence), the server-side Expected-Last-Subj-Seq check
+// enforces OCC directly without an extra GetLastMsgForSubject round-trip.
+func (s *JetStreamStore) resolveAnchor(ctx context.Context, cachedStream *jetstream.Stream, streamID string, expectedVersion int64, knownSeq uint64, events []Event) (scope string, anchor uint64, err error) {
+	streamType := events[0].StreamType
+	if streamType == "" {
+		return "", 0, fmt.Errorf("jetstream store: event %s has an empty stream type", events[0].ID)
+	}
+	for i, evt := range events {
+		want := expectedVersion + int64(i) + 1
+		if evt.Version != want {
+			return "", 0, fmt.Errorf("%w: stream %s event %d has version %d, want %d",
+				ErrConcurrencyConflict, streamID, i, evt.Version, want)
+		}
+		if evt.StreamID != streamID {
+			return "", 0, fmt.Errorf("jetstream store: event %s belongs to stream %s, want %s",
+				evt.ID, evt.StreamID, streamID)
+		}
+		if evt.StreamType != streamType {
+			return "", 0, fmt.Errorf("jetstream store: stream %s has mixed aggregate types %q and %q",
+				streamID, streamType, evt.StreamType)
+		}
+	}
+	scope = messaging.SubjectDomainEventScope(streamID)
+	if expectedVersion == 0 {
+		return scope, 0, nil
+	}
+	if knownSeq > 0 {
+		return scope, knownSeq, nil
+	}
+	var stream jetstream.Stream
+	if cachedStream != nil && *cachedStream != nil {
+		stream = *cachedStream
+	} else {
+		stream, err = s.js.Stream(ctx, messaging.DomainEventsStreamName)
+		if err != nil {
+			return "", 0, fmt.Errorf("jetstream store: stream: %w", err)
+		}
+		if cachedStream != nil {
+			*cachedStream = stream
+		}
+	}
+	return preflight(ctx, stream, streamID, expectedVersion, events)
+}
+
+// rawMsgEnvelope extracts envelope identity and version from a RawStreamMsg,
+// using O(1) NATS headers when present and falling back to decoding the RON
+// message body for pre-header messages.
+func rawMsgEnvelope(raw *jetstream.RawStreamMsg) (id, streamID, streamType, eventType string, version int64, err error) {
+	if id, streamID, streamType, eventType, version, ok := EventHeaderMeta(raw.Header); ok {
+		return id, streamID, streamType, eventType, version, nil
+	}
+	evt, err := UnmarshalEvent(raw.Data)
+	if err != nil {
+		return "", "", "", "", 0, err
+	}
+	return evt.ID, evt.StreamID, evt.StreamType, evt.EventType, evt.Version, nil
+}
+
+// preflight validates one stream append against the server's subject tip when
+// the caller did not supply a known sequence anchor.
+func preflight(ctx context.Context, stream jetstream.Stream, streamID string, expectedVersion int64, events []Event) (scope string, anchor uint64, err error) {
+	streamType := events[0].StreamType
+	scope = messaging.SubjectDomainEventScope(streamID)
+	// Layer 1: reject a stale reader. Reload the aggregate's latest
+	// persisted event and compare its version against expectedVersion.
+	last, err := stream.GetLastMsgForSubject(ctx, scope)
+	if err != nil && !errors.Is(err, jetstream.ErrMsgNotFound) {
+		return "", 0, fmt.Errorf("jetstream store: reload %s: %w", streamID, err)
+	}
+	var maxVersion int64
+	var existingType string
+	if err == nil && last != nil {
+		_, _, existingType, _, maxVersion, err = rawMsgEnvelope(last)
+		if err != nil {
+			return "", 0, fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
+		}
+		anchor = last.Sequence
+	}
+	if maxVersion != expectedVersion {
+		return "", 0, fmt.Errorf("%w: stream %s expected version %d, but found %d",
+			ErrConcurrencyConflict, streamID, expectedVersion, maxVersion)
+	}
+	// Same order as SQLite: version first, then the aggregate-type guard.
+	if existingType != "" && existingType != streamType {
+		return "", 0, fmt.Errorf("jetstream store: stream %s has aggregate type %q, cannot append type %q",
+			streamID, existingType, streamType)
+	}
+	return scope, anchor, nil
+}
+
+// AppendBatch commits events across multiple streams in one server-atomic
+// JetStream batch (stream AllowAtomicPublish): the server stages every
+// message, re-validates all expectations at commit time under the stream's
+// isolation lock, and either persists the whole batch or nothing. A
+// concurrent append to any stream in the batch — including one landing
+// between the pre-flight reload and the commit — fails the entire batch
+// with nothing persisted; there is no partial-write window.
+//
+// Per-stream OCC: when ExpectedVersion == 0 or ExpectedLastSeq > 0, the batch
+// anchors directly without a pre-flight RPC; otherwise pre-flight reloads the
+// tip. Only each stream's first event carries the Expected-Last-Subj-Seq
+// headers: the server rejects a second per-subject expected-check on a scope
+// already written within the same batch, so the remaining events carry only
+// their MsgID and rely on the batch's in-order, all-or-nothing commit.
+func (s *JetStreamStore) AppendBatch(ctx context.Context, batches []StreamAppend) error {
+	if s.js == nil {
+		return fmt.Errorf("jetstream store: JetStream not configured")
+	}
+	if len(batches) == 0 {
+		return nil
+	}
+
+	type planned struct {
+		streamID string
+		scope    string
+		anchor   uint64
+		events   []Event
+	}
+
+	var stream jetstream.Stream
+	plannedBatches := make([]planned, 0, len(batches))
+	// Pre-flight: validate every batch and capture its anchor before anything
+	// is staged. A mismatch here fails fast with no mutation — matching SQLite.
+	for _, b := range batches {
+		if len(b.Events) == 0 {
+			continue
+		}
+		scope, anchor, err := s.resolveAnchor(ctx, &stream, b.StreamID, b.ExpectedVersion, b.ExpectedLastSeq, b.Events)
+		if err != nil {
+			return err
+		}
+		plannedBatches = append(plannedBatches, planned{
+			streamID: b.StreamID,
+			scope:    scope,
+			anchor:   anchor,
+			events:   b.Events,
+		})
+	}
+	if len(plannedBatches) == 0 {
+		return nil
+	}
+
+	msgs := make([]*nats.Msg, 0, len(plannedBatches))
+	for _, p := range plannedBatches {
+		for i, evt := range p.events {
+			subject := messaging.SubjectDomainEvent(evt.StreamType, evt.StreamID, evt.EventType)
+			data, err := evt.Bytes()
+			if err != nil {
+				return fmt.Errorf("jetstream store: marshal %s: %w", evt.ID, err)
+			}
+			msg := nats.NewMsg(subject)
+			msg.Data = data
+			SetEventHeaders(msg.Header, evt)
+			if i == 0 {
+				msg.Header.Set(jetstream.ExpectedLastSubjSeqSubjHeader, p.scope)
+				msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, strconv.FormatUint(p.anchor, 10))
+			}
+			msgs = append(msgs, msg)
+		}
+	}
+	// Atomic batches are capped server-side (jetstream.limits.batch.max_msgs,
+	// default 1000); larger batches are rejected after staging.
+	if len(msgs) > maxAtomicBatchMsgs {
+		return fmt.Errorf("jetstream store: atomic batch of %d messages exceeds limit %d", len(msgs), maxAtomicBatchMsgs)
+	}
+	if _, err := jetstreamext.PublishMsgBatch(ctx, s.js, msgs); err != nil {
+		// The server does not say which stream missed its anchor, so label
+		// with the first stream; SaveBatch's per-aggregate fallback names the
+		// real offender when it re-saves.
+		return wrapPublishError(plannedBatches[0].streamID, "batch", err)
 	}
 	return nil
 }
@@ -204,6 +329,7 @@ func (s *JetStreamStore) loadSince(ctx context.Context, streamID string, afterVe
 	if err != nil {
 		return nil, fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
 	}
+	lastEvt.GlobalPosition = int64(last.Sequence)
 	switch {
 	case lastEvt.Version < afterVersion:
 		// The anchor is ahead of the log (stream rebuilt or truncated):
@@ -265,6 +391,7 @@ func (s *JetStreamStore) loadSince(ctx context.Context, streamID string, afterVe
 			if err != nil {
 				return nil, fmt.Errorf("jetstream store: decode %s: %w", streamID, err)
 			}
+			evt.GlobalPosition = int64(meta.Sequence.Stream)
 			if evt.StreamID != streamID {
 				continue // defensive: filter is exact, trust the data
 			}

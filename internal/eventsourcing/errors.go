@@ -17,4 +17,8 @@ var (
 
 	// ErrSnapshotNotFound is returned when no snapshot exists for a stream.
 	ErrSnapshotNotFound = errors.New("eventsourcing: snapshot not found")
+
+	// ErrPayloadNotRegistered is returned when an event type has no payload
+	// registered: the log holds a fact this binary cannot decode.
+	ErrPayloadNotRegistered = errors.New("eventsourcing: event type has no registered payload")
 )

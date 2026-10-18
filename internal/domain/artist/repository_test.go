@@ -74,6 +74,15 @@ func (f *fakeSnapshotStore) LoadAfter(_ context.Context, streamID string, afterV
 	return tail, nil
 }
 
+type fakeWatcher struct{}
+
+func (fakeWatcher) Events() <-chan eventsourcing.Event { return nil }
+func (fakeWatcher) Stop() error                        { return nil }
+
+func (f *fakeSnapshotStore) Watch(context.Context, int64, ...eventsourcing.WatchOption) (eventsourcing.Watcher, error) {
+	return fakeWatcher{}, nil
+}
+
 func TestRepository_LoadWithoutSnapshotFallsBackToFullReplay(t *testing.T) {
 	ctx := t.Context()
 	store := newFakeSnapshotStore()
@@ -252,3 +261,29 @@ func TestRepository_SaveSnapshotsOnBoundaryCrossing(t *testing.T) {
 		t.Fatalf("snapshot version = %d, want %d", snap.Version, agg.Version())
 	}
 }
+
+func TestRepository_DecideOrchestratesLoadModifySave(t *testing.T) {
+	ctx := t.Context()
+	store := newFakeSnapshotStore()
+	repo := NewRepository(store)
+
+	agg, err := NewArtist("ar_decide_1", "Opeth", "sp_opeth", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if _, err := repo.Save(ctx, agg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	updated, events, err := repo.Decide(ctx, "ar_decide_1", func(a *Artist) error {
+		return a.RecordMonthlyListeners(4200, "test", 12)
+	})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if len(events) != 1 || updated.MonthlyListeners != 4200 || updated.Version() != 2 {
+		t.Fatalf("Decide result = %d events, listeners %d, v%d; want 1, 4200, v2",
+			len(events), updated.MonthlyListeners, updated.Version())
+	}
+}
+

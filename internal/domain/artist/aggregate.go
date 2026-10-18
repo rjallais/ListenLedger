@@ -36,7 +36,7 @@ type Artist struct {
 }
 
 // NewArtist creates an Artist and records the ArtistCreated event.
-func NewArtist(id, name, spotifyID, genreGroup, listStatus string) (*Artist, error) {
+func NewArtist(id, name, spotifyID, genreGroup, listStatus string, opts ...eventsourcing.AggregateOption) (*Artist, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, ErrEmptyArtistName
@@ -55,7 +55,7 @@ func NewArtist(id, name, spotifyID, genreGroup, listStatus string) (*Artist, err
 	}
 
 	agg := &Artist{
-		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeArtist),
+		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeArtist, opts...),
 	}
 
 	payload := CreatedPayload{
@@ -82,7 +82,7 @@ func NewArtist(id, name, spotifyID, genreGroup, listStatus string) (*Artist, err
 // Optional corr carries the saga request_id for causation tracing.
 func (a *Artist) RecordMonthlyListeners(listeners int64, provider string, durationMs int64, corr ...eventsourcing.Correlation) error {
 	delta := listeners - a.MonthlyListeners
-	now := time.Now().UTC()
+	now := a.Now()
 
 	payload := ListenersScrapedPayload{
 		ArtistID:          a.AggregateID(),
@@ -234,6 +234,8 @@ func (a *Artist) apply(evt eventsourcing.Event) error {
 		}
 		a.CollectionSongs = pl.CollectionSongs
 		a.TotalSongs = pl.TotalSongs
+	default:
+		return fmt.Errorf("artist: unknown event type %q", evt.EventType)
 	}
 
 	return nil

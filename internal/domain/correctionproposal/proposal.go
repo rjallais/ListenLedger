@@ -85,7 +85,7 @@ type Proposal struct {
 }
 
 // NewProposal creates a new correction proposal aggregate.
-func NewProposal(id, runID, targetType, targetID, kind string, before, after map[string]any, evidence string, confidence float64, tidalTrackID string, proposedAt time.Time) (*Proposal, error) {
+func NewProposal(id, runID, targetType, targetID, kind string, before, after map[string]any, evidence string, confidence float64, tidalTrackID string, proposedAt time.Time, opts ...eventsourcing.AggregateOption) (*Proposal, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, errors.New("correctionproposal: id cannot be empty")
@@ -96,7 +96,7 @@ func NewProposal(id, runID, targetType, targetID, kind string, before, after map
 	}
 
 	agg := &Proposal{
-		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeCorrectionProposal),
+		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeCorrectionProposal, opts...),
 	}
 
 	evt, err := agg.RecordThat(EventTypeCorrectionProposed, ProposedPayload{
@@ -223,6 +223,8 @@ func (p *Proposal) apply(evt eventsourcing.Event) error {
 		}
 		p.appliedAt = pl.AppliedAt
 		p.status = StatusApplied
+	default:
+		return fmt.Errorf("correctionproposal: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

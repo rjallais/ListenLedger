@@ -116,12 +116,12 @@ type Song struct {
 }
 
 // NewSong records SongCreated.
-func NewSong(id, title, artistName, albumName, releaseDate, releaseType, spotifyID string, releaseYear, batchSeq, batchPos int64, isRecent bool) (*Song, error) {
+func NewSong(id, title, artistName, albumName, releaseDate, releaseType, spotifyID string, releaseYear, batchSeq, batchPos int64, isRecent bool, opts ...eventsourcing.AggregateOption) (*Song, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, ErrEmptyTitle
 	}
-	agg := &Song{BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeSong)}
+	agg := &Song{BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeSong, opts...)}
 	evt, err := agg.RecordThat(EventTypeSongCreated, CreatedPayload{
 		ID: id, Title: title, ArtistName: strings.TrimSpace(artistName),
 		Album: strings.TrimSpace(albumName), ReleaseDate: releaseDate,
@@ -333,6 +333,8 @@ func (s *Song) apply(evt eventsourcing.Event) error {
 			return fmt.Errorf("unmarshaling %s: %w", evt.EventType, err)
 		}
 		s.DuplicateOf = pl.CanonicalID
+	default:
+		return fmt.Errorf("song: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

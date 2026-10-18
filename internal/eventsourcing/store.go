@@ -15,12 +15,26 @@ import (
 type Store interface {
 	Append(ctx context.Context, streamID string, expectedVersion int64, events ...Event) error
 	Load(ctx context.Context, streamID string) ([]Event, error)
+	Watch(ctx context.Context, afterPosition int64, opts ...WatchOption) (Watcher, error)
+}
+
+// Watcher tails the event log from a global position: events already written
+// when Watch starts arrive on the channel, then every new event as it lands.
+// Stop halts delivery and releases any server-side consumer.
+type Watcher interface {
+	Events() <-chan Event
+	Stop() error
 }
 
 // StreamAppend represents uncommitted events to append to a single stream.
 type StreamAppend struct {
 	StreamID        string
 	ExpectedVersion int64
+	// ExpectedLastSeq is the optional JetStream sequence anchor of the
+	// stream's event at ExpectedVersion (from SequencedAggregate.LastSeq).
+	// When non-zero, JetStreamStore skips the pre-flight GetLastMsgForSubject
+	// round-trip and enforces OCC directly via server-side headers.
+	ExpectedLastSeq uint64
 	Events          []Event
 }
 
@@ -159,7 +173,7 @@ func (s *SQLiteStore) Load(ctx context.Context, streamID string) ([]Event, error
 	var events []Event
 
 	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		query := tx.Prep("SELECT rowid, id, stream_id, stream_type, version, event_type, payload, metadata, created_at FROM events WHERE stream_id = ? ORDER BY version ASC;")
+		query := tx.Prep("SELECT rowid, " + eventColumns + " FROM events WHERE stream_id = ? ORDER BY version ASC;")
 		defer func() { _ = query.Reset() }()
 		query.BindText(1, streamID)
 
@@ -172,23 +186,7 @@ func (s *SQLiteStore) Load(ctx context.Context, streamID string) ([]Event, error
 				break
 			}
 
-			tStr := query.ColumnText(8)
-			t, _ := time.Parse(time.RFC3339Nano, tStr)
-			if t.IsZero() {
-				t, _ = time.Parse("2006-01-02 15:04:05", tStr)
-			}
-
-			events = append(events, Event{
-				GlobalPosition: query.ColumnInt64(0),
-				ID:             query.ColumnText(1),
-				StreamID:       query.ColumnText(2),
-				StreamType:     query.ColumnText(3),
-				Version:        query.ColumnInt64(4),
-				EventType:      query.ColumnText(5),
-				Payload:        []byte(query.ColumnText(6)),
-				Metadata:       []byte(query.ColumnText(7)),
-				CreatedAt:      t,
-			})
+			events = append(events, scanEventRow(query, true))
 		}
 		return nil
 	})
@@ -481,6 +479,118 @@ func (s *SQLiteStore) StreamTips(ctx context.Context) ([]StreamTip, error) {
 	return tips, nil
 }
 
+// EventTypeCount tallies one event type in the log.
+type EventTypeCount struct {
+	EventType string
+	Count     int64
+	// Samples holds up to the requested number of events of this type,
+	// enough to check that the payload still decodes.
+	Samples []Event
+}
+
+// EventTypeCensus counts stored events per event type and returns up to
+// sampleLimit events of each type for payload decode checks. Powers the audit
+// tool's event-contract census: a stored event type the binary cannot decode
+// is real divergence, not a cosmetic warning.
+func (s *SQLiteStore) EventTypeCensus(ctx context.Context, sampleLimit int) ([]EventTypeCount, error) {
+	if sampleLimit < 0 {
+		sampleLimit = 0
+	}
+
+	var census []EventTypeCount
+	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		totals := tx.Prep("SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY event_type ASC;")
+		defer func() { _ = totals.Reset() }()
+		for {
+			hasRow, err := totals.Step()
+			if err != nil {
+				return fmt.Errorf("stepping through event types: %w", err)
+			}
+			if !hasRow {
+				break
+			}
+			census = append(census, EventTypeCount{
+				EventType: totals.ColumnText(0),
+				Count:     totals.ColumnInt64(1),
+			})
+		}
+		if sampleLimit == 0 {
+			return nil
+		}
+
+		// Sample both ends of each type: payload breakage often lands on
+		// recent appends, so an oldest-only sample would report
+		// undecodable_events=0 and weaken the audit gate.
+		samples := tx.Prep("SELECT " + eventColumns + `
+			FROM events WHERE event_type = ? ORDER BY rowid ASC LIMIT ?;`)
+		defer func() { _ = samples.Reset() }()
+		samplesNewest := tx.Prep("SELECT " + eventColumns + `
+			FROM events WHERE event_type = ? ORDER BY rowid DESC LIMIT ?;`)
+		defer func() { _ = samplesNewest.Reset() }()
+		for i := range census {
+			seen := map[string]bool{}
+			for _, stmt := range []*sqlite.Stmt{samples, samplesNewest} {
+				_ = stmt.Reset()
+				stmt.BindText(1, census[i].EventType)
+				stmt.BindInt64(2, int64(sampleLimit))
+				for {
+					hasRow, err := stmt.Step()
+					if err != nil {
+						return fmt.Errorf("sampling events for %s: %w", census[i].EventType, err)
+					}
+					if !hasRow {
+						break
+					}
+					e := scanEventRow(stmt, false)
+					if !seen[e.ID] {
+						seen[e.ID] = true
+						census[i].Samples = append(census[i].Samples, e)
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("building event type census: %w", err)
+	}
+	return census, nil
+}
+
+// eventColumns is the canonical column list for reading a full event row.
+// Row-mapping lives in scanEventRow alone so every reader stays in step.
+const eventColumns = "id, stream_id, stream_type, version, event_type, payload, metadata, created_at"
+
+// scanEventRow reads one events-table row selected with eventColumns. Pass
+// withRowID when the statement also selects rowid first, which is captured as
+// the event's global position.
+func scanEventRow(stmt *sqlite.Stmt, withRowID bool) Event {
+	offset := 0
+	var position int64
+	if withRowID {
+		position = stmt.ColumnInt64(0)
+		offset = 1
+	}
+
+	tStr := stmt.ColumnText(offset + 7)
+	t, _ := time.Parse(time.RFC3339Nano, tStr)
+	if t.IsZero() {
+		t, _ = time.Parse("2006-01-02 15:04:05", tStr)
+	}
+
+	return Event{
+		GlobalPosition: position,
+		ID:             stmt.ColumnText(offset + 0),
+		StreamID:       stmt.ColumnText(offset + 1),
+		StreamType:     stmt.ColumnText(offset + 2),
+		Version:        stmt.ColumnInt64(offset + 3),
+		EventType:      stmt.ColumnText(offset + 4),
+		Payload:        []byte(stmt.ColumnText(offset + 5)),
+		Metadata:       []byte(stmt.ColumnText(offset + 6)),
+		CreatedAt:      t,
+	}
+}
+
 // EventCount returns the total number of events in the SQLite log.
 // Powers the JetStream parity gate (every logged event must be mirrored).
 func (s *SQLiteStore) EventCount(ctx context.Context) (int64, error) {
@@ -510,7 +620,7 @@ func (s *SQLiteStore) LoadFromGlobalPosition(ctx context.Context, afterPosition 
 	}
 	var events []Event
 	err := s.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		query := tx.Prep(`SELECT rowid, id, stream_id, stream_type, version, event_type, payload, metadata, created_at
+		query := tx.Prep("SELECT rowid, " + eventColumns + `
 			FROM events WHERE rowid > ? ORDER BY rowid ASC LIMIT ?;`)
 		defer func() { _ = query.Reset() }()
 		query.BindInt64(1, afterPosition)
@@ -523,22 +633,7 @@ func (s *SQLiteStore) LoadFromGlobalPosition(ctx context.Context, afterPosition 
 			if !hasRow {
 				break
 			}
-			tStr := query.ColumnText(8)
-			t, _ := time.Parse(time.RFC3339Nano, tStr)
-			if t.IsZero() {
-				t, _ = time.Parse("2006-01-02 15:04:05", tStr)
-			}
-			events = append(events, Event{
-				GlobalPosition: query.ColumnInt64(0),
-				ID:             query.ColumnText(1),
-				StreamID:       query.ColumnText(2),
-				StreamType:     query.ColumnText(3),
-				Version:        query.ColumnInt64(4),
-				EventType:      query.ColumnText(5),
-				Payload:        []byte(query.ColumnText(6)),
-				Metadata:       []byte(query.ColumnText(7)),
-				CreatedAt:      t,
-			})
+			events = append(events, scanEventRow(query, true))
 		}
 		return nil
 	})

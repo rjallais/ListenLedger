@@ -52,12 +52,12 @@ type Batch struct {
 }
 
 // NewBatch creates a Batch and records BatchStarted.
-func NewBatch(id string, artistIDs []string, stats map[string]int) (*Batch, error) {
+func NewBatch(id string, artistIDs []string, stats map[string]int, opts ...eventsourcing.AggregateOption) (*Batch, error) {
 	if id == "" {
 		return nil, fmt.Errorf("batch: id cannot be empty")
 	}
 	agg := &Batch{
-		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeBatch),
+		BaseAggregate: eventsourcing.NewBaseAggregate(id, StreamTypeBatch, opts...),
 		members:       make(map[string]bool, len(artistIDs)),
 		stats:         stats,
 	}
@@ -214,6 +214,8 @@ func (b *Batch) apply(evt eventsourcing.Event) error {
 			return fmt.Errorf("unmarshaling %s: %w", evt.EventType, err)
 		}
 		b.closed = true
+	default:
+		return fmt.Errorf("batch: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

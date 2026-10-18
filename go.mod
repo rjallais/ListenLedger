@@ -25,6 +25,7 @@ require (
 	github.com/pocketbase/pocketbase v0.40.4
 	github.com/starfederation/datastar-go v1.2.2
 	github.com/starfederation/ron-go v0.1.1
+	github.com/synadia-io/orbit.go/jetstreamext v0.3.2
 	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.59.0
 	zombiezen.com/go/sqlite v1.4.2
@@ -82,6 +83,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/synadia-io/orbit.go/natsext v0.1.3 // indirect
 	github.com/tdewolff/minify/v2 v2.24.17 // indirect
 	github.com/tdewolff/parse/v2 v2.8.16 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

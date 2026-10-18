@@ -73,7 +73,7 @@ type Sync struct {
 }
 
 // NewSync creates a new TIDAL sync run aggregate.
-func NewSync(runID, userID, countryCode string, startedAt time.Time) (*Sync, error) {
+func NewSync(runID, userID, countryCode string, startedAt time.Time, opts ...eventsourcing.AggregateOption) (*Sync, error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return nil, errors.New("tidalsync: runID cannot be empty")
@@ -84,7 +84,7 @@ func NewSync(runID, userID, countryCode string, startedAt time.Time) (*Sync, err
 	}
 
 	agg := &Sync{
-		BaseAggregate: eventsourcing.NewBaseAggregate(runID, StreamTypeTidalSync),
+		BaseAggregate: eventsourcing.NewBaseAggregate(runID, StreamTypeTidalSync, opts...),
 		userID:        userID,
 		countryCode:   countryCode,
 		startedAt:     startedAt,
@@ -209,6 +209,8 @@ func (s *Sync) apply(evt eventsourcing.Event) error {
 		s.failedAt = p.FailedAt
 		s.failureErr = p.Error
 		s.closed = true
+	default:
+		return fmt.Errorf("tidalsync: unknown event type %q", evt.EventType)
 	}
 	return nil
 }
