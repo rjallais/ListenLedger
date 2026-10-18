@@ -196,8 +196,10 @@ func TestRepository_SaveBatchContextCancelled(t *testing.T) {
 		t.Fatalf("RecordMonthlyListeners: %v", err)
 	}
 
-	if err := repo.SaveBatch(ctx, []*Artist{agg}); err == nil {
+	if saved, err := repo.SaveBatch(ctx, []*Artist{agg}); err == nil {
 		t.Fatal("SaveBatch with a cancelled context must return the context error, not nil")
+	} else if len(saved) != 0 {
+		t.Fatalf("SaveBatch on a cancelled context returned %d saved events, want 0", len(saved))
 	}
 	if len(store.events["ar_batch_1"]) != 0 {
 		t.Fatal("no events may be appended on a cancelled context")

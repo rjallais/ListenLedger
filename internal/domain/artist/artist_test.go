@@ -153,6 +153,36 @@ func TestRepository_SaveBatch(t *testing.T) {
 	}
 }
 
+func TestRepository_SaveBatchContextCancelled(t *testing.T) {
+	ctx := context.Background()
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	sqlDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	store := eventsourcing.NewSQLiteStore(sqlDB)
+	repo := artist.NewRepository(store)
+
+	agg, err := artist.NewArtist("art-cancel", "Artist Cancel", "sp-cancel", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := agg.SetFetchStatus("pending", "req-cancel"); err != nil {
+		t.Fatalf("SetFetchStatus: %v", err)
+	}
+
+	if _, err := repo.SaveBatch(cancelCtx, []*artist.Artist{agg}); err == nil {
+		t.Fatal("SaveBatch with a cancelled context must return the context error, not nil")
+	}
+	if len(agg.UncommittedEvents()) == 0 {
+		t.Fatal("uncommitted events must survive a cancelled SaveBatch")
+	}
+}
+
 func TestRepository_LoadHealsMissingSnapshotOnLongStream(t *testing.T) {
 	ctx := context.Background()
 	sqlDB, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)

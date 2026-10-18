@@ -200,6 +200,8 @@ func (r *Repository[T]) SaveBatch(ctx context.Context, aggs []T) ([]Event, error
 				r.maybeSnapshot(ctx, agg, committed)
 			}
 			return saved, nil
+		} else {
+			slog.Warn("batch append failed, falling back to per-stream saves", "stream_type", r.streamType, "error", err)
 		}
 	}
 
@@ -211,7 +213,10 @@ func (r *Repository[T]) SaveBatch(ctx context.Context, aggs []T) ([]Event, error
 		firstErr error
 	)
 	for _, agg := range dirty {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			break
 		}
 		wg.Go(func() {
