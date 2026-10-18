@@ -105,6 +105,11 @@ type Config struct {
 	LocalIgnoreCertErrors bool
 	NATSLogging           bool
 	NATSDebug             bool
+	// ReadModelHealerEnabled runs the durable DOMAIN_EVENTS reactor that
+	// repairs SQLite read models whose inline projection failed (the
+	// append-committed-but-projection-crashed window). Enabled by default;
+	// set READ_MODEL_HEALER=false to disable.
+	ReadModelHealerEnabled bool
 	// UseViewTransitions enables the View Transitions API for Datastar SSE fragment
 	// patches (read-my-writes UI updates animate instead of snapping). Enabled by
 	// default; set VIEW_TRANSITIONS=false to disable. Fragments should be audited
@@ -194,6 +199,7 @@ func DefaultConfig() *Config {
 		MaxIdleConnsPerHost:  32,  // Sensible default for connection pooling
 		IdleConnTimeout:      90 * time.Second,
 		LogSuccessfulFetches: false,
+		ReadModelHealerEnabled: true,
 
 		// JetStream scrape worker defaults
 		ScrapeMaxDeliver: 3,
@@ -240,6 +246,7 @@ func (c *Config) LoadFromEnv() error {
 	c.loadJetStreamConfig()
 	c.loadNATSConfig()
 	c.loadViewTransitionsConfig()
+	c.loadReadModelHealerConfig()
 
 	return nil
 }
@@ -500,6 +507,13 @@ func (c *Config) loadJetStreamConfig() {
 func (c *Config) loadViewTransitionsConfig() {
 	if v, ok := parseBoolEnv("VIEW_TRANSITIONS"); ok {
 		c.UseViewTransitions = v
+	}
+}
+
+// loadReadModelHealerConfig reads the READ_MODEL_HEALER env flag (default true).
+func (c *Config) loadReadModelHealerConfig() {
+	if v, ok := parseBoolEnv("READ_MODEL_HEALER"); ok {
+		c.ReadModelHealerEnabled = v
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/priority"
+	"ListenLedger/internal/readside"
 )
 
 type batchCandidate struct {
@@ -419,7 +420,11 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 	// when the store supports BatchAppender. Projection to SQLite is skipped
 	// here because the mirror step below writes all candidates into the SQLite
 	// artists table in a single atomic transaction.
-	h.emitBatchArtistFetchStatusEvents(ctx, candidates, "pending", "batch queue")
+	pendingEvents := h.emitBatchArtistFetchStatusEvents(ctx, candidates, "pending", "batch queue")
+	eventsByArtist := make(map[string][]eventsourcing.Event, len(pendingEvents))
+	for _, evt := range pendingEvents {
+		eventsByArtist[evt.StreamID] = append(eventsByArtist[evt.StreamID], evt)
+	}
 
 	// SQLite mirror: the PB transaction above created the scrape_jobs rows but
 	// nothing mirrors them (unlike createScrapeJobRecord's single path), so
@@ -455,6 +460,14 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 				statusStmt.BindText(1, candidate.job.Record.Id)
 				if _, err := statusStmt.Step(); err != nil {
 					return err
+				}
+				// Advance this artist's read-model position inside the same
+				// transaction as its mirrored rows, so the healer does not
+				// replay every batch member as a lagging stream.
+				if evts := eventsByArtist[candidate.job.Record.Id]; len(evts) > 0 {
+					if err := readside.AdvancePositions(tx, evts); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

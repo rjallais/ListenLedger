@@ -2,6 +2,7 @@ package projections_test
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"ListenLedger/internal/db"
@@ -80,15 +81,23 @@ func TestCatalogProjectionAlbumAndReplay(t *testing.T) {
 		t.Fatalf("projected status %q", status)
 	}
 
-	// Rebuild the read model from the event log: delete then replay.
+	// Rebuild the read model from the event log: delete then replay. The
+	// position goes with the row: a live position tells Project the row is
+	// already current and the replay would be skipped.
 	stream, err := store.Load(ctx, "al_1")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("DELETE FROM albums WHERE id = 'al_1';")
-		defer func() { _ = stmt.Reset() }()
+		if _, err := stmt.Step(); err != nil {
+			_ = stmt.Reset()
+			return err
+		}
+		_ = stmt.Reset()
+		stmt = tx.Prep("DELETE FROM read_model_positions WHERE stream_id = 'al_1';")
 		_, err := stmt.Step()
+		_ = stmt.Reset()
 		return err
 	}); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -273,5 +282,85 @@ func TestCatalogProjectionSongTidalEvents(t *testing.T) {
 	}
 	if duplicateOf != "sg_canonical_cais" {
 		t.Errorf("expected duplicate_of 'sg_canonical_cais', got %q", duplicateOf)
+	}
+}
+
+// TestCatalogProjectionHandlesAllEventTypes keeps both catalog switches in
+// step with the album and song event contracts: a projection that does not
+// know an event type would skip it silently, leaving the read model behind
+// the log.
+func TestCatalogProjectionHandlesAllEventTypes(t *testing.T) {
+	ctx := t.Context()
+	_, _, proj := setupProjectionDB(t)
+
+	albumAgg, err := album.NewAlbum("al_contract", "Contract", "Artist", "waiting", 0, 0)
+	if err != nil {
+		t.Fatalf("NewAlbum: %v", err)
+	}
+	if err := albumAgg.ChangeStatus("full"); err != nil {
+		t.Fatalf("ChangeStatus: %v", err)
+	}
+	if err := albumAgg.AdjustSongCounts(1, 2); err != nil {
+		t.Fatalf("AdjustSongCounts: %v", err)
+	}
+	albumEvents := albumAgg.UncommittedEvents()
+	if err := proj.Project(ctx, album.StreamTypeAlbum, albumEvents); err != nil {
+		t.Fatalf("Project(album events): %v", err)
+	}
+	wantAlbumTypes := []string{
+		album.EventTypeAlbumCreated,
+		album.EventTypeAlbumSongCountsAdjusted,
+		album.EventTypeAlbumStatusChanged,
+	}
+	if got := eventsourcing.EventTypesOf(albumEvents); !slices.Equal(got, wantAlbumTypes) {
+		t.Fatalf("album walk recorded %v, want %v", got, wantAlbumTypes)
+	}
+
+	// Metadata starts empty so enrichment has something to fill.
+	songAgg, err := song.NewSong("sg_contract", "Contract", "Artist", "", "", "", "sp_contract", 0, 0, 0, false)
+	if err != nil {
+		t.Fatalf("NewSong: %v", err)
+	}
+	if err := songAgg.SetRecent(true, 1, 1); err != nil {
+		t.Fatalf("SetRecent: %v", err)
+	}
+	if _, err := songAgg.EnrichMetadata("Contract Album", "2020-06-06", "album", "contract"); err != nil {
+		t.Fatalf("EnrichMetadata: %v", err)
+	}
+	if _, err := songAgg.LinkTidalID("tidal_contract", "exact", 0.9); err != nil {
+		t.Fatalf("LinkTidalID: %v", err)
+	}
+	if _, err := songAgg.CorrectMetadata("Corrected Album", "2021-07-07", "single", "contract"); err != nil {
+		t.Fatalf("CorrectMetadata: %v", err)
+	}
+	if _, err := songAgg.CorrectArtistCredits("Other Artist", "contract"); err != nil {
+		t.Fatalf("CorrectArtistCredits: %v", err)
+	}
+	if _, err := songAgg.MarkDuplicate("sg_canonical_contract", "contract"); err != nil {
+		t.Fatalf("MarkDuplicate: %v", err)
+	}
+	songEvents := songAgg.UncommittedEvents()
+	if err := proj.Project(ctx, song.StreamTypeSong, songEvents); err != nil {
+		t.Fatalf("Project(song events): %v", err)
+	}
+	wantSongTypes := []string{
+		song.EventTypeRecentFlagChanged,
+		song.EventTypeSongArtistCreditsCorrected,
+		song.EventTypeSongCreated,
+		song.EventTypeSongMarkedDuplicate,
+		song.EventTypeSongMetadataCorrected,
+		song.EventTypeSongMetadataEnriched,
+		song.EventTypeTidalIDLinked,
+	}
+	if got := eventsourcing.EventTypesOf(songEvents); !slices.Equal(got, wantSongTypes) {
+		t.Fatalf("song walk recorded %v, want %v", got, wantSongTypes)
+	}
+
+	unknown, err := eventsourcing.NewEvent("sg_contract", song.StreamTypeSong, int64(len(songEvents)+1), "SongNotAnEvent", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent(unknown): %v", err)
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, []eventsourcing.Event{unknown}); err == nil {
+		t.Fatal("Project(unknown event type) = nil, want an error")
 	}
 }

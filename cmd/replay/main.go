@@ -14,7 +14,10 @@
 //	go run ./cmd/replay [--data-dir pb_data] [--streams artist,album,song,batch] [--apply] [--live-ok] [--since-checkpoint]
 //
 // --since-checkpoint skips the reset and re-folds idempotently from saved
-// projection checkpoints (recorded per projection on every --apply).
+// projection checkpoints (recorded per projection on every --apply). Each
+// re-projected stream's stored position is cleared first, so touched streams
+// re-fold from version 0 and converge read models on columns updated by
+// domain events without resetting or deleting existing catalog rows.
 package main
 
 import (
@@ -28,6 +31,8 @@ import (
 	"slices"
 	"strings"
 
+	"zombiezen.com/go/sqlite"
+
 	"ListenLedger/internal/appdir"
 	"ListenLedger/internal/batchprogress"
 	"ListenLedger/internal/db"
@@ -37,6 +42,7 @@ import (
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/projections"
+	"ListenLedger/internal/readside"
 )
 
 func main() {
@@ -307,6 +313,14 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 	// sqlite-mode replay only: jetstream mode routes to runJetStreamReplay,
 	// and refusePostFlipSQLite blocks this path after the flip.
 	batchProj := batchprogress.NewStore(database, store)
+	clearPosition := func(stream eventsourcing.StreamInfo) error {
+		if !sinceCheckpoint || stream.Type == batch.StreamTypeBatch {
+			return nil
+		}
+		return database.WriteTX(ctx, func(tx *sqlite.Conn) error {
+			return readside.ClearPositionTx(tx, stream.ID)
+		})
+	}
 
 	streamInfos, err := store.Streams(ctx)
 	if err != nil {
@@ -352,6 +366,9 @@ func replay(ctx context.Context, logger *slog.Logger, dataDir string, selectedSt
 	replayedStreams := 0
 	frontiers := make(map[string]int64)
 	project := func(stream eventsourcing.StreamInfo) error {
+		if err := clearPosition(stream); err != nil {
+			return fmt.Errorf("clearing position for stream %s: %w", stream.ID, err)
+		}
 		n, err := projectStream(ctx, logger, store, artistProj, catalogProj, batchProj, stream, frontiers)
 		replayedEvents += n
 		if n > 0 {
@@ -430,7 +447,9 @@ func projectStream(ctx context.Context, logger *slog.Logger, store eventsourcing
 // replayIncremental re-projects only streams touched after the saved resume
 // floor (the minimum checkpoint across selected projections), without
 // resetting anything. Idempotent projectors make re-folding safe; untouched
-// streams are skipped entirely, so resume cost scales with new facts.
+// streams are skipped entirely, so resume cost scales with new facts. Each
+// touched stream's stored position is cleared first so Project re-folds from
+// version 0 and converges rows even when the row drifted at its stream tip.
 func replayIncremental(ctx context.Context, logger *slog.Logger, store *eventsourcing.SQLiteStore, streamInfos []eventsourcing.StreamInfo, selectedStreams map[string]struct{}, project func(eventsourcing.StreamInfo) error) error {
 	infoByID := make(map[string]eventsourcing.StreamInfo, len(streamInfos))
 	for _, info := range streamInfos {

@@ -14,6 +14,7 @@ import (
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
+	"ListenLedger/internal/readside"
 )
 
 // CatalogProjection projects album and song events into the albums/songs read models.
@@ -27,7 +28,9 @@ func NewCatalogProjection(log *slog.Logger, db *toolbeltdb.Database) *CatalogPro
 	return &CatalogProjection{log: log, db: db}
 }
 
-// ResetForReplay clears selected catalog read models before their events are replayed.
+// ResetForReplay clears selected catalog read models before their events are
+// replayed. Positions are cleared with the rows they describe: a live position
+// tells Project the row is already current, which would skip the replayed events.
 func (p *CatalogProjection) ResetForReplay(ctx context.Context, streamTypes ...string) error {
 	queries := make([]string, 0, len(streamTypes))
 	for _, streamType := range streamTypes {
@@ -53,6 +56,15 @@ func (p *CatalogProjection) ResetForReplay(ctx context.Context, streamTypes ...s
 				return fmt.Errorf("clearing %s read model: %w", streamTypes[i], err)
 			}
 		}
+		for _, streamType := range streamTypes {
+			stmt := tx.Prep("DELETE FROM read_model_positions WHERE stream_type = ?;")
+			stmt.BindText(1, streamType)
+			_, err := stmt.Step()
+			_ = stmt.Reset()
+			if err != nil {
+				return fmt.Errorf("clearing %s read positions: %w", streamType, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -68,7 +80,26 @@ func (p *CatalogProjection) Project(ctx context.Context, streamType string, even
 	}
 
 	err := p.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		// Re-check the projected position inside the transaction: SQLite
+		// serializes write transactions, so this is race-free against a
+		// concurrent projection (the healer loads its stream outside this
+		// transaction). Events at or below the position were already
+		// committed — re-applying them would regress rows while the
+		// monotonic position stays ahead, hiding the drift forever.
+		positions := make(map[string]int64)
 		for _, evt := range events {
+			pos, ok := positions[evt.StreamID]
+			if !ok {
+				var err error
+				pos, err = readside.PositionTx(tx, evt.StreamID)
+				if err != nil {
+					return err
+				}
+				positions[evt.StreamID] = pos
+			}
+			if evt.Version <= pos {
+				continue
+			}
 			var err error
 			switch evt.StreamType {
 			case album.StreamTypeAlbum:
@@ -82,7 +113,9 @@ func (p *CatalogProjection) Project(ctx context.Context, streamType string, even
 				return err
 			}
 		}
-		return nil
+		// The projected position commits with the rows it describes: the healer
+		// reactor reads it to tell "already applied" from drift.
+		return readside.AdvancePositions(tx, events)
 	})
 	if err != nil {
 		return fmt.Errorf("projecting %s events: %w", streamType, err)
@@ -138,6 +171,9 @@ func projectAlbumEvent(tx *sqlite.Conn, evt eventsourcing.Event) error {
 		if _, err := stmt.Step(); err != nil {
 			return fmt.Errorf("updating album song counts: %w", err)
 		}
+
+	default:
+		return fmt.Errorf("projecting album events: unknown event type %q", evt.EventType)
 	}
 	return nil
 }
@@ -260,6 +296,9 @@ func projectSongEvent(tx *sqlite.Conn, evt eventsourcing.Event) error {
 		if _, err := stmt.Step(); err != nil {
 			return fmt.Errorf("marking song duplicate: %w", err)
 		}
+
+	default:
+		return fmt.Errorf("projecting song events: unknown event type %q", evt.EventType)
 	}
 	return nil
 }

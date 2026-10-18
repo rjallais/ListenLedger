@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"testing"
 
 	"ListenLedger/internal/db"
@@ -149,5 +150,129 @@ func TestArtistProjection_FullLifecycleAndHistory(t *testing.T) {
 	})
 	if status != "recently_added" {
 		t.Fatalf("expected list_status recently_added, got %s", status)
+	}
+}
+
+// TestArtistProjectionHandlesAllEventTypes keeps the projection switch in
+// step with the artist event contract: an event type the projection does not
+// know would be skipped silently, leaving the read model behind the log.
+func TestArtistProjectionHandlesAllEventTypes(t *testing.T) {
+	ctx := t.Context()
+	_, _, proj, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	agg, err := artist.NewArtist("ar_contract", "Contract", "sp_contract", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := agg.RecordMonthlyListeners(1000, "contract", 1); err != nil {
+		t.Fatalf("RecordMonthlyListeners: %v", err)
+	}
+	if err := agg.ChangeListStatus("recently_added", "contract"); err != nil {
+		t.Fatalf("ChangeListStatus: %v", err)
+	}
+	if err := agg.SetFetchStatus("pending", ""); err != nil {
+		t.Fatalf("SetFetchStatus: %v", err)
+	}
+	if err := agg.AdjustCollectionSongs(1, 2); err != nil {
+		t.Fatalf("AdjustCollectionSongs: %v", err)
+	}
+
+	events := agg.UncommittedEvents()
+	if err := proj.Project(ctx, agg, events); err != nil {
+		t.Fatalf("Project(one event of each declared type): %v", err)
+	}
+	want := []string{
+		artist.EventTypeArtistCollectionSongsAdjusted,
+		artist.EventTypeArtistCreated,
+		artist.EventTypeArtistFetchStatusChanged,
+		artist.EventTypeArtistMonthlyListenersScraped,
+		artist.EventTypeArtistStatusChanged,
+	}
+	if got := eventsourcing.EventTypesOf(events); !slices.Equal(got, want) {
+		t.Fatalf("walk recorded %v, want %v", got, want)
+	}
+
+	unknown, err := eventsourcing.NewEvent("ar_contract", artist.StreamTypeArtist, int64(len(events)+1), "ArtistNotAnEvent", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent(unknown): %v", err)
+	}
+	if err := proj.Project(ctx, agg, []eventsourcing.Event{unknown}); err == nil {
+		t.Fatal("Project(unknown event type) = nil, want an error")
+	}
+}
+
+// TestArtistProjectionSkipsStaleEvents reproduces the healer race: the healer
+// loads a stream outside its transaction, so a batch it re-projects can be
+// older than what a concurrent inline projection already committed. Project
+// must skip events at or below the recorded position instead of regressing
+// rows while the monotonic position stays ahead (drift the audit could then
+// never see, let alone repair).
+func TestArtistProjectionSkipsStaleEvents(t *testing.T) {
+	ctx := t.Context()
+	db, store, proj, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	repo := artist.NewRepository(store)
+	agg, err := artist.NewArtist("ar_stale", "Stale", "sp_stale", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+
+	var all []eventsourcing.Event
+	appendBatch := func() {
+		t.Helper()
+		evts, err := repo.Save(ctx, agg)
+		if err != nil {
+			t.Fatalf("repo.Save: %v", err)
+		}
+		if err := proj.Project(ctx, agg, evts); err != nil {
+			t.Fatalf("proj.Project: %v", err)
+		}
+		all = append(all, evts...)
+	}
+
+	// v1 ArtistCreated, then v2..v5 listener scrapes with distinct values.
+	appendBatch()
+	for _, listeners := range []int64{100, 200, 300, 400} {
+		if err := agg.RecordMonthlyListeners(listeners, "test", 1); err != nil {
+			t.Fatalf("RecordMonthlyListeners: %v", err)
+		}
+		appendBatch()
+	}
+
+	readValue := func(query string) int64 {
+		t.Helper()
+		var got int64 = -1
+		_ = db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep(query)
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, "ar_stale")
+			if hasRow, _ := stmt.Step(); hasRow {
+				got = stmt.ColumnInt64(0)
+			}
+			return nil
+		})
+		return got
+	}
+
+	if got := readValue("SELECT monthly_listeners FROM artists WHERE id = ?;"); got != 400 {
+		t.Fatalf("monthly_listeners = %d, want 400", got)
+	}
+	if got := readValue("SELECT version FROM read_model_positions WHERE stream_id = ?;"); got != 5 {
+		t.Fatalf("read_model_positions.version = %d, want 5", got)
+	}
+
+	// The healer's stale batch: everything except the newest event. Without
+	// the in-transaction position check this regressed the row to v4 (300).
+	stale := slices.Clone(all[:len(all)-1])
+	if err := proj.Project(ctx, agg, stale); err != nil {
+		t.Fatalf("Project(stale batch): %v", err)
+	}
+	if got := readValue("SELECT monthly_listeners FROM artists WHERE id = ?;"); got != 400 {
+		t.Fatalf("stale batch regressed monthly_listeners to %d, want 400", got)
+	}
+	if got := readValue("SELECT version FROM read_model_positions WHERE stream_id = ?;"); got != 5 {
+		t.Fatalf("read_model_positions.version = %d, want 5 after stale batch", got)
 	}
 }

@@ -17,6 +17,7 @@ import (
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/artist"
+	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 )
@@ -225,6 +226,49 @@ func TestReplayIncrementalTouchesOnlyNewFacts(t *testing.T) {
 	assertReplayedRowListeners(t, ctx, dataDir, "ar_incr_b", 777000)
 }
 
+// TestReplaySinceCheckpointRepairsDriftRowAtTip simulates a row that drifted
+// while its read_model_positions row sits at the stream tip: Project would
+// skip every event, so --since-checkpoint must clear the position first and
+// re-fold to convergence.
+func TestReplaySinceCheckpointRepairsDriftRowAtTip(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	selected := map[string]struct{}{artist.StreamTypeArtist: {}}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	seedReplayArtist(t, ctx, dataDir, "ar_drift_x")
+	if err := replay(ctx, quiet, dataDir, selected, false); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	appendReplayListeners(t, ctx, dataDir, "ar_drift_x", 555000)
+
+	// Drift the row and push its stored position well past the stream tip.
+	{
+		database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+		if err != nil {
+			t.Fatalf("SetupDB: %v", err)
+		}
+		if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
+			if _, err := tx.Prep(`UPDATE artists SET monthly_listeners = 1 WHERE id = 'ar_drift_x';`).Step(); err != nil {
+				return err
+			}
+			_, err := tx.Prep(`UPDATE read_model_positions SET version = version + 100 WHERE stream_id = 'ar_drift_x';`).Step()
+			return err
+		}); err != nil {
+			t.Fatalf("drifting row: %v", err)
+		}
+		if err := database.Close(); err != nil {
+			t.Fatalf("close after drift: %v", err)
+		}
+	}
+
+	if err := replay(ctx, quiet, dataDir, selected, true); err != nil {
+		t.Fatalf("replay --since-checkpoint: %v", err)
+	}
+	assertReplayedRowListeners(t, ctx, dataDir, "ar_drift_x", 555000)
+}
+
 // assertReplayedRowListeners verifies the projected SQLite row converged,
 // not just the aggregate: resume must fold facts into read models.
 func assertReplayedRowListeners(t *testing.T, ctx context.Context, dataDir, artistID string, want int64) {
@@ -359,5 +403,110 @@ func TestReplayFromJetStream(t *testing.T) {
 	}
 	if err := dryRunJS(ctx, logger, dataDir, selected); err != nil {
 		t.Fatalf("dryRunJS: %v", err)
+	}
+}
+
+// TestReplaySinceCheckpointRepairsDriftedSongRow verifies that --since-checkpoint
+// clears read_model_positions for touched streams and re-folds from version 0,
+// converging columns updated by domain events without deleting existing rows
+// (preserving catalog rows predating the event log).
+func TestReplaySinceCheckpointRepairsDriftedSongRow(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	selected := map[string]struct{}{song.StreamTypeSong: {}}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Create song in SQLite store
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	s, err := song.NewSong("sg_drift_1", "Original Title", "Artist", "Album", "2024-01-01", "album", "", 2024, 0, 0, false)
+	if err != nil {
+		t.Fatalf("NewSong: %v", err)
+	}
+	if _, err := s.LinkTidalID("tidal-123", "test", 1.0); err != nil {
+		t.Fatalf("LinkTidalID: %v", err)
+	}
+	if err := store.Append(ctx, "sg_drift_1", 0, s.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+
+	// Full initial replay creates the songs row with tidal_id
+	if err := replay(ctx, quiet, dataDir, selected, false); err != nil {
+		t.Fatalf("initial replay: %v", err)
+	}
+
+	// Corrupt tidal_id in the database row and advance read_model_positions to tip
+	database, err = db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		if _, err := tx.Prep(`UPDATE songs SET tidal_id = 'corrupted' WHERE id = 'sg_drift_1';`).Step(); err != nil {
+			return err
+		}
+		_, err := tx.Prep(`UPDATE read_model_positions SET version = version + 10 WHERE stream_id = 'sg_drift_1';`).Step()
+		return err
+	}); err != nil {
+		t.Fatalf("corrupting song row: %v", err)
+	}
+	_ = database.Close()
+
+	// Append a new event to touch the stream after checkpoint
+	database, err = db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store = eventsourcing.NewSQLiteStore(database)
+	repo := song.NewRepository(store)
+	sLoaded, err := repo.Load(ctx, "sg_drift_1")
+	if err != nil {
+		t.Fatalf("Load song: %v", err)
+	}
+	if err := sLoaded.SetRecent(true, 1, 1); err != nil {
+		t.Fatalf("SetRecent: %v", err)
+	}
+	if _, err := repo.Save(ctx, sLoaded); err != nil {
+		t.Fatalf("Save song: %v", err)
+	}
+	_ = database.Close()
+
+	// Replay with --since-checkpoint clears position and re-folds, restoring tidal_id
+	if err := replay(ctx, quiet, dataDir, selected, true); err != nil {
+		t.Fatalf("replay --since-checkpoint: %v", err)
+	}
+
+	// Verify tidal_id converged back to "tidal-123" and is_recent updated to 1
+	database, err = db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	var restoredTidal string
+	var isRecent int64
+	if err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT tidal_id, is_recent FROM songs WHERE id = 'sg_drift_1';")
+		defer func() { _ = stmt.Reset() }()
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			return fmt.Errorf("songs row not found")
+		}
+		restoredTidal = stmt.ColumnText(0)
+		isRecent = stmt.ColumnInt64(1)
+		return nil
+	}); err != nil {
+		t.Fatalf("read songs row: %v", err)
+	}
+	if restoredTidal != "tidal-123" {
+		t.Fatalf("restored tidal_id = %q, want %q", restoredTidal, "tidal-123")
+	}
+	if isRecent != 1 {
+		t.Fatalf("is_recent = %d, want 1", isRecent)
 	}
 }

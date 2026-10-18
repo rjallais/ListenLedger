@@ -81,6 +81,8 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 
 	// 4. Wipe the read models and rebuild them from the event log only.
+	// Positions go with the rows: a live position tells Project the row is
+	// already current and the replay would be skipped.
 	if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("DELETE FROM albums WHERE id = ?;")
 		stmt.BindText(1, albumID)
@@ -90,6 +92,13 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 		stmt = tx.Prep("DELETE FROM songs WHERE id = 'sg_seed';")
 		if _, err := stmt.Step(); err != nil {
 			return err
+		}
+		for _, streamID := range []string{albumID, "sg_seed"} {
+			stmt = tx.Prep("DELETE FROM read_model_positions WHERE stream_id = ?;")
+			stmt.BindText(1, streamID)
+			if _, err := stmt.Step(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
@@ -166,6 +175,11 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 	if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("DELETE FROM albums WHERE id = ?;")
+		stmt.BindText(1, albumID)
+		if _, err := stmt.Step(); err != nil {
+			return err
+		}
+		stmt = tx.Prep("DELETE FROM read_model_positions WHERE stream_id = ?;")
 		stmt.BindText(1, albumID)
 		_, err := stmt.Step()
 		return err

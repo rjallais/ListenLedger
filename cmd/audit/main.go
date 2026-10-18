@@ -9,9 +9,10 @@
 //
 //	go run ./cmd/audit [--data-dir pb_data] [--streams artist,album,song,scrapejob] [--max-mismatches 20] [--pb-mirror]
 //
-// Exit code is 1 when value mismatches, missing projection rows, or unlogged
-// rows are found; purged scrape-job rows (retention) and outbox/checkpoint
-// lag are informational only.
+// Exit code is 1 when value mismatches, missing projection rows, unlogged
+// rows, or stored events this binary cannot decode are found; purged
+// scrape-job rows (retention) and outbox/checkpoint lag are informational
+// only.
 //
 // --pb-mirror additionally compares PocketBase collections against their
 // SQLite projections (PB boot required; run against a backup copy with the
@@ -25,6 +26,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/pocketbase/pocketbase"
@@ -39,6 +41,12 @@ import (
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
 	_ "ListenLedger/migrations"
+
+	// Blank imports register every event payload with the payload registry,
+	// so the event-contract census knows all valid event types. Without them
+	// the census would report these types as unreadable.
+	_ "ListenLedger/internal/domain/correctionproposal"
+	_ "ListenLedger/internal/domain/tidalsync"
 )
 
 // streamReport tallies one stream type's convergence check.
@@ -60,6 +68,13 @@ type report struct {
 	PurgedInfos int              `json:"purged_infos"`
 	OutboxLag   int64            `json:"outbox_lag"`
 	Checkpoints map[string]int64 `json:"checkpoints,omitempty"`
+	// EventTypes is the event-contract census: stored events per event type,
+	// and whether this binary can decode their payloads.
+	EventTypes []eventTypeCensus `json:"event_types,omitempty"`
+	// UndecodableEvents counts stored events whose payload this binary cannot
+	// read (unregistered event type, or a payload that fails to decode).
+	// Divergence: no projection can derive rows from a fact it cannot read.
+	UndecodableEvents int64 `json:"undecodable_events"`
 	// MaxStreamVersions records the longest stream per type (stream type ->
 	// max tip version). Informational only: long artist streams lose their
 	// snapshot shortcut under JetStream reads, so flip-day operators need
@@ -70,6 +85,18 @@ type report struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// eventTypeCensus tallies one event type in the log against the payload
+// registry.
+type eventTypeCensus struct {
+	EventType  string `json:"event_type"`
+	Count      int64  `json:"count"`
+	Registered bool   `json:"registered"`
+	// DecodeFails counts sampled events of this type whose payload the
+	// registered struct could not read.
+	DecodeFails int    `json:"decode_failures,omitempty"`
+	Sample      string `json:"sample,omitempty"`
+}
+
 // hasMismatch reports whether the audit found real divergence.
 func (r *report) hasMismatch() bool {
 	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs, r.Batches} {
@@ -77,7 +104,7 @@ func (r *report) hasMismatch() bool {
 			return true
 		}
 	}
-	return false
+	return r.UndecodableEvents > 0
 }
 
 func (r *streamReport) addSample(cap int, sample string) {
@@ -121,6 +148,8 @@ func main() {
 		"outbox_lag", rep.OutboxLag,
 		"checkpoints", rep.Checkpoints,
 		"max_stream_versions", rep.MaxStreamVersions,
+		"event_types", rep.EventTypes,
+		"undecodable_events", rep.UndecodableEvents,
 		"warnings", rep.Warnings,
 	)
 	diverged := rep.hasMismatch()
@@ -272,9 +301,14 @@ func audit(ctx context.Context, dataDir string, selected map[string]struct{}, ma
 		}
 	}
 	if _, ok := selected[batch.StreamTypeBatch]; ok {
-		if err := auditBatches(ctx, database, store, byType[batch.StreamTypeBatch], maxSamples, &rep.Batches); err != nil {
+		if err := auditBatches(ctx, database, store, byType[batch.StreamTypeBatch], maxSamples, &rep.Batches, &rep.PurgedInfos); err != nil {
 			return nil, err
 		}
+	}
+
+	// Event-contract census: whole-log, so it runs regardless of --streams.
+	if err := auditEventTypes(ctx, store, maxSamples, rep); err != nil {
+		return nil, err
 	}
 
 	if lag, err := store.UnpublishedCount(ctx); err != nil {
@@ -306,6 +340,50 @@ type artistRow struct {
 	monthlyListeners int64
 	listStatus       string
 	fetchStatus      string
+}
+
+// censusMinSamples is the minimum number of events sampled from each end of
+// every event type, independent of --max-mismatches.
+const censusMinSamples = 20
+
+// auditEventTypes checks the event contract against the log: every stored
+// event type must have a registered payload, and sampled payloads must still
+// decode into it. Either failure means the binary cannot read a fact it
+// stored, so no projection can derive rows from it. The census reads the
+// SQLite log only; in jetstream mode that log froze at the flip, so
+// JetStream-only appends are unchecked and the report says so.
+func auditEventTypes(ctx context.Context, store *eventsourcing.SQLiteStore, maxSamples int, rep *report) error {
+	if mode, err := eventsourcing.SelectedStoreName(); err == nil && mode == eventsourcing.EventStoreJetStream {
+		rep.Warnings = append(rep.Warnings, "event-type census covers the frozen SQLite log only; JetStream-only appends are not checked")
+	}
+	// Decode sampling is a gate, not report verbosity: keep it independent
+	// of --max-mismatches so a quiet report never disables the check.
+	census, err := store.EventTypeCensus(ctx, max(maxSamples, censusMinSamples))
+	if err != nil {
+		return fmt.Errorf("event-type census: %w", err)
+	}
+
+	for _, entry := range census {
+		row := eventTypeCensus{EventType: entry.EventType, Count: entry.Count}
+		_, row.Registered = eventsourcing.PayloadTypeOf(entry.EventType)
+		if !row.Registered {
+			row.Sample = "no payload registered for this event type"
+			rep.UndecodableEvents += entry.Count
+			rep.EventTypes = append(rep.EventTypes, row)
+			continue
+		}
+		for _, evt := range entry.Samples {
+			if _, err := eventsourcing.DecodeRegisteredPayload(evt); err != nil {
+				row.DecodeFails++
+				if row.Sample == "" {
+					row.Sample = fmt.Sprintf("%s v%d: %v", evt.StreamID, evt.Version, err)
+				}
+			}
+		}
+		rep.UndecodableEvents += int64(row.DecodeFails)
+		rep.EventTypes = append(rep.EventTypes, row)
+	}
+	return nil
 }
 
 func readArtistRow(ctx context.Context, database *toolbeltdb.Database, id string) (artistRow, error) {
@@ -639,7 +717,7 @@ func readBatchMembers(ctx context.Context, database *toolbeltdb.Database, batchI
 	return members, err
 }
 
-func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport) error {
+func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport, purgedInfos *int) error {
 	for _, id := range ids {
 		rep.Checked++
 		events, err := store.Load(ctx, id)
@@ -662,6 +740,12 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 			return fmt.Errorf("reading batch row %s: %w", id, err)
 		}
 		if !row.found {
+			// Start prunes done batches after 2h; the stream survives by design.
+			// A younger done batch without a row is a missing projection.
+			if agg.Done() && time.Since(events[len(events)-1].CreatedAt) >= 2*time.Hour {
+				*purgedInfos++
+				continue
+			}
 			rep.MissingRows++
 			rep.addSample(maxSamples, fmt.Sprintf("batch %s: stream v%d has no batches row", id, agg.Version()))
 			continue

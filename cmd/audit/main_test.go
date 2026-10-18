@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"zombiezen.com/go/sqlite"
 
@@ -341,5 +342,225 @@ func TestAuditReportsStreamSizes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("want warning containing %q, got warnings=%v", want, rep.Warnings)
+	}
+}
+
+func TestAuditEventTypesCensus(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+
+	agg, err := artist.NewArtist("ar_census", "Census", "sp_census", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	unknown, err := eventsourcing.NewEvent("ar_census", artist.StreamTypeArtist, 2, "UnknownEventType", map[string]string{"x": "1"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 1, unknown); err != nil {
+		t.Fatalf("Append unknown: %v", err)
+	}
+
+	broken, err := eventsourcing.NewEvent("ar_census", artist.StreamTypeArtist, 3, artist.EventTypeArtistCreated, map[string]any{"id": 42}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 2, broken); err != nil {
+		t.Fatalf("Append broken: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	census := make(map[string]eventTypeCensus, len(rep.EventTypes))
+	for _, entry := range rep.EventTypes {
+		census[entry.EventType] = entry
+	}
+	if got := census[artist.EventTypeArtistCreated]; !got.Registered || got.Count != 2 || got.DecodeFails != 1 {
+		t.Errorf("ArtistCreated census = %+v, want registered, count 2, 1 decode failure", got)
+	}
+	if got := census["UnknownEventType"]; got.Registered || got.Count != 1 {
+		t.Errorf("UnknownEventType census = %+v, want unregistered with count 1", got)
+	}
+	if want := int64(2); rep.UndecodableEvents != want {
+		t.Errorf("UndecodableEvents = %d, want %d", rep.UndecodableEvents, want)
+	}
+	if !rep.hasMismatch() {
+		t.Error("undecodable events should count as divergence")
+	}
+}
+
+// TestAuditCensusSamplesDespiteZeroMaxMismatches pins the gate floor:
+// --max-mismatches 0 only silences mismatch samples, so the census must
+// still sample payloads and report undecodable events.
+func TestAuditCensusSamplesDespiteZeroMaxMismatches(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+
+	broken, err := eventsourcing.NewEvent("ar_quiet", artist.StreamTypeArtist, 1, artist.EventTypeArtistCreated, map[string]any{"id": 42}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_quiet", 0, broken); err != nil {
+		t.Fatalf("Append broken: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 0)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, entry := range rep.EventTypes {
+		if entry.EventType != artist.EventTypeArtistCreated {
+			continue
+		}
+		if entry.DecodeFails != 1 {
+			t.Errorf("ArtistCreated DecodeFails = %d, want 1 (census sampling must survive --max-mismatches 0)", entry.DecodeFails)
+		}
+	}
+	if rep.UndecodableEvents != 1 {
+		t.Errorf("UndecodableEvents = %d, want 1", rep.UndecodableEvents)
+	}
+	if !rep.hasMismatch() {
+		t.Error("undecodable events should count as divergence")
+	}
+}
+
+// TestAuditCensusWarnsInJetstreamMode checks that the jetstream-mode census
+// flags its blind spot: SQLite freezes at the flip, so JetStream-only appends
+// go unchecked and the report must say so instead of reporting clean.
+func TestAuditCensusWarnsInJetstreamMode(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "jetstream")
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	agg, err := artist.NewArtist("ar_census_js", "Census", "sp_census_js", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census_js", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "JetStream-only appends are not checked") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("want JetStream census blind-spot warning, got %v", rep.Warnings)
+	}
+}
+
+func TestAuditPurgedDoneBatch(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	b, err := batch.NewBatch("bt_purged_done", []string{"ar_1"}, nil)
+	if err != nil {
+		t.Fatalf("NewBatch: %v", err)
+	}
+	if _, _, err := b.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	if !b.Done() {
+		t.Fatalf("fixture batch should be done")
+	}
+	events := b.UncommittedEvents()
+	for i := range events {
+		events[i].CreatedAt = time.Now().Add(-3 * time.Hour)
+	}
+	if err := store.Append(ctx, "bt_purged_done", 0, events...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+	selected := map[string]struct{}{batch.StreamTypeBatch: {}}
+	rep, err := audit(ctx, dataDir, selected, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if rep.Batches.MissingRows != 0 {
+		t.Fatalf("purged done batch should not count as missing: %+v", rep.Batches)
+	}
+	if rep.Batches.Checked != 1 {
+		t.Fatalf("batches checked = %d, want 1", rep.Batches.Checked)
+	}
+	if rep.PurgedInfos != 1 {
+		t.Fatalf("purged infos = %d, want 1", rep.PurgedInfos)
+	}
+	if rep.hasMismatch() {
+		t.Fatalf("purged done batch should be clean: %+v", rep.Batches)
+	}
+}
+
+func TestAuditRecentDoneBatchMissingRow(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	b, err := batch.NewBatch("bt_recent_done", []string{"ar_1"}, nil)
+	if err != nil {
+		t.Fatalf("NewBatch: %v", err)
+	}
+	if _, _, err := b.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	if !b.Done() {
+		t.Fatalf("fixture batch should be done")
+	}
+	// Recent events (< 2h) without a row should be flagged as missing row, not purged.
+	if err := store.Append(ctx, "bt_recent_done", 0, b.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+	selected := map[string]struct{}{batch.StreamTypeBatch: {}}
+	rep, err := audit(ctx, dataDir, selected, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if rep.Batches.MissingRows != 1 {
+		t.Fatalf("recent done batch without row must count as missing: %+v", rep.Batches)
+	}
+	if !rep.hasMismatch() {
+		t.Fatalf("recent done batch missing row should trigger hasMismatch")
 	}
 }

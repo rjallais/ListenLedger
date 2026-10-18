@@ -662,17 +662,6 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 // mirrors; the aggregate is the source of truth for isArtistRefreshPending.
 // requestID links the fact to its saga instance in metadata.
 func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) {
-	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, true)
-}
-
-// emitArtistFetchStatusEventOnly appends the fetch-status event to the event
-// store without individually projecting to SQLite, allowing callers that perform
-// a single batch projection update across all items to avoid SQLite lock contention.
-func (h *Handler) emitArtistFetchStatusEventOnly(ctx context.Context, artistID, status, reason, requestID string) {
-	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, false)
-}
-
-func (h *Handler) emitArtistFetchStatusWithOptions(ctx context.Context, artistID, status, reason, requestID string, project bool) {
 	if h.artistRepo == nil || strings.TrimSpace(artistID) == "" {
 		return
 	}
@@ -691,7 +680,7 @@ func (h *Handler) emitArtistFetchStatusWithOptions(ctx context.Context, artistID
 		log.Printf("[handlers] Warning: fetch-status event %s for %s not saved: %v", status, artistID, err)
 		return
 	}
-	if project && h.artistProjection != nil && len(events) > 0 {
+	if h.artistProjection != nil && len(events) > 0 {
 		if err := h.artistProjection.Project(ctx, agg, events); err != nil {
 			log.Printf("[handlers] Warning: fetch-status projection %s for %s failed: %v", status, artistID, err)
 		}
@@ -699,10 +688,12 @@ func (h *Handler) emitArtistFetchStatusWithOptions(ctx context.Context, artistID
 }
 
 // emitBatchArtistFetchStatusEvents loads candidate artist aggregates concurrently
-// and commits all status-transition events in a single batch transaction.
-func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidates []batchCandidate, status, reason string) {
+// and commits all status-transition events in a single batch transaction. It
+// returns the saved events so the caller can advance read-model positions for
+// exactly the committed facts.
+func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidates []batchCandidate, status, reason string) []eventsourcing.Event {
 	if h.artistRepo == nil || len(candidates) == 0 {
-		return
+		return nil
 	}
 	loaded := make([]*artist.Artist, len(candidates))
 	var wg sync.WaitGroup
@@ -730,9 +721,11 @@ func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidat
 	}
 	wg.Wait()
 
-	if err := h.artistRepo.SaveBatch(ctx, loaded); err != nil {
+	saved, err := h.artistRepo.SaveBatch(ctx, loaded)
+	if err != nil {
 		log.Printf("[handlers] Warning: batch fetch-status events (%s) save error: %v", status, err)
 	}
+	return saved
 }
 
 func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) error {

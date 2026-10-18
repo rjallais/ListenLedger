@@ -30,6 +30,11 @@ const (
 	// ScrapeWorkerLocalConsumerName is the durable consumer for local headless jobs.
 	ScrapeWorkerLocalConsumerName = "SCRAPE_WORKER_LOCAL"
 
+	// ReadModelHealerConsumerName is the durable consumer the read-model
+	// healer uses to repair SQLite drift from DOMAIN_EVENTS. The name is the
+	// resume position: renaming it replays the stream from the beginning.
+	ReadModelHealerConsumerName = "READ_MODEL_HEALER"
+
 	// EventsStreamName is the JetStream stream used for replayable domain events.
 	EventsStreamName = "EVENTS"
 
@@ -99,6 +104,13 @@ type streamConfig struct {
 	// plaintext). Stream limits (MaxBytes) stay logical, so this buys disk,
 	// not cap headroom; blocks written before enabling stay uncompressed.
 	Compression jetstream.StoreCompression
+	// AllowAtomicPublish makes PublishMsgBatch all-or-nothing across messages
+	// (per-subject expectations verified against the pinned nats-server
+	// v2.15). The batch append path relies on it.
+	AllowAtomicPublish bool
+	// AllowDirect enables direct get by subject, used by store tooling and
+	// consumers that read by subject index without a subscription.
+	AllowDirect bool
 }
 
 func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) error {
@@ -117,6 +129,8 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 		MaxBytes:    sc.MaxBytes,
 		Duplicates:  sc.Duplicates,
 		Compression: sc.Compression,
+		AllowAtomicPublish: sc.AllowAtomicPublish,
+		AllowDirect:        sc.AllowDirect,
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
 		return fmt.Errorf("ensure %s stream: %w", displayName, err)
@@ -175,6 +189,8 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 		MaxBytes:    DomainEventsMaxBytes,
 		Duplicates:  10 * time.Minute,
 		Compression: jetstream.S2Compression,
+		AllowAtomicPublish: true,
+		AllowDirect:        true,
 	}, "domain events")
 }
 
@@ -194,6 +210,8 @@ func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream
 		Duplicates:  10 * time.Minute,
 		Discard:     jetstream.DiscardNew,
 		Compression: jetstream.S2Compression,
+		AllowAtomicPublish: true,
+		AllowDirect:        true,
 	}, "domain events (truth)")
 }
 

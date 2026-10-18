@@ -15,9 +15,20 @@ import (
 	"ListenLedger/config"
 	"ListenLedger/internal/appdir"
 	"ListenLedger/internal/db"
+	_ "ListenLedger/internal/domain/album"
+	_ "ListenLedger/internal/domain/artist"
+	_ "ListenLedger/internal/domain/batch"
+	_ "ListenLedger/internal/domain/correctionproposal"
+	_ "ListenLedger/internal/domain/scrapejob"
+	_ "ListenLedger/internal/domain/song"
+	_ "ListenLedger/internal/domain/tidalsync"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/handlers"
+	"ListenLedger/internal/heal"
+	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/outbox"
+	"ListenLedger/internal/projections"
+	"ListenLedger/internal/reactor"
 	"ListenLedger/internal/saga"
 	"ListenLedger/internal/worker"
 	_ "ListenLedger/migrations"
@@ -104,6 +115,15 @@ func Run(ctx context.Context) error {
 			slog.Info("jetstream parity gate passed")
 		}
 
+		// Event-contract check: every registered payload must round-trip
+		// through the codec. A payload the codec cannot read would otherwise
+		// surface only when a stream carrying it is read, so fail at boot.
+		if err := eventsourcing.ValidatePayloadRegistry(); err != nil {
+			_ = sqliteDB.Close()
+			_ = embeddedNATS.Close(ctx)
+			return fmt.Errorf("payload registry validation failed: %w", err)
+		}
+
 		registerArtistUpdateFanout(ctx, app, embeddedNATS.JS)
 		registerQueueUpdateFanout(ctx, app, embeddedNATS.Conn)
 
@@ -134,10 +154,11 @@ func Run(ctx context.Context) error {
 			relay.Run(bgCtx)
 		}()
 
-		// Saga orchestrator: refreshes durable saga_instances states from
-		// job streams (observability for scrapejob→artist sagas). Like the
-		// relay it is crash-safe: Tick derives everything, so restarts just
-		// re-converge on the next pass. Reads follow the event-store flip.
+		// Event-store selection: the authoritative log for readers that
+		// follow the flip (the healer re-projects from it and the saga
+		// orchestrator folds job streams through it). In jetstream mode the
+		// SQLite log is frozen, so pointing either at SQLite would repair
+		// from stale history and miss every JetStream-only append.
 		eventStore, err := eventsourcing.SelectedStore(sqliteDB, embeddedNATS.JS)
 		if err != nil {
 			w.Stop()
@@ -147,6 +168,53 @@ func Run(ctx context.Context) error {
 			_ = embeddedNATS.Close(ctx)
 			return fmt.Errorf("select event store: %w", err)
 		}
+
+		// Read-model healer: a durable reactor over DOMAIN_EVENTS repairs
+		// SQLite read models whose inline projection drifted. Young gaps are
+		// NAKed for one delayed re-check; the redelivery either sees the gap
+		// aged past healGrace and heals, or an inline projection that already
+		// caught up. Idempotent reads (positions) mean redelivery is safe;
+		// skipped streams stay acked so the consumer keeps its place. A delayed
+		// NAK stays in the consumer's ack-pending set until it is redelivered
+		// (nats-server keeps the pending entry and rewinds its expiry by the
+		// delay), so MaxAckPending must exceed 1 or every young-lag NAK stalls
+		// all other deliveries for NakDelay. Ordering is not required: the
+		// healer refolds whole streams and Project skips events at or below
+		// the stored position inside its write transaction. First boot starts
+		// at the head of DOMAIN_EVENTS (no DeliverPolicy): sqlite mode seeds
+		// a position per stream, so old deliveries cost one position read;
+		// in jetstream mode the seed comes from the frozen SQLite log, every
+		// post-flip stream lags by construction and is refolded once after
+		// grace. Watch the re-projecting log rate and the consumer's pending
+		// count during the first deploy; if the one-time backlog is too
+		// large, start the consumer at DeliverNew and leave older history to
+		// cmd/replay and cmd/audit.
+		if cfg.ReadModelHealerEnabled {
+			bgWG.Add(1)
+			go func() {
+				defer bgWG.Done()
+				healer, err := reactor.New(slog.Default(), embeddedNATS.JS, reactor.Config{
+					Name:          messaging.ReadModelHealerConsumerName,
+					Filters:       []string{messaging.SubjectDomainEventsWildcard},
+					MaxAckPending: 256,
+				}, heal.NewHealer(slog.Default(), sqliteDB, eventStore,
+					projections.NewArtistProjection(slog.Default(), sqliteDB, nil),
+					projections.NewCatalogProjection(slog.Default(), sqliteDB),
+				).HandleEvent)
+				if err != nil {
+					app.Logger().Error("read-model healer failed to start", "err", err)
+					return
+				}
+				if err := healer.Run(bgCtx); err != nil {
+					app.Logger().Error("read-model healer stopped", "err", err)
+				}
+			}()
+		}
+
+		// Saga orchestrator: refreshes durable saga_instances states from
+		// job streams (observability for scrapejob→artist sagas). Like the
+		// relay it is crash-safe: Tick derives everything, so restarts just
+		// re-converge on the next pass. Reads follow the event-store flip.
 		bgWG.Add(1)
 		go func() {
 			defer bgWG.Done()
