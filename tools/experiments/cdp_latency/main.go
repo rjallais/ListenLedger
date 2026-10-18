@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -25,7 +26,7 @@ func main() {
 	rounds := flag.Int("rounds", 5, "warm measurement rounds")
 	flag.Parse()
 
-	wsURL, err := resolveControlURL(*port)
+	wsURL, err := resolveControlURL(context.Background(), *port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve control URL: %v\n", err)
 		os.Exit(1)
@@ -48,7 +49,7 @@ func main() {
 window.addEventListener('load',()=>{window.__loadMS=performance.now();});
 (()=>{const o=window.fetch;window.fetch=function(input,init){let u=(typeof input==='string')?input:(input&&input.url)||'';
 if(u.indexOf('/api/events')!==-1){window.__sseFetchAt=performance.now();
-return o.apply(this,arguments).then(async(r)=>{try{const rd=r.body.getReader();const {value}=await rd.read();window.__sseMS=performance.now();window.__sseB=value?value.length:0;rd.cancel();}catch(e){window.__sseStatus='read-error:'+e;}return r;});}
+return o.apply(this,arguments).then(async(r)=>{try{const c=r.clone();const rd=c.body.getReader();const {value}=await rd.read();window.__sseMS=performance.now();window.__sseB=value?value.length:0;rd.cancel();}catch(e){window.__sseStatus='read-error:'+e;}return r;});}
 return o.apply(this,arguments);};})();`); err != nil {
 		fmt.Fprintf(os.Stderr, "EvalOnNewDocument: %v\n", err)
 		os.Exit(1)
@@ -61,11 +62,12 @@ return o.apply(this,arguments);};})();`); err != nil {
 
 	fmt.Printf("\n=== Warm page-load measurement on FIXED app (%s, %d rounds) ===\n", navURL, *rounds)
 	var sum float64
+	sseFailed := false
 	for i := 0; i < *rounds; i++ {
 		page.MustNavigate(navURL).MustWaitLoad()
-		// Allow the load-deferred SSE to connect + deliver first bytes.
-		_, _ = page.Eval(`async () => { await new Promise(r => setTimeout(r, 500)); }`)
-		res, err := page.Eval(`async () => { const n=performance.getEntriesByType("navigation")[0]||{}; const dcl=n.domContentLoadedEventEnd-n.startTime; return { load: window.__loadMS>=0?window.__loadMS:(n.loadEventEnd-n.startTime), dcl: dcl, sseMS: window.__sseMS, sseB: window.__sseB, sseFetchAt: window.__sseFetchAt||-1 }; }`)
+		// Wait up to 5s for the load-deferred SSE to connect and deliver
+		// first bytes; the health check fails when either is missing.
+		res, err := page.Eval(`async () => { const t0=performance.now(); while (performance.now()-t0 < 5000 && (window.__sseMS<0 || !window.__sseFetchAt)) { await new Promise(r => setTimeout(r, 100)); } const n=performance.getEntriesByType("navigation")[0]||{}; const dcl=n.domContentLoadedEventEnd-n.startTime; return { load: window.__loadMS>=0?window.__loadMS:(n.loadEventEnd-n.startTime), dcl: dcl, sseMS: window.__sseMS, sseB: window.__sseB, sseFetchAt: window.__sseFetchAt||-1 }; }`)
 		if err != nil {
 			fmt.Printf("  round %d read error: %v\n", i+1, err)
 			continue
@@ -77,14 +79,22 @@ return o.apply(this,arguments);};})();`); err != nil {
 		fetchAt := res.Value.Get("sseFetchAt").Num()
 		fmt.Printf("  round %d: DCL=%.0fms  LOAD=%.0fms  sseFetchAt=%.0fms  sseFirstBytes=%.0fms (%d B)\n", i+1, dcl, load, fetchAt, sseMS, sseB)
 		sum += load
+		if fetchAt <= 0 || sseMS < 0 {
+			fmt.Fprintf(os.Stderr, "  round %d: SSE observation missing within timeout (sseFetchAt=%.0f sseMS=%.0f); live updates unconfirmed\n", i+1, fetchAt, sseMS)
+			sseFailed = true
+		}
 	}
 	fmt.Printf("\nAVG LOAD = %.0f ms\n", sum/float64(*rounds))
+	if sseFailed {
+		fmt.Fprintln(os.Stderr, "SSE health check FAILED: fetch or first-byte observation missing within timeout")
+		os.Exit(1)
+	}
 	fmt.Println("\nSSE health check: sseFetchAt > 0 proves the stream now opens only AFTER load;")
 	fmt.Println("sseFirstBytes finite & > 0 bytes proves the live lane still connects and pushes data.")
 	fmt.Println("\nDone. Throwaway tab closed; browser left running.")
 }
 
-func resolveControlURL(port int) (string, error) {
+func resolveControlURL(ctx context.Context, port int) (string, error) {
 	home, _ := os.UserHomeDir()
 	roots := []string{
 		filepath.Join(home, ".config", "BraveSoftware"),
@@ -93,9 +103,15 @@ func resolveControlURL(port int) (string, error) {
 	}
 	file := ""
 	for _, root := range roots {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
 			if d.IsDir() {
 				if rel, _ := filepath.Rel(root, path); strings.Count(rel, string(os.PathSeparator)) >= 4 {
@@ -117,7 +133,7 @@ func resolveControlURL(port int) (string, error) {
 	}
 	raw, err := os.ReadFile(file)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading DevToolsActivePort file %s: %w", file, err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) < 2 {

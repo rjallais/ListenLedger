@@ -100,28 +100,38 @@ func TestResolveAllPortsPocketBaseReleaseType(t *testing.T) {
 		"Suffix Song": {
 			{Source: "tidal_track", Title: "Suffix Song", ArtistNames: []string{"Artist"}, AlbumName: "Cool Track", ReleaseType: "single", Confidence: 0.95},
 		},
+		// Below the confidence threshold: the PB label must win, not the
+		// shaky album.
+		"Shaky Match": {
+			{Source: "tidal_track", Title: "Shaky Match", ArtistNames: []string{"Artist"}, AlbumName: "Wrong Album", Confidence: 0.70},
+		},
 	}}
 
 	rows := []songRow{
 		{id: "pb_1", title: "Only Type Missing", artistName: "Artist", album: "Some Album", releaseDate: "2020-01-01", releaseYear: 2020},
 		{id: "pb_2", title: "No Candidates", artistName: "Artist"},
 		{id: "pb_3", title: "Suffix Song", artistName: "Artist"},
+		{id: "pb_4", title: "Shaky Match", artistName: "Artist"},
 	}
-	pbTypes := map[string]string{"pb_1": "album", "pb_2": "single", "pb_3": "ep"}
+	pbTypes := map[string]string{"pb_1": "album", "pb_2": "single", "pb_3": "ep", "pb_4": "single"}
 
 	resolutions := resolveAll(t.Context(), lookup, rows, pbTypes, 0.90)
-	if len(resolutions) != 3 {
-		t.Fatalf("len(resolutions) = %d, want 3", len(resolutions))
+	if len(resolutions) != 4 {
+		t.Fatalf("len(resolutions) = %d, want 4", len(resolutions))
 	}
 	byID := make(map[string]resolution, len(resolutions))
 	for _, res := range resolutions {
 		byID[res.SongID] = res
 	}
 
-	// pb_1: the label fills the only missing field.
+	// pb_1: the label fills the only missing field; the dataless TIDAL
+	// candidate must not win the loop and mask the fill as TIDAL-sourced.
 	res := byID["pb_1"]
 	if res.Action != actionUpdate || res.Fill == nil || res.Fill.ReleaseType != "album" || res.Fill.Album != "" {
 		t.Fatalf("pb_1 = %+v, want update with the PocketBase type only", res)
+	}
+	if res.Candidate != nil || res.Confidence != 1 {
+		t.Fatalf("pb_1 candidate = %+v confidence = %v, want a candidate-less PocketBase fill", res.Candidate, res.Confidence)
 	}
 	// pb_2: no TIDAL candidates at all; the label still ports, source-less.
 	res = byID["pb_2"]
@@ -133,5 +143,12 @@ func TestResolveAllPortsPocketBaseReleaseType(t *testing.T) {
 	res = byID["pb_3"]
 	if res.Action != actionUpdate || res.Fill == nil || res.Fill.Album != "Cool Track" || res.Fill.ReleaseType != "ep" {
 		t.Fatalf("pb_3 = %+v, want the suffix album plus the PocketBase type", res)
+	}
+	// pb_4: TIDAL's best is below the threshold; the trusted label ports
+	// instead of skipping, and the shaky album is dropped.
+	res = byID["pb_4"]
+	if res.Action != actionUpdate || res.Fill == nil || res.Fill.ReleaseType != "single" || res.Fill.Album != "" ||
+		res.Candidate != nil || res.Confidence != 1 || res.Note != notePBReleaseType {
+		t.Fatalf("pb_4 = %+v, want a candidate-less PocketBase fill below the confidence threshold", res)
 	}
 }

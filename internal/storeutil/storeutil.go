@@ -13,8 +13,11 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 
 	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 )
@@ -124,4 +127,33 @@ func CheckPortAvailable(port string) bool {
 	}
 	_ = ln.Close()
 	return true
+}
+
+// MirrorSongToPB mirrors song aggregate fields into the PocketBase songs collection.
+func MirrorSongToPB(app *pocketbase.PocketBase, songAgg *song.Song) error {
+	if app == nil || songAgg == nil {
+		return nil
+	}
+	record, err := app.FindRecordById("songs", songAgg.AggregateID())
+	if err != nil {
+		collection, err := app.FindCollectionByNameOrId("songs")
+		if err != nil {
+			return fmt.Errorf("finding songs collection: %w", err)
+		}
+		record = core.NewRecord(collection)
+		record.Id = songAgg.AggregateID()
+	}
+	record.Set("title", songAgg.Title)
+	record.Set("artist_name", songAgg.ArtistName)
+	record.Set("album", songAgg.Album)
+	record.Set("release_date", songAgg.ReleaseDate)
+	record.Set("release_year", songAgg.ReleaseYear)
+	record.Set("release_type", songAgg.ReleaseType)
+	if songAgg.SpotifyID != "" {
+		record.Set("spotify_id", songAgg.SpotifyID)
+	}
+	record.Set("is_recent", songAgg.IsRecent)
+	record.Set("tidal_id", songAgg.TidalID)
+	record.Set("duplicate_of", songAgg.DuplicateOf)
+	return app.Save(record)
 }

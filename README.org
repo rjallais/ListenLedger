@@ -112,22 +112,22 @@ TIDAL_CLIENT_ID=xxx TIDAL_CLIENT_SECRET=yyy go run ./cmd/backfill_song_artists -
   # 1. Dry-run and review the JSON report
   fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/backfill_song_metadata --data-dir pb_data
 
-  # 2. Apply after review (stop the app first, or pass --live-ok)
+  # 2. Apply after review (stop the app first; --live-ok only acknowledges the live dir of a stopped app)
   fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/backfill_song_metadata --data-dir pb_data --apply --live-ok
   #+end_src
-- =cmd/tidal_sync=: synchronizes favorite tracks, albums, and artists directly from your TIDAL account using OAuth 2.0 PKCE. Built in the event-sourced CQRS architecture, observations are captured in immutable =tidalsync= event streams in JetStream, differences are reconciled into proposal reports, and approved proposals are applied to the catalog read model and song event streams. Secrets (=TIDAL_CLIENT_ID=, =TIDAL_CLIENT_SECRET=, =TIDAL_REFRESH_TOKEN=) are managed with FNOX via =fnox.toml=.
+- =cmd/tidal_sync=: synchronizes favorite tracks from your TIDAL account using OAuth 2.0 PKCE. Built in the event-sourced CQRS architecture, observations are captured in immutable =tidalsync= event streams in the authoritative event store (=LISTENLEDGER_EVENT_STORE=), differences are reconciled into proposal reports, and approved proposals are applied to the catalog read model and song event streams. Secrets (=TIDAL_CLIENT_ID=, =TIDAL_CLIENT_SECRET=) are managed with FNOX via the tracked =fnox.toml=; the rotating =TIDAL_REFRESH_TOKEN= is stored in the global FNOX config (=~/.config/fnox/config.toml=) so refreshes never rewrite the tracked file.
   Example:
 #+begin_src sh
 # 1. Login once to link your TIDAL account and store the refresh token in FNOX
 fnox exec -- go run ./cmd/tidal_sync login
 
 # 2. Plan synchronization (dry-run default; emits JSON and CSV reports in backfill_reports/)
-fnox exec -- go run ./cmd/tidal_sync plan --country BR
+fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/tidal_sync plan --country BR
 
-# 3. Apply approved proposals
-fnox exec -- go run ./cmd/tidal_sync apply --approve-all-above 0.90
+# 3. Apply approved proposals (stop the app first; --live-ok only acknowledges the live dir of a stopped app)
+fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/tidal_sync apply --approve-all-above 0.90 --live-ok
 #+end_src
-  Backfill safety: review the JSON report in =<data-dir>/backfill_reports/= and run =cmd/safebackup= before using =--apply=. If the web app is running, stop it first or dry-run against a copied =pb_data/= directory — the backfill tools boot an embedded NATS server on the data directory, and a second server on a live store corrupts it.
+  Backfill safety: review the JSON report in =backfill_reports/= and run =cmd/safebackup= before using =--apply=. The sync and backfill tools boot an embedded NATS server on the data directory, and a second server on a live store corrupts it. Stop the web app first: =--live-ok= only acknowledges that the target is the live directory of a stopped app. Alternatively, point =--data-dir= at a backup copy.
 
 * Troubleshooting
 - =encoding/json/v2= is stable in Go 1.27; no experiment flag is required.

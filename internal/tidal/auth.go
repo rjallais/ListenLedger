@@ -26,13 +26,14 @@ const (
 
 // AuthConfig defines the parameters required for TIDAL OAuth PKCE.
 type AuthConfig struct {
-	ClientID     string
-	ClientSecret string
-	AuthURL      string
-	TokenURL     string
-	RedirectURI  string
-	Scopes       []string
-	HTTPClient   *http.Client
+	ClientID            string
+	ClientSecret        string
+	AuthURL             string
+	TokenURL            string
+	RedirectURI         string
+	Scopes              []string
+	HTTPClient          *http.Client
+	PersistRefreshToken func(ctx context.Context, token string) error
 }
 
 // GenerateCodeVerifier produces a random high-entropy cryptographically secure verifier.
@@ -222,6 +223,9 @@ func RefreshAccessToken(ctx context.Context, client *http.Client, cfg AuthConfig
 	if err := json.UnmarshalRead(resp.Body, &tr); err != nil {
 		return nil, fmt.Errorf("decoding refresh response: %w", err)
 	}
+	if strings.TrimSpace(tr.AccessToken) == "" {
+		return nil, errors.New("refresh response missing access_token")
+	}
 
 	newRefreshToken := tr.RefreshToken
 	if newRefreshToken == "" {
@@ -242,9 +246,14 @@ func RefreshAccessToken(ctx context.Context, client *http.Client, cfg AuthConfig
 		Expiry:       time.Now().Add(time.Duration(expiresIn) * time.Second),
 	}
 
-	// If rotated, save back to FNOX
-	if newRefreshToken != refreshToken {
-		_ = SaveSecret(ctx, "TIDAL_REFRESH_TOKEN", newRefreshToken)
+	// If rotated, save back via callback if provided
+	if newRefreshToken != refreshToken && cfg.PersistRefreshToken != nil {
+		if err := cfg.PersistRefreshToken(ctx, newRefreshToken); err != nil {
+			// The old token is already revoked server-side: never drop the
+			// new one. Return it with the error so the caller can proceed
+			// and surface the persistence failure.
+			return token, fmt.Errorf("persisting rotated refresh token: %w", err)
+		}
 	}
 
 	return token, nil
@@ -265,7 +274,7 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 	}
 	addr := net.JoinHostPort(host, port)
 	if host == "localhost" || host == "127.0.0.1" {
-		addr = ":" + port
+		addr = net.JoinHostPort("127.0.0.1", port)
 	}
 
 	verifier, err := GenerateCodeVerifier()
@@ -293,36 +302,46 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 		err  error
 	}
 	resChan := make(chan authResult, 1)
+	sendResult := func(res authResult) {
+		select {
+		case resChan <- res:
+		default:
+		}
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
+	callbackPath := u.Path
+	if callbackPath == "" {
+		callbackPath = "/"
+	}
+	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if errParam := q.Get("error"); errParam != "" {
 			desc := q.Get("error_description")
 			http.Error(w, fmt.Sprintf("Authorization error: %s (%s)", errParam, desc), http.StatusBadRequest)
-			resChan <- authResult{err: fmt.Errorf("tidal auth error: %s (%s)", errParam, desc)}
+			sendResult(authResult{err: fmt.Errorf("tidal auth error: %s (%s)", errParam, desc)})
 			return
 		}
 
 		if q.Get("state") != state {
 			http.Error(w, "State parameter mismatch", http.StatusBadRequest)
-			resChan <- authResult{err: errors.New("state parameter mismatch")}
+			sendResult(authResult{err: errors.New("state parameter mismatch")})
 			return
 		}
 
 		code := q.Get("code")
 		if code == "" {
 			http.Error(w, "Missing authorization code", http.StatusBadRequest)
-			resChan <- authResult{err: errors.New("missing authorization code")}
+			sendResult(authResult{err: errors.New("missing authorization code")})
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<!DOCTYPE html><html><body><h2>Authentication successful!</h2><p>You can return to the terminal and close this tab.</p></body></html>`))
-		resChan <- authResult{code: code}
+		sendResult(authResult{code: code})
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		_ = server.Serve(listener)
 	}()
