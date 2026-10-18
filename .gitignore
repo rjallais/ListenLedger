@@ -31,6 +31,8 @@ node_modules/
 /audit
 /build
 /safebackup
+/replay
+/tidal_sync
 backups/
 backfill_reports/
 server.log

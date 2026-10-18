@@ -17,6 +17,7 @@ import (
 const (
 	DefaultBaseURL     = "https://openapi.tidal.com/v2"
 	DefaultCountryCode = "BR"
+	maxRetryAfterWait  = 60 * time.Second
 )
 
 // Client interacts with the TIDAL OpenAPI v2.
@@ -108,7 +109,11 @@ func (c *Client) doRequest(ctx context.Context, endpoint string) (*http.Response
 			waitDuration := backoff
 			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 				if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
-					waitDuration = time.Duration(seconds) * time.Second
+					wait := time.Duration(seconds) * time.Second
+					if wait > maxRetryAfterWait {
+						return nil, fmt.Errorf("tidal rate limited: Retry-After %ds exceeds %s cap", seconds, maxRetryAfterWait)
+					}
+					waitDuration = wait
 				}
 			}
 			select {

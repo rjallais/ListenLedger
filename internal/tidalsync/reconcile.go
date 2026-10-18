@@ -41,7 +41,8 @@ type ProposalPlan struct {
 	Evidence     string         `json:"evidence"`
 	Confidence   float64        `json:"confidence"`
 	TidalTrackID string         `json:"tidal_track_id,omitempty"`
-	AutoApprove  bool           `json:"auto_approve"`
+	AutoApprove    bool           `json:"auto_approve"`
+	RequiresReview bool           `json:"requires_review,omitempty"`
 }
 
 // ReconcileOptions configures reconciliation thresholds.
@@ -154,9 +155,10 @@ func isImpreciseReleaseDate(date string) bool {
 }
 
 type matchResult struct {
-	song        *CatalogSong
-	score       float64
-	matchMethod string
+	song          *CatalogSong
+	score         float64
+	matchMethod   string
+	matchedArtist bool
 }
 
 // Reconcile compares observed TIDAL tracks against the catalog read model and returns proposed changes.
@@ -179,6 +181,16 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 	}
 
 	var plans []ProposalPlan
+	// Targets auto-linked earlier in this run: a second favorite matching
+	// the same catalog song is ambiguous and needs review.
+	claimed := make(map[string]string)
+
+	normCatalogTitles := make([]string, len(catalog))
+	normCatalogArtists := make([]string, len(catalog))
+	for i := range catalog {
+		normCatalogTitles[i] = songbackfill.NormalizeKey(catalog[i].Title)
+		normCatalogArtists[i] = songbackfill.NormalizeKey(catalog[i].ArtistName)
+	}
 
 	for _, tr := range observedTracks {
 		if strings.TrimSpace(tr.Title) == "" {
@@ -190,7 +202,7 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 		isImpreciseDate := isImpreciseReleaseDate(tr.ReleaseDate)
 
 		// Find all matching songs in the catalog
-		matches := findAllMatches(tr, catalog, byTidalID, minConf)
+		matches := findAllMatches(tr, catalog, byTidalID, minConf, normCatalogTitles, normCatalogArtists)
 
 		if len(matches) == 0 {
 			// 1. No match found -> Addition Proposal
@@ -227,18 +239,24 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 			continue
 		}
 
-		// Pick canonical song among matches
+		// Pick canonical song: best match quality first; metadata only breaks ties.
 		canonicalMatch := matches[0]
 		for i := 1; i < len(matches); i++ {
-			c, _ := selectCanonicalDuplicate(canonicalMatch.song, matches[i].song)
-			if c == matches[i].song {
-				canonicalMatch = matches[i]
+			m := matches[i]
+			switch {
+			case m.score > canonicalMatch.score:
+				canonicalMatch = m
+			case m.score == canonicalMatch.score:
+				if c, _ := selectCanonicalDuplicate(canonicalMatch.song, m.song); c == m.song {
+					canonicalMatch = m
+				}
 			}
 		}
 
-		// Detect duplicates among the remaining matches
+		// Detect duplicates among the remaining matches. A lower-quality
+		// (e.g. substring) hit is not evidence that two rows are the same song.
 		for _, m := range matches {
-			if m.song.ID != canonicalMatch.song.ID {
+			if m.song.ID != canonicalMatch.song.ID && m.score == canonicalMatch.score {
 				plans = append(plans, ProposalPlan{
 					Kind:         "duplicate",
 					TargetType:   "song",
@@ -259,20 +277,32 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 		confidence := canonicalMatch.score
 		matchMethod := canonicalMatch.matchMethod
 
-		// Link proposal if not linked
+		// Link proposal if not linked: exact titles without artist evidence
+		// stay manual even at threshold (common titles, blank artists).
 		if matchedSong.TidalID != tr.ID {
+			autoLink := matchedSong.TidalID == "" && confidence >= autoLinkThresh && canonicalMatch.matchedArtist
+			evidence := fmt.Sprintf("Matched via %s", matchMethod)
+			if prev, ok := claimed[matchedSong.ID]; ok && prev != tr.ID {
+				// Relinking an already-linked song needs review: two favorites
+				// (album + single) can fuzzy-match the same catalog song.
+				autoLink = false
+				evidence += fmt.Sprintf(" [also matched TIDAL track %s in this run]", prev)
+			} else if autoLink {
+				claimed[matchedSong.ID] = tr.ID
+			}
 			plans = append(plans, ProposalPlan{
-				Kind:         "link",
-				TargetType:   "song",
-				TargetID:     matchedSong.ID,
-				Title:        matchedSong.Title,
-				Artist:       matchedSong.ArtistName,
-				Before:       map[string]any{"tidal_id": matchedSong.TidalID},
-				After:        map[string]any{"tidal_id": tr.ID},
-				Evidence:     fmt.Sprintf("Matched via %s", matchMethod),
-				Confidence:   confidence,
-				TidalTrackID: tr.ID,
-				AutoApprove:  confidence >= autoLinkThresh,
+				Kind:           "link",
+				TargetType:     "song",
+				TargetID:       matchedSong.ID,
+				Title:          matchedSong.Title,
+				Artist:         matchedSong.ArtistName,
+				Before:         map[string]any{"tidal_id": matchedSong.TidalID},
+				After:          map[string]any{"tidal_id": tr.ID},
+				Evidence:       evidence,
+				Confidence:     confidence,
+				TidalTrackID:   tr.ID,
+				AutoApprove:    autoLink,
+				RequiresReview: !autoLink && confidence >= autoLinkThresh,
 			})
 		}
 
@@ -280,7 +310,17 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 		needsFill := false
 		fillAfter := map[string]any{}
 		fillBefore := map[string]any{}
-		autoApproveFill := true
+		// Same evidence bar as auto-linking: fuzzy or artist-less matches
+		// must not write metadata without review. A song linked to a
+		// different TIDAL track is a relink candidate, not a metadata
+		// source: the fuzzy match may not be the same recording.
+		linkedElsewhere := matchedSong.TidalID != "" && matchedSong.TidalID != tr.ID
+		autoApproveFill := confidence >= autoLinkThresh && canonicalMatch.matchedArtist && !linkedElsewhere
+		if prev, ok := claimed[matchedSong.ID]; ok && prev != tr.ID {
+			// Another favorite claimed this song in this run: its metadata
+			// source is ambiguous.
+			autoApproveFill = false
+		}
 		var fillEvidence []string
 
 		if matchedSong.Album == "" && cleanAlbum != "" {
@@ -319,17 +359,18 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 		if needsFill {
 			evidence := "Filling missing catalog metadata from TIDAL: " + strings.Join(fillEvidence, ", ")
 			plans = append(plans, ProposalPlan{
-				Kind:         "fill",
-				TargetType:   "song",
-				TargetID:     matchedSong.ID,
-				Title:        matchedSong.Title,
-				Artist:       matchedSong.ArtistName,
-				Before:       fillBefore,
-				After:        fillAfter,
-				Evidence:     evidence,
-				Confidence:   confidence,
-				TidalTrackID: tr.ID,
-				AutoApprove:  autoApproveFill,
+				Kind:           "fill",
+				TargetType:     "song",
+				TargetID:       matchedSong.ID,
+				Title:          matchedSong.Title,
+				Artist:         matchedSong.ArtistName,
+				Before:         fillBefore,
+				After:          fillAfter,
+				Evidence:       evidence,
+				Confidence:     confidence,
+				TidalTrackID:   tr.ID,
+				AutoApprove:    autoApproveFill,
+				RequiresReview: !autoApproveFill && confidence >= autoLinkThresh,
 			})
 		}
 
@@ -399,17 +440,21 @@ func Reconcile(observedTracks []tidal.ObservedTrack, catalog []CatalogSong, opts
 	return plans
 }
 
-func findAllMatches(tr tidal.ObservedTrack, catalog []CatalogSong, byTidalID map[string]*CatalogSong, minConf float64) []matchResult {
+func findAllMatches(tr tidal.ObservedTrack, catalog []CatalogSong, byTidalID map[string]*CatalogSong, minConf float64, normCatalogTitles, normCatalogArtists []string) []matchResult {
 	seen := make(map[string]bool)
 	var matches []matchResult
 
 	// Check explicit Tidal ID match first
 	if s, ok := byTidalID[tr.ID]; ok {
 		seen[s.ID] = true
-		matches = append(matches, matchResult{song: s, score: 1.0, matchMethod: "exact_tidal_id"})
+		matches = append(matches, matchResult{song: s, score: 1.0, matchMethod: "exact_tidal_id", matchedArtist: true})
 	}
 
 	normTrTitle := songbackfill.NormalizeKey(tr.Title)
+	normTrArtists := make([]string, len(tr.ArtistNames))
+	for i, a := range tr.ArtistNames {
+		normTrArtists[i] = songbackfill.NormalizeKey(a)
+	}
 
 	for i := range catalog {
 		cat := &catalog[i]
@@ -417,29 +462,34 @@ func findAllMatches(tr tidal.ObservedTrack, catalog []CatalogSong, byTidalID map
 			continue
 		}
 
-		normCatTitle := songbackfill.NormalizeKey(cat.Title)
+		normCatTitle := normCatalogTitles[i]
 		if normCatTitle == "" || normTrTitle == "" {
 			continue
 		}
 
-		// Title similarity
-		if normCatTitle != normTrTitle && !strings.Contains(normCatTitle, normTrTitle) && !strings.Contains(normTrTitle, normCatTitle) {
+		// Title similarity: exact matches score higher than substring-only
+		// matches, so a substring plus artist bonus cannot reach the
+		// auto-link threshold on its own.
+		exactTitle := normCatTitle == normTrTitle
+		if !exactTitle && !strings.Contains(normCatTitle, normTrTitle) && !strings.Contains(normTrTitle, normCatTitle) {
 			continue
 		}
 
-		score := 0.85
-		if normCatTitle == normTrTitle {
-			score += 0.05
+		score := 0.80
+		if exactTitle {
+			score = 0.90
 		}
 
-		// Artist matching
-		normCatArtist := songbackfill.NormalizeKey(cat.ArtistName)
+		// Artist matching: a blank catalog artist must not earn the bonus
+		// (every string contains "").
+		normCatArtist := normCatalogArtists[i]
 		matchedArtist := false
-		for _, a := range tr.ArtistNames {
-			normA := songbackfill.NormalizeKey(a)
-			if normA != "" && (strings.Contains(normCatArtist, normA) || strings.Contains(normA, normCatArtist)) {
-				matchedArtist = true
-				break
+		if normCatArtist != "" {
+			for _, normA := range normTrArtists {
+				if normA != "" && (strings.Contains(normCatArtist, normA) || strings.Contains(normA, normCatArtist)) {
+					matchedArtist = true
+					break
+				}
 			}
 		}
 
@@ -465,7 +515,7 @@ func findAllMatches(tr tidal.ObservedTrack, catalog []CatalogSong, byTidalID map
 
 		if score >= minConf {
 			seen[cat.ID] = true
-			matches = append(matches, matchResult{song: cat, score: score, matchMethod: "fuzzy_title_artist"})
+			matches = append(matches, matchResult{song: cat, score: score, matchMethod: "fuzzy_title_artist", matchedArtist: matchedArtist})
 		}
 	}
 
@@ -507,5 +557,6 @@ func generateSyntheticSongID(tidalID, title string) string {
 	h := sha256.New()
 	h.Write([]byte(tidalID + "|" + title))
 	sum := hex.EncodeToString(h.Sum(nil))
-	return "sg_" + sum[:12]
+	// PocketBase ids are 15 chars of [a-z0-9]; hex digits satisfy that.
+	return sum[:15]
 }

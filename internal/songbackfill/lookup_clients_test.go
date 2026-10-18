@@ -507,6 +507,27 @@ func TestTidalLookupFallsBackToAlbumTypeAttribute(t *testing.T) {
 	}
 }
 
+// TIDAL IDs are numeric per type, so an album can share a track's ID: the
+// track lookup must not let a later same-ID album overwrite the track entry.
+func TestTidalIncludedTrackItemsSkipsSameIDNonTracks(t *testing.T) {
+	t.Parallel()
+
+	rels := tidalSearchRelationships{}
+	rels.Tracks.Data = []tidalRelationshipRef{{ID: "42", Type: "tracks"}}
+	payload := tidalSearchResponse{
+		Data: []tidalSearchData{{Relationships: rels}},
+		Included: []tidalSearchItem{
+			{Type: "tracks", ID: "42"},
+			{Type: "albums", ID: "42"},
+		},
+	}
+
+	items := tidalIncludedTrackItems(payload)
+	if len(items) != 1 || items[0].Type != "tracks" {
+		t.Fatalf("tidalIncludedTrackItems = %+v, want the track despite the same-ID album", items)
+	}
+}
+
 func TestSplitReleaseTypeSuffix(t *testing.T) {
 	t.Parallel()
 

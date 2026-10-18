@@ -328,7 +328,10 @@ type tidalItemAttributes struct {
 func tidalIncludedTrackItems(payload tidalSearchResponse) []tidalSearchItem {
 	includedMap := make(map[string]tidalSearchItem, len(payload.Included))
 	for _, item := range payload.Included {
-		includedMap[item.ID] = item
+		t := strings.ToUpper(strings.TrimSpace(item.Type))
+		if t == "TRACKS" || t == "TRACK" {
+			includedMap[item.ID] = item
+		}
 	}
 
 	items := make([]tidalSearchItem, 0, len(payload.Included))

@@ -71,7 +71,10 @@ templ Layout(title string, activeNav string) {
 				// for `datastar-booted` instead of `load` directly, so a
 				// prerendered page — where `load` may fire before Datastar
 				// boots — still opens them.
+				let booted = false;
 				function openLiveLanes() {
+					if (booted) return;
+					booted = true;
 					window.dispatchEvent(new CustomEvent('datastar-booted'));
 				}
 				function bootDatastar() {
@@ -81,6 +84,8 @@ templ Layout(title string, activeNav string) {
 							return;
 						}
 						document.addEventListener('datastar-ready', openLiveLanes, { once: true });
+					}).catch(() => {
+						openLiveLanes();
 					});
 				}
 				if (document.prerendering) {

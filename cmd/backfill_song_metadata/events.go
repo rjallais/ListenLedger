@@ -132,7 +132,7 @@ func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.
 		if res.Action != actionUpdate {
 			continue
 		}
-		agg, err := loadOrCreateSongStream(ctx, repo, res.row)
+		agg, err := loadOrCreateSongStream(ctx, database, repo, res.row.id)
 		if err != nil {
 			res.Action = actionSkipError
 			res.Note = err.Error()
@@ -168,7 +168,7 @@ func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.
 			continue
 		}
 		if pbApp != nil {
-			if err := storeutil.MirrorSongToPB(pbApp, agg); err != nil {
+			if err := storeutil.MirrorSongToPB(ctx, pbApp, agg); err != nil {
 				slog.Warn("mirroring song to PocketBase failed", "song_id", agg.AggregateID(), "error", err)
 			}
 		}
@@ -185,23 +185,16 @@ func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.
 	return applied, failed, nil
 }
 
-
-
 // loadOrCreateSongStream loads the song's event stream, seeding legacy
-// read-model rows (songs created before the event log) with a SongCreated
-// fact first — same shape as the live handlers' loadOrCreateSong.
-func loadOrCreateSongStream(ctx context.Context, repo *song.Repository, row songRow) (*song.Song, error) {
-	agg, err := repo.Load(ctx, row.id)
+// read-model rows (songs created before the event log) from the full row
+// so replay reproduces it (recent flag, batch position, tidal and duplicate
+// links). Same shape as the live handlers: the seed is unsaved, so callers
+// apply their change and save once, projecting creation and the change
+// together.
+func loadOrCreateSongStream(ctx context.Context, database *toolbeltdb.Database, repo *song.Repository, id string) (*song.Song, error) {
+	agg, err := repo.Load(ctx, id)
 	if !errors.Is(err, eventsourcing.ErrStreamNotFound) {
 		return agg, err
 	}
-	seed, err := song.NewSong(row.id, row.title, row.artistName, row.album,
-		row.releaseDate, row.releaseType, row.spotifyID, row.releaseYear, 0, 0, false)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := repo.Save(ctx, seed); err != nil {
-		return nil, err
-	}
-	return repo.Load(ctx, row.id)
+	return storeutil.SeedSongFromRow(ctx, database, id)
 }
