@@ -181,6 +181,29 @@ func TestRepository_MissingStream(t *testing.T) {
 	}
 }
 
+func TestRepository_SaveBatchContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	store := newFakeSnapshotStore()
+	repo := NewRepository(store)
+
+	agg, err := NewArtist("ar_batch_1", "Queen", "sp4", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := agg.RecordMonthlyListeners(500, "test", 1); err != nil {
+		t.Fatalf("RecordMonthlyListeners: %v", err)
+	}
+
+	if err := repo.SaveBatch(ctx, []*Artist{agg}); err == nil {
+		t.Fatal("SaveBatch with a cancelled context must return the context error, not nil")
+	}
+	if len(store.events["ar_batch_1"]) != 0 {
+		t.Fatal("no events may be appended on a cancelled context")
+	}
+}
+
 func TestRepository_SaveSnapshotsAtInterval(t *testing.T) {
 	ctx := t.Context()
 	store := newFakeSnapshotStore()

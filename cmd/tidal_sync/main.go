@@ -498,6 +498,12 @@ func runApply(ctx context.Context, args []string) error {
 			p.Note = err.Error()
 			continue
 		}
+		if len(events) == 0 {
+			// The stream already held the correction; nothing was appended,
+			// so this is a no-op rather than an applied proposal.
+			p.Note = "no change: stream already holds the correction"
+			continue
+		}
 
 		if err := catalogProj.Project(ctx, song.StreamTypeSong, events); err != nil {
 			p.Note = fmt.Sprintf("projecting: %v", err)

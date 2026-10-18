@@ -115,7 +115,7 @@ TIDAL_CLIENT_ID=xxx TIDAL_CLIENT_SECRET=yyy go run ./cmd/backfill_song_artists -
   # 2. Apply after review (stop the app first; --live-ok only acknowledges the live dir of a stopped app)
   fnox exec -- env LISTENLEDGER_EVENT_STORE=jetstream go run ./cmd/backfill_song_metadata --data-dir pb_data --apply --live-ok
   #+end_src
-- =cmd/tidal_sync=: synchronizes favorite tracks, albums, and artists directly from your TIDAL account using OAuth 2.0 PKCE. Built in the event-sourced CQRS architecture, observations are captured in immutable =tidalsync= event streams in JetStream, differences are reconciled into proposal reports, and approved proposals are applied to the catalog read model and song event streams. Secrets (=TIDAL_CLIENT_ID=, =TIDAL_CLIENT_SECRET=) are managed with FNOX via the tracked =fnox.toml=; the rotating =TIDAL_REFRESH_TOKEN= is stored in the global FNOX config (=~/.config/fnox/config.toml=) so refreshes never rewrite the tracked file.
+- =cmd/tidal_sync=: synchronizes favorite tracks from your TIDAL account using OAuth 2.0 PKCE. Built in the event-sourced CQRS architecture, observations are captured in immutable =tidalsync= event streams in the authoritative event store (=LISTENLEDGER_EVENT_STORE=), differences are reconciled into proposal reports, and approved proposals are applied to the catalog read model and song event streams. Secrets (=TIDAL_CLIENT_ID=, =TIDAL_CLIENT_SECRET=) are managed with FNOX via the tracked =fnox.toml=; the rotating =TIDAL_REFRESH_TOKEN= is stored in the global FNOX config (=~/.config/fnox/config.toml=) so refreshes never rewrite the tracked file.
   Example:
 #+begin_src sh
 # 1. Login once to link your TIDAL account and store the refresh token in FNOX

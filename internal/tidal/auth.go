@@ -341,7 +341,7 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 		sendResult(authResult{code: code})
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		_ = server.Serve(listener)
 	}()

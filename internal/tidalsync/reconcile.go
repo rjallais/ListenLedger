@@ -31,16 +31,16 @@ type CatalogSong struct {
 
 // ProposalPlan represents an item to propose or apply.
 type ProposalPlan struct {
-	Kind         string         `json:"kind"` // link, fill, album_name, release_type, credit, duplicate, addition
-	TargetType   string         `json:"target_type"`
-	TargetID     string         `json:"target_id"`
-	Title        string         `json:"title,omitempty"`
-	Artist       string         `json:"artist,omitempty"`
-	Before       map[string]any `json:"before"`
-	After        map[string]any `json:"after"`
-	Evidence     string         `json:"evidence"`
-	Confidence   float64        `json:"confidence"`
-	TidalTrackID string         `json:"tidal_track_id,omitempty"`
+	Kind           string         `json:"kind"` // link, fill, album_name, release_type, credit, duplicate, addition
+	TargetType     string         `json:"target_type"`
+	TargetID       string         `json:"target_id"`
+	Title          string         `json:"title,omitempty"`
+	Artist         string         `json:"artist,omitempty"`
+	Before         map[string]any `json:"before"`
+	After          map[string]any `json:"after"`
+	Evidence       string         `json:"evidence"`
+	Confidence     float64        `json:"confidence"`
+	TidalTrackID   string         `json:"tidal_track_id,omitempty"`
 	AutoApprove    bool           `json:"auto_approve"`
 	RequiresReview bool           `json:"requires_review,omitempty"`
 }
