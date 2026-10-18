@@ -136,14 +136,14 @@ func runLogin(ctx context.Context, args []string) error {
 }
 
 type syncReport struct {
-	Timestamp   time.Time                 `json:"timestamp"`
-	RunID       string                    `json:"run_id"`
-	UserID      string                    `json:"user_id"`
-	CountryCode string                    `json:"country_code"`
-	DryRun      bool                      `json:"dry_run"`
-	TracksCount int                       `json:"tracks_count"`
-	Summary     map[string]int            `json:"summary"`
-	Proposals   []ProposalPlanItemReport  `json:"proposals"`
+	Timestamp   time.Time                `json:"timestamp"`
+	RunID       string                   `json:"run_id"`
+	UserID      string                   `json:"user_id"`
+	CountryCode string                   `json:"country_code"`
+	DryRun      bool                     `json:"dry_run"`
+	TracksCount int                      `json:"tracks_count"`
+	Summary     map[string]int           `json:"summary"`
+	Proposals   []ProposalPlanItemReport `json:"proposals"`
 }
 
 type ProposalPlanItemReport struct {
@@ -458,6 +458,12 @@ func runApply(ctx context.Context, args []string) error {
 		events, err := songRepo.Save(ctx, songAgg)
 		if err != nil {
 			p.Note = err.Error()
+			continue
+		}
+		if len(events) == 0 {
+			// The stream already held the correction; nothing was appended,
+			// so this is a no-op rather than an applied proposal.
+			p.Note = "no change: stream already holds the correction"
 			continue
 		}
 

@@ -286,12 +286,15 @@ func resolveAll(ctx context.Context, lookup songbackfill.TrackMetadataLookup, ro
 			if row.releaseDate == "" && candidate.ReleaseDate != "" {
 				fill.ReleaseDate = candidate.ReleaseDate
 			}
-			if fill.ReleaseType == "" && candidate.ReleaseType != "" {
+			if row.releaseType == "" && fill.ReleaseType == "" && candidate.ReleaseType != "" {
 				fill.ReleaseType = candidate.ReleaseType
 			}
 			// TIDAL must contribute the album, the date, or a type suffix;
-			// a year fix alone is derivation, not enrichment.
-			if fill.Album == "" && fill.ReleaseDate == "" && fill.ReleaseType == "" {
+			// a year fix alone is derivation, not enrichment. The PB label
+			// pre-fill is trusted local data, not a TIDAL contribution, so it
+			// must not make a dataless candidate win the loop.
+			tidalType := pbType == "" && fill.ReleaseType != ""
+			if fill.Album == "" && fill.ReleaseDate == "" && !tidalType {
 				continue
 			}
 			planYear(&fill, row)
@@ -310,7 +313,17 @@ func resolveAll(ctx context.Context, lookup songbackfill.TrackMetadataLookup, ro
 				Confidence:  candidate.Confidence,
 			}
 			if candidate.Confidence < minConfidence {
-				res.Action = actionSkipLowConfidence
+				// The trusted PB label still lands even when TIDAL's best
+				// candidate is below the confidence threshold.
+				if pbType != "" {
+					res.Fill = planYear(&fillPlan{ReleaseType: pbType}, row)
+					res.Confidence = 1
+					res.Candidate = nil
+					res.Note = notePBReleaseType
+					res.Action = actionUpdate
+				} else {
+					res.Action = actionSkipLowConfidence
+				}
 			} else {
 				res.Action = actionUpdate
 			}

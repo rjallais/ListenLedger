@@ -71,6 +71,9 @@ func FetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, c
 	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(clientSecret) == "" {
 		return "", fmt.Errorf("missing TIDAL client credentials")
 	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")

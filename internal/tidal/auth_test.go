@@ -3,6 +3,7 @@ package tidal
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -149,5 +150,53 @@ func TestExchangeCodeAndRefresh(t *testing.T) {
 	}
 	if savedToken != "refresh-456" {
 		t.Errorf("expected persisted rotated token 'refresh-456', got %q", savedToken)
+	}
+}
+
+func TestRefreshAccessTokenRejectsEmptyAccessToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.MarshalWrite(w, map[string]any{
+			"access_token":  "",
+			"refresh_token": "refresh-rotated",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	cfg := AuthConfig{ClientID: "test-client", TokenURL: server.URL}
+	refreshed, err := RefreshAccessToken(t.Context(), server.Client(), cfg, "refresh-123")
+	if err == nil {
+		t.Fatalf("RefreshAccessToken() expected error for missing access_token, got token=%+v", refreshed)
+	}
+}
+
+func TestRefreshAccessTokenPersistFailureKeepsToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.MarshalWrite(w, map[string]any{
+			"access_token":  "access-789",
+			"refresh_token": "refresh-789",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	cfg := AuthConfig{
+		ClientID: "test-client",
+		TokenURL: server.URL,
+		PersistRefreshToken: func(context.Context, string) error {
+			return errors.New("fnox unavailable")
+		},
+	}
+
+	refreshed, err := RefreshAccessToken(t.Context(), server.Client(), cfg, "refresh-123")
+	if err == nil {
+		t.Fatalf("RefreshAccessToken() expected persistence error, got nil")
+	}
+	// The old token is revoked server-side: the rotated one must come back
+	// with the error or it is lost.
+	if refreshed == nil || refreshed.RefreshToken != "refresh-789" || refreshed.AccessToken != "access-789" {
+		t.Fatalf("expected rotated tokens with the error, got token=%+v", refreshed)
 	}
 }

@@ -223,6 +223,9 @@ func RefreshAccessToken(ctx context.Context, client *http.Client, cfg AuthConfig
 	if err := json.UnmarshalRead(resp.Body, &tr); err != nil {
 		return nil, fmt.Errorf("decoding refresh response: %w", err)
 	}
+	if strings.TrimSpace(tr.AccessToken) == "" {
+		return nil, errors.New("refresh response missing access_token")
+	}
 
 	newRefreshToken := tr.RefreshToken
 	if newRefreshToken == "" {
@@ -246,7 +249,10 @@ func RefreshAccessToken(ctx context.Context, client *http.Client, cfg AuthConfig
 	// If rotated, save back via callback if provided
 	if newRefreshToken != refreshToken && cfg.PersistRefreshToken != nil {
 		if err := cfg.PersistRefreshToken(ctx, newRefreshToken); err != nil {
-			return nil, fmt.Errorf("persisting rotated refresh token: %w", err)
+			// The old token is already revoked server-side: never drop the
+			// new one. Return it with the error so the caller can proceed
+			// and surface the persistence failure.
+			return token, fmt.Errorf("persisting rotated refresh token: %w", err)
 		}
 	}
 
@@ -304,7 +310,11 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(u.Path, func(w http.ResponseWriter, r *http.Request) {
+	callbackPath := u.Path
+	if callbackPath == "" {
+		callbackPath = "/"
+	}
+	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if errParam := q.Get("error"); errParam != "" {
 			desc := q.Get("error_description")
@@ -331,7 +341,7 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 		sendResult(authResult{code: code})
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		_ = server.Serve(listener)
 	}()

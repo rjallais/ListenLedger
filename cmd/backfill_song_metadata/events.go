@@ -93,14 +93,12 @@ func loadPocketBaseReleaseTypes(dataDir string) (map[string]string, error) {
 	}
 }
 
-// applyResolutions appends SongMetadataEnriched events for every update
-// resolution and projects them into the SQLite read model. Rows predating
-// the event log get their stream seeded first (same shape as the live
-// handlers), so the enrichment fact is replayable like any other.
 // applyResolutions appends a SongMetadataEnriched event for every planned
 // update and projects it, returning the applied count and the number of rows
 // that failed (per-row errors stay on the resolution for the report — the
-// events that did land stand).
+// events that did land stand). Rows predating the event log get their stream
+// seeded first (same shape as the live handlers), so the enrichment fact is
+// replayable like any other.
 func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.Database, resolutions []resolution) (int, int, error) {
 	store, cleanup, err := storeutil.OpenEventStore(ctx, dataDir, database)
 	if err != nil {
@@ -151,8 +149,20 @@ func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.
 			continue
 		}
 		if !changed {
-			// The stream already knows more than the stale row we planned
-			// from; converged, nothing to record.
+			// The stream already holds the merged state. If the read model
+			// lags (e.g. an earlier projection failed), re-project the stream.
+			if agg.Album != res.row.album || agg.ReleaseDate != res.row.releaseDate ||
+				agg.ReleaseYear != res.row.releaseYear || agg.ReleaseType != res.row.releaseType {
+				evts, lerr := store.Load(ctx, agg.AggregateID())
+				if lerr == nil {
+					lerr = proj.Project(ctx, song.StreamTypeSong, evts)
+				}
+				if lerr != nil {
+					res.Action = actionSkipError
+					res.Note = fmt.Sprintf("read model lags stream; re-projection failed: %v", lerr)
+					continue
+				}
+			}
 			res.Action = actionSkipNoMissing
 			continue
 		}
@@ -184,8 +194,6 @@ func applyResolutions(ctx context.Context, dataDir string, database *toolbeltdb.
 	}
 	return applied, failed, nil
 }
-
-
 
 // loadOrCreateSongStream loads the song's event stream, seeding legacy
 // read-model rows (songs created before the event log) with a SongCreated
