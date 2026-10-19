@@ -773,19 +773,14 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 			rep.addSample(maxSamples, fmt.Sprintf("batch %s: members count row=%d != stream=%d", id, len(members), len(aggMembers)))
 			continue
 		}
-		var memberMismatch bool
 		for artistID, wantMemberDone := range aggMembers {
 			gotMemberDone, ok := members[artistID]
 			if !ok || gotMemberDone != wantMemberDone {
-				memberMismatch = true
 				rep.Mismatched++
 				rep.addSample(maxSamples, fmt.Sprintf("batch %s artist %s: row(found=%v done=%v) != stream(done=%v)",
 					id, artistID, ok, gotMemberDone, wantMemberDone))
 				break
 			}
-		}
-		if memberMismatch {
-			continue
 		}
 	}
 	return auditUnloggedRows(ctx, database, "batches", "id", ids, maxSamples, rep, "batch")

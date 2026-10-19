@@ -256,7 +256,10 @@ func (o *Orchestrator) refreshInstance(ctx context.Context, requestID, artistID 
 			state = StateDead
 			lastEvent = ""
 			failure = "orphaned: no event stream and no scrape_jobs row"
-		case rowStatus == "failed":
+		case rowStatus == scrapejob.StatusSucceeded:
+			state = StateDone
+			lastEvent = ""
+		case rowStatus == scrapejob.StatusFailed:
 			state = StateFailed
 			lastEvent = ""
 			failure = strings.TrimSpace(rowErr)

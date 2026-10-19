@@ -142,7 +142,7 @@ func LogBatch(ctx context.Context, db *toolbeltdb.Database, cmds []Command) erro
 			stmt.BindText(4, v.payload)
 			stmt.BindText(5, v.queuedAt)
 			if _, err := stmt.Step(); err != nil {
-				return err
+				return fmt.Errorf("logging batch command %s: %w", v.requestID, err)
 			}
 		}
 		return nil

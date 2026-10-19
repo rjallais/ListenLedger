@@ -340,7 +340,7 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 			}
 			now := time.Now().UTC().Format(jobTimestampFormat)
 			if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-				stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ?;")
+				stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ? AND status = 'failed';")
 				defer func() { _ = stmt.Reset() }()
 				for _, job := range failed {
 					if ctx.Err() != nil {
@@ -821,20 +821,26 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 		// Without a SQLite read model there is no flip to observe; keep the
 		// legacy behavior of mirroring, warning, and counting every sweep hit.
 		flipped := w.db == nil
+		artistFlipped := w.db == nil
 		if w.db != nil {
 			flipped = w.markOrphanedQueuedRowFailedSQLite(ctx, job.requestID, cutoff)
 			if flipped {
 				// Direct read-model flip: the aggregate fold below converges
 				// artists that have streams; this covers artists whose first
 				// stream never opened, so batch members still leave pending.
-				w.markArtistFetchStatusFailedSQLite(ctx, job.artistID)
+				artistFlipped = w.markArtistFetchStatusFailedSQLite(ctx, job.artistID)
 			}
 		}
 		w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
 		if !flipped {
 			continue
 		}
-		w.recordArtistFetchStatusWarn(ctx, job.artistID, "failed", job.requestID)
+		// A newer queued/processing job owns the artist's fetch_status now: the
+		// guarded flip refused, so skip the failed fact too — it would clobber
+		// the live scrape's state.
+		if artistFlipped {
+			w.recordArtistFetchStatusWarn(ctx, job.artistID, "failed", job.requestID)
+		}
 		marked++
 	}
 	if marked > 0 {
@@ -894,19 +900,26 @@ func (w *Worker) markOrphanedQueuedRowFailedSQLite(ctx context.Context, requestI
 // artists with event streams, this covers artists whose first stream never
 // opened. Only ever flips out of pending, and only when no newer job for the
 // artist is still queued or processing.
-func (w *Worker) markArtistFetchStatusFailedSQLite(ctx context.Context, artistID string) {
+func (w *Worker) markArtistFetchStatusFailedSQLite(ctx context.Context, artistID string) bool {
 	if w.db == nil || strings.TrimSpace(artistID) == "" {
-		return
+		return false
 	}
+	flipped := false
 	if err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("UPDATE artists SET fetch_status = 'failed' WHERE id = ? AND fetch_status = 'pending' AND NOT EXISTS (SELECT 1 FROM scrape_jobs WHERE artist_id = artists.id AND status IN ('queued','processing'));")
 		defer func() { _ = stmt.Reset() }()
 		stmt.BindText(1, artistID)
 		_, err := stmt.Step()
-		return err
+		if err != nil {
+			return err
+		}
+		flipped = tx.Changes() > 0
+		return nil
 	}); err != nil {
 		log.Printf("[worker] Warning: failed to mark artist %s failed after orphaned sweep: %v", artistID, err)
+		return false
 	}
+	return flipped
 }
 
 // markOrphanedQueuedJobFailedPB mirrors the sweep to PocketBase: guarded job

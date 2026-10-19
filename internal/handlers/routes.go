@@ -48,11 +48,14 @@ func (h *Handler) Routes() chi.Router {
 	// via CAFxX/httpcompression — the same engine Datastar's SSE compression uses.
 	// Byte-range requests bypass it: the adapter deletes the Range header (ranges
 	// only apply to compressed bytes), which would otherwise turn a ranged
-	// /static/* request into a full-file 200 instead of a 206.
+	// /static/* request into a full-file 200 instead of a 206. The dev-only
+	// /reload SSE stream bypasses it too: it writes only on change, and the
+	// compressor withholds headers until the first body byte, so an idle
+	// stream would never send them.
 	r.Use(func(next http.Handler) http.Handler {
 		compress := compressMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if req.Header.Get("Range") != "" {
+			if req.Header.Get("Range") != "" || req.URL.Path == "/reload" {
 				next.ServeHTTP(w, req)
 				return
 			}

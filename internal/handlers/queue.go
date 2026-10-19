@@ -838,7 +838,11 @@ func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.Stream
 			queueAckPending = uint64(info.NumAckPending)
 			queueRedelivered = uint64(info.NumRedelivered)
 		}
-	} else {
+	}
+	// An Info failure on the primary consumer falls through to the per-provider
+	// aggregation too; otherwise its zero counts are indistinguishable from a
+	// missing consumer.
+	if !consumerAvailable {
 		for _, consumerName := range messaging.ScrapeWorkerConsumerNames() {
 			if consumerName == messaging.ScrapeWorkerConsumerName {
 				continue
