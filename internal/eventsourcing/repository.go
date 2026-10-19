@@ -214,9 +214,11 @@ func (r *Repository[T]) SaveBatch(ctx context.Context, aggs []T) ([]Event, error
 	)
 	for _, agg := range dirty {
 		if err := ctx.Err(); err != nil {
+			mu.Lock()
 			if firstErr == nil {
-				firstErr = err
+				firstErr = fmt.Errorf("saving %s batch: %w", r.streamType, err)
 			}
+			mu.Unlock()
 			break
 		}
 		wg.Go(func() {
