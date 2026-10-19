@@ -156,7 +156,12 @@ func (h *Handler) HandleBatchRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		if persistErr := h.persistBatchRefreshCandidates(opCtx, candidates); persistErr != nil {
 			log.Printf("[batch] Transaction failed to queue batch artists: %v", persistErr)
-			h.respondBatchRefreshEmpty(w, r, nil)
+			if wantsJSONResponse(r) {
+				writeError(w, http.StatusInternalServerError, "failed to queue batch artists")
+				return
+			}
+			sse := datastar.NewSSE(w, r, sseOpts...)
+			_ = sse.PatchElementTempl(templates.BatchRefreshErrorAlert("Failed to queue batch artists."))
 			return
 		}
 		snapshot, err = h.createBatchProgress(opCtx, batchCandidateArtistIDs(candidates), batchCandidateStats(candidates))

@@ -57,7 +57,20 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Songs Rotation</h1><button type=\"button\" class=\"btn btn-primary gap-2\" data-on:click=\"$_add_song_open = true\" aria-haspopup=\"dialog\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" data-on:datastar-fetch=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var4 string
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(songRecentFetchErrorAction())
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs.templ`, Line: 8, Col: 178}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Songs Rotation</h1><button type=\"button\" class=\"btn btn-primary gap-2\" data-on:click=\"$_add_song_open = true\" aria-haspopup=\"dialog\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -65,7 +78,7 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "Add Song</button></div><p class=\"mb-4 text-base-content/70\">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "Add Song</button></div><p class=\"mb-4 text-base-content/70\">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -77,7 +90,7 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<script>\n\t\t\t\t// Reorders rows using the server-precomputed data-order-* indices.\n\t\t\t\t// Datastar's core observer tears down and re-applies every binding in a\n\t\t\t\t// moved subtree, and Rocket's observer rescans the whole mutation target\n\t\t\t\t// once per record (O(n^2) for a 500-row tbody). To avoid that, each tbody\n\t\t\t\t// is detached (1 mutation), we yield a microtask so the observers'\n\t\t\t\t// transient registrations are dropped, reorder offline (0 mutations), then\n\t\t\t\t// reattach (1 mutation).\n\t\t\t\tasync function sortSongsTable(sortMode) {\n\t\t\t\t\tconst attr = sortMode === 'release_asc' ? 'data-order-release' : 'data-order-added';\n\t\t\t\t\tconst jobs = [];\n\t\t\t\t\tfor (const tableId of ['songs-current', 'songs-waiting-removal']) {\n\t\t\t\t\t\tconst tbody = document.getElementById(tableId);\n\t\t\t\t\t\tif (!tbody || tbody.children.length <= 1) continue;\n\t\t\t\t\t\tconst parent = tbody.parentNode;\n\t\t\t\t\t\tconst next = tbody.nextSibling;\n\t\t\t\t\t\ttbody.remove();\n\t\t\t\t\t\tjobs.push({ tbody, parent, next });\n\t\t\t\t\t}\n\t\t\t\t\tawait Promise.resolve();\n\t\t\t\t\tfor (const { tbody, parent, next } of jobs) {\n\t\t\t\t\t\tconst keyed = Array.from(tbody.children, (row) => [Number(row.getAttribute(attr)) || 0, row]);\n\t\t\t\t\t\tkeyed.sort((a, b) => a[0] - b[0]);\n\t\t\t\t\t\ttbody.append(...keyed.map((k) => k[1]));\n\t\t\t\t\t\tparent.insertBefore(tbody, next);\n\t\t\t\t\t}\n\t\t\t\t\tconst url = new URL(window.location);\n\t\t\t\t\turl.searchParams.set('playlist_sort', sortMode);\n\t\t\t\t\twindow.history.replaceState({}, '', url);\n\t\t\t\t}\n\t\t\t</script></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<script>\n\t\t\t\t// Reorders rows using the server-precomputed data-order-* indices.\n\t\t\t\t// Datastar's core observer tears down and re-applies every binding in a\n\t\t\t\t// moved subtree, and Rocket's observer rescans the whole mutation target\n\t\t\t\t// once per record (O(n^2) for a 500-row tbody). To avoid that, each tbody\n\t\t\t\t// is detached (1 mutation), we yield a microtask so the observers'\n\t\t\t\t// transient registrations are dropped, reorder offline (0 mutations), then\n\t\t\t\t// reattach (1 mutation).\n\t\t\t\tasync function sortSongsTable(sortMode) {\n\t\t\t\t\tconst attr = sortMode === 'release_asc' ? 'data-order-release' : 'data-order-added';\n\t\t\t\t\tconst jobs = [];\n\t\t\t\t\tfor (const tableId of ['songs-current', 'songs-waiting-removal']) {\n\t\t\t\t\t\tconst tbody = document.getElementById(tableId);\n\t\t\t\t\t\tif (!tbody || tbody.children.length <= 1) continue;\n\t\t\t\t\t\tconst parent = tbody.parentNode;\n\t\t\t\t\t\tconst next = tbody.nextSibling;\n\t\t\t\t\t\ttbody.remove();\n\t\t\t\t\t\tjobs.push({ tbody, parent, next });\n\t\t\t\t\t}\n\t\t\t\t\tawait Promise.resolve();\n\t\t\t\t\tfor (const { tbody, parent, next } of jobs) {\n\t\t\t\t\t\tconst keyed = Array.from(tbody.children, (row) => [Number(row.getAttribute(attr)) || 0, row]);\n\t\t\t\t\t\tkeyed.sort((a, b) => a[0] - b[0]);\n\t\t\t\t\t\ttbody.append(...keyed.map((k) => k[1]));\n\t\t\t\t\t\tparent.insertBefore(tbody, next);\n\t\t\t\t\t}\n\t\t\t\t\tconst url = new URL(window.location);\n\t\t\t\t\turl.searchParams.set('playlist_sort', sortMode);\n\t\t\t\t\twindow.history.replaceState({}, '', url);\n\t\t\t\t}\n\t\t\t</script></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

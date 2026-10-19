@@ -100,7 +100,7 @@ rocket('sb-modal', {
 			{ name: 'sb-close', kind: 'custom-event', bubbles: true, composed: true, description: 'After closing. detail: { reason, value }.' },
 		],
 	},
-	renderOnPropChange: ({ changes }) => !('open' in changes),
+	renderOnPropChange: ({ changes }) => Object.keys(changes).some((name) => name !== 'open'),
 	setup: ({ $$, action, adoptStyles, defineHostProp, emit, host, observeProps, props }) => {
 		adoptStyles(host, styles)
 		$$.open = props.open

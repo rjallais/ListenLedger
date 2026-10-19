@@ -46,7 +46,19 @@ func (h *Handler) Routes() chi.Router {
 	r.Use(middleware.Recoverer)
 	// Brotli-first response compression (gzip/zstd fallbacks) for HTML/JSON/CSS/JS,
 	// via CAFxX/httpcompression — the same engine Datastar's SSE compression uses.
-	r.Use(compressMiddleware)
+	// Byte-range requests bypass it: the adapter deletes the Range header (ranges
+	// only apply to compressed bytes), which would otherwise turn a ranged
+	// /static/* request into a full-file 200 instead of a 206.
+	r.Use(func(next http.Handler) http.Handler {
+		compress := compressMiddleware(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Header.Get("Range") != "" {
+				next.ServeHTTP(w, req)
+				return
+			}
+			compress.ServeHTTP(w, req)
+		})
+	})
 
 	// Static files & robots.txt
 	r.Get("/static/*", h.HandleStatic)

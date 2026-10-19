@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	ErrEmptyArtistName  = errors.New("artist: name cannot be empty")
-	ErrInvalidListStatus = errors.New("artist: invalid list status")
+	ErrEmptyArtistName    = errors.New("artist: name cannot be empty")
+	ErrInvalidListStatus  = errors.New("artist: invalid list status")
 	ErrInvalidFetchStatus = errors.New("artist: invalid fetch status")
 )
 
@@ -33,6 +33,9 @@ type Artist struct {
 	CreatedAt              time.Time
 	LastListenersRequestID string
 	lastScrapedMetadata    []byte
+	// recordedListenerRequestIDs holds every request_id that ever recorded a
+	// listener scrape, so dedup recognizes older requests, not just the latest.
+	recordedListenerRequestIDs map[string]struct{}
 }
 
 // NewArtist creates an Artist and records the ArtistCreated event.
@@ -212,6 +215,14 @@ func (a *Artist) apply(evt eventsourcing.Event) error {
 		a.LastUpdated = pl.ScrapedAt
 		a.lastScrapedMetadata = evt.Metadata
 		a.LastListenersRequestID = ""
+		if meta, err := eventsourcing.DecodeMetadata(evt.Metadata); err == nil && meta != nil {
+			if requestID := eventsourcing.RequestIDFromMetadata(meta); requestID != "" {
+				if a.recordedListenerRequestIDs == nil {
+					a.recordedListenerRequestIDs = make(map[string]struct{})
+				}
+				a.recordedListenerRequestIDs[requestID] = struct{}{}
+			}
+		}
 
 	case EventTypeArtistStatusChanged:
 		var pl StatusChangedPayload
@@ -258,13 +269,16 @@ func Replay(id string, events []eventsourcing.Event) (*Artist, error) {
 	return agg, nil
 }
 
-// HasRecordedListenersForRequest reports whether the latest listener scrape
-// on this aggregate was recorded under requestID, deduplicating redeliveries
-// without re-loading the raw event stream.
+// HasRecordedListenersForRequest reports whether any listener scrape on this
+// aggregate was recorded under requestID, deduplicating redeliveries without
+// re-loading the raw event stream.
 func (a *Artist) HasRecordedListenersForRequest(requestID string) bool {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return false
+	}
+	if _, ok := a.recordedListenerRequestIDs[requestID]; ok {
+		return true
 	}
 	return a.lastListenersRequestID() == requestID
 }

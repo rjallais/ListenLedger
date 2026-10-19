@@ -5,7 +5,7 @@ import "fmt"
 // SongsPage renders the songs dashboard in three tiers.
 templ SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount int, playlistSort string) {
 	@Layout("Songs", "songs") {
-		<div data-signals={ fmt.Sprintf("{_add_song_open: false, _add_song_loading: false, _playlist_sort: '%s'}", playlistSort) }>
+		<div data-signals={ fmt.Sprintf("{_add_song_open: false, _add_song_loading: false, _playlist_sort: '%s'}", playlistSort) } data-on:datastar-fetch={ songRecentFetchErrorAction() }>
 			<div class="flex justify-between items-center mb-6">
 				<h1 class="text-3xl font-bold">Songs Rotation</h1>
 				<button type="button" class="btn btn-primary gap-2" data-on:click="$_add_song_open = true" aria-haspopup="dialog">
