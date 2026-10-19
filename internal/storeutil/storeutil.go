@@ -87,6 +87,10 @@ func OpenStoreJetStream(ctx context.Context, dataDir string) (jetstream.JetStrea
 		cleanupBoth()
 		return nil, nil, fmt.Errorf("creating JetStream context: %w", err)
 	}
+	if err := messaging.EnsureKVBuckets(ctx, js); err != nil {
+		cleanupBoth()
+		return nil, nil, fmt.Errorf("ensuring KV buckets: %w", err)
+	}
 	if _, err := js.Stream(ctx, messaging.DomainEventsStreamName); err != nil {
 		cleanupBoth()
 		return nil, nil, fmt.Errorf("DOMAIN_EVENTS stream: %w", err)

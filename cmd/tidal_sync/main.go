@@ -183,17 +183,25 @@ func runPlan(ctx context.Context, args []string) error {
 			return tidal.SaveSecret(c, "TIDAL_REFRESH_TOKEN", token)
 		},
 	}
-	token, err := tidal.RefreshAccessToken(ctx, http.DefaultClient, authCfg, refreshToken)
+	authClient := &http.Client{Timeout: 30 * time.Second}
+	token, err := tidal.RefreshAccessToken(ctx, authClient, authCfg, refreshToken)
 	if err != nil {
-		return fmt.Errorf("refreshing TIDAL access token: %w", err)
+		if token == nil {
+			return fmt.Errorf("refreshing TIDAL access token: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: %v (rotated token kept in memory for this run)\n", err)
 	}
 
 	client := tidal.NewClient(token.AccessToken)
 	client.CountryCode = *country
 	client.TokenRefresher = func(c context.Context) (string, error) {
-		t, err := tidal.RefreshAccessToken(c, http.DefaultClient, authCfg, token.RefreshToken)
-		if err != nil {
+		t, err := tidal.RefreshAccessToken(c, authClient, authCfg, token.RefreshToken)
+		if t == nil {
 			return "", err
+		}
+		token.RefreshToken = t.RefreshToken
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 		}
 		return t.AccessToken, nil
 	}
@@ -327,6 +335,7 @@ func runApply(ctx context.Context, args []string) error {
 	approveAllAbove := fs.Float64("approve-all-above", 0.0, "Approve all proposals with confidence >= threshold")
 	liveOK := fs.Bool("live-ok", false, "Acknowledge running against the live data directory")
 	limit := fs.Int("limit", 0, "Max proposals to apply (0 = all)")
+	reportDir := fs.String("report-dir", "backfill_reports", "Directory to search for the latest report")
 	_ = fs.Parse(args)
 
 	if storeutil.IsLiveDataDir(*dataDir) && !*liveOK {
@@ -335,7 +344,7 @@ func runApply(ctx context.Context, args []string) error {
 
 	reportPath := strings.TrimSpace(*reportFile)
 	if reportPath == "" {
-		latest, err := findLatestReport("backfill_reports")
+		latest, err := findLatestReport(*reportDir)
 		if err != nil {
 			return fmt.Errorf("no report specified and failed to find latest: %w", err)
 		}
@@ -393,7 +402,8 @@ func runApply(ctx context.Context, args []string) error {
 			continue
 		}
 
-		shouldApply := p.Approved || (*approveAllAbove > 0 && p.Confidence >= *approveAllAbove)
+		bulkEligible := p.Kind != "addition" && !p.RequiresReview
+		shouldApply := p.Approved || (bulkEligible && *approveAllAbove > 0 && p.Confidence >= *approveAllAbove)
 		if !shouldApply {
 			continue
 		}

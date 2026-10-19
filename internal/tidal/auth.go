@@ -370,10 +370,12 @@ func AuthorizeLoopback(ctx context.Context, cfg AuthConfig) (*Token, error) {
 	}
 
 	if token.RefreshToken != "" {
-		if err := SaveSecret(ctx, "TIDAL_REFRESH_TOKEN", token.RefreshToken); err != nil {
-			fmt.Printf("Warning: failed to persist TIDAL_REFRESH_TOKEN to FNOX: %v\n", err)
-		} else {
-			fmt.Println("Successfully saved TIDAL_REFRESH_TOKEN into FNOX.")
+		persist := cfg.PersistRefreshToken
+		if persist == nil {
+			persist = func(c context.Context, v string) error { return SaveSecret(c, "TIDAL_REFRESH_TOKEN", v) }
+		}
+		if err := persist(ctx, token.RefreshToken); err != nil {
+			return token, fmt.Errorf("persisting TIDAL refresh token: %w", err)
 		}
 	}
 
