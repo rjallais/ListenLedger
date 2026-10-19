@@ -85,9 +85,6 @@ func WithDatabase(db *toolbeltdb.Database) Option {
 			h.events = events
 			h.artistRepo = artist.NewRepository(events)
 			h.artistProjection = projections.NewArtistProjection(slog.Default(), db, h.nc)
-			if h.js != nil {
-				h.artistProjection.SetJetStream(h.js)
-			}
 			h.albumRepo = album.NewRepository(events)
 			h.songRepo = song.NewRepository(events)
 			h.catalogProjection = projections.NewCatalogProjection(slog.Default(), db)

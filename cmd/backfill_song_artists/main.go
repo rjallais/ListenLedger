@@ -135,7 +135,7 @@ type buildResolverParams struct {
 }
 
 func buildResolver(ctx context.Context, httpClient *http.Client, params buildResolverParams, artists []songbackfill.ArtistInput) *songbackfill.Resolver {
-	resolvedTidalToken := resolveTidalToken(ctx, httpClient, tidalCredentials{
+	resolvedTidalToken := songbackfill.ResolveTidalToken(ctx, httpClient, songbackfill.TidalCredentials{
 		TokenURL:     params.TidalTokenURL,
 		ClientID:     params.TidalClientID,
 		ClientSecret: params.TidalClientSecret,

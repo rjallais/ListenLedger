@@ -4,7 +4,8 @@
 // (Delaney flip: JetStream is the authority, SQLite is disposable). Append
 // uses per-aggregate OCC on the stream's subject scope, MsgID=event ID for
 // short-window dedup. Load replays one stream's subjects via an ephemeral
-// filtered pull consumer. Wired into the runtime via SelectedStore in
+// filtered pull consumer; snapshots (jetstream_snapshot.go) let long streams
+// replay only the tail. Wired into the runtime via SelectedStore in
 // jetstream mode; SQLite remains the default.
 package eventsourcing
 
@@ -169,6 +170,15 @@ func (s *JetStreamStore) Append(ctx context.Context, streamID string, expectedVe
 // history is already available, so there is no reason to burn a MaxWait
 // expiry on the short final batch (or on an absent aggregate).
 func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, error) {
+	return s.loadSince(ctx, streamID, 0, 0)
+}
+
+// loadSince replays the events of one stream with Version > afterVersion,
+// oldest to newest. afterSeq, when non-zero, is the DOMAIN_EVENTS sequence of
+// the afterVersion event (a validated snapshot anchor): the consumer then
+// starts right behind it instead of at the stream's first message, so the
+// cost is O(tail) instead of O(stream). afterVersion == 0 replays everything.
+func (s *JetStreamStore) loadSince(ctx context.Context, streamID string, afterVersion int64, afterSeq uint64) ([]Event, error) {
 	if s.js == nil {
 		return nil, fmt.Errorf("jetstream store: JetStream not configured")
 	}
@@ -176,19 +186,46 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 	if err != nil {
 		return nil, fmt.Errorf("jetstream store: stream: %w", err)
 	}
-	info, err := stream.Info(ctx)
+	// Fast path: inspect the aggregate's tip first via server-side subject
+	// index. Empty streams, fully-caught-up tails, and single-event tails
+	// (e.g. newly requested scrape jobs) resolve in a single lookup without
+	// creating/deleting a consumer.
+	last, err := stream.GetLastMsgForSubject(ctx, messaging.SubjectDomainEventScope(streamID))
 	if err != nil {
-		return nil, fmt.Errorf("jetstream store: info: %w", err)
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			if afterVersion > 0 {
+				return nil, fmt.Errorf("jetstream store: stream %s has no events but anchor is v%d", streamID, afterVersion)
+			}
+			return nil, nil // empty stream: nothing to replay
+		}
+		return nil, fmt.Errorf("jetstream store: last msg for %s: %w", streamID, err)
 	}
-	if info.State.Msgs == 0 {
-		return nil, nil // empty stream: nothing to replay
+	lastEvt, err := UnmarshalEvent(last.Data)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream store: decode last %s: %w", streamID, err)
 	}
-	cutoff := info.State.LastSeq
-	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+	switch {
+	case lastEvt.Version < afterVersion:
+		// The anchor is ahead of the log (stream rebuilt or truncated):
+		// callers must fall back to a full replay, never trust the anchor.
+		return nil, fmt.Errorf("jetstream store: stream %s tip is v%d, behind anchor v%d", streamID, lastEvt.Version, afterVersion)
+	case lastEvt.Version == afterVersion:
+		return nil, nil // anchor is the tip: empty tail
+	case lastEvt.Version == afterVersion+1 && lastEvt.StreamID == streamID:
+		return []Event{lastEvt}, nil
+	}
+	cutoff := last.Sequence
+	cfg := jetstream.ConsumerConfig{
 		FilterSubject:     messaging.SubjectDomainEventFilter(streamID),
 		AckPolicy:         jetstream.AckNonePolicy,
 		InactiveThreshold: 30 * time.Second,
-	})
+		MemoryStorage:     true,
+	}
+	if afterSeq > 0 {
+		cfg.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
+		cfg.OptStartSeq = afterSeq + 1
+	}
+	cons, err := stream.CreateOrUpdateConsumer(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream store: consumer for %s: %w", streamID, err)
 	}
@@ -201,7 +238,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 		defer cancel()
 		_ = stream.DeleteConsumer(dctx, cons.CachedInfo().Name)
 	}()
-	var out []Event
+	out := make([]Event, 0, lastEvt.Version-afterVersion)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -213,7 +250,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 			}
 			return nil, fmt.Errorf("jetstream store: fetch %s: %w", streamID, err)
 		}
-		pastCutoff := false
+		reachedCutoff := false
 		got := 0
 		for msg := range batch.Messages() {
 			meta, err := msg.Metadata()
@@ -221,7 +258,7 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 				return nil, fmt.Errorf("jetstream store: metadata %s: %w", streamID, err)
 			}
 			if meta.Sequence.Stream > cutoff {
-				pastCutoff = true // live arrival: stop, don't error
+				reachedCutoff = true // live arrival: stop, don't error
 				continue
 			}
 			evt, err := UnmarshalEvent(msg.Data())
@@ -231,8 +268,13 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 			if evt.StreamID != streamID {
 				continue // defensive: filter is exact, trust the data
 			}
-			out = append(out, evt)
+			if evt.Version > afterVersion {
+				out = append(out, evt)
+			}
 			got++
+			if meta.Sequence.Stream == cutoff {
+				reachedCutoff = true
+			}
 		}
 		if err := batch.Error(); err != nil {
 			if errors.Is(err, jetstream.ErrNoMessages) {
@@ -240,11 +282,8 @@ func (s *JetStreamStore) Load(ctx context.Context, streamID string) ([]Event, er
 			}
 			return nil, fmt.Errorf("jetstream store: batch %s: %w", streamID, err)
 		}
-		if pastCutoff {
-			break
-		}
-		if got == 0 {
-			break // drained: no more available within the cutoff
+		if reachedCutoff || got == 0 {
+			break // drained up to the aggregate's tip sequence
 		}
 	}
 	return out, nil

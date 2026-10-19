@@ -134,3 +134,144 @@ func TestCatalogProjectionSongRecentToggle(t *testing.T) {
 		t.Fatalf("expected recent song, got %d", isRecent)
 	}
 }
+
+func TestCatalogProjectionSongMetadataEnriched(t *testing.T) {
+	database, store, proj := setupProjectionDB(t)
+	ctx := t.Context()
+
+	agg, err := song.NewSong("sg_2", "Them Bones", "Alice in Chains", "", "", "", "", 0, 3, 1, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.Append(ctx, "sg_2", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("append created: %v", err)
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, agg.UncommittedEvents()); err != nil {
+		t.Fatalf("project created: %v", err)
+	}
+
+	changed, err := agg.EnrichMetadata("Dirt", "1992-09-29", "album", "tidal")
+	if err != nil || !changed {
+		t.Fatalf("enrich: changed=%v err=%v", changed, err)
+	}
+	enriched := agg.UncommittedEvents()[1:]
+	if err := store.Append(ctx, "sg_2", 1, enriched...); err != nil {
+		t.Fatalf("append enriched: %v", err)
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, enriched); err != nil {
+		t.Fatalf("project enriched: %v", err)
+	}
+
+	readRow := func() (album, releaseDate, releaseType string, releaseYear int64) {
+		t.Helper()
+		if err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT album, release_date, release_type, release_year FROM songs WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, "sg_2")
+			if _, err := stmt.Step(); err != nil {
+				return err
+			}
+			album, releaseDate, releaseType, releaseYear = stmt.ColumnText(0), stmt.ColumnText(1), stmt.ColumnText(2), stmt.ColumnInt64(3)
+			return nil
+		}); err != nil {
+			t.Fatalf("read song: %v", err)
+		}
+		return album, releaseDate, releaseType, releaseYear
+	}
+
+	album, releaseDate, releaseType, releaseYear := readRow()
+	if album != "Dirt" || releaseDate != "1992-09-29" || releaseYear != 1992 || releaseType != "album" {
+		t.Fatalf("enriched row = (%q, %q, %q, %d)", album, releaseDate, releaseType, releaseYear)
+	}
+
+	// A pre-field (v1) event without release_type keeps the projected type.
+	v1 := eventsourcing.Event{
+		StreamID:   "sg_2",
+		StreamType: song.StreamTypeSong,
+		Version:    3,
+		EventType:  song.EventTypeSongMetadataEnriched,
+		Payload:    []byte(`{"song_id":"sg_2","album":"Dirt","release_date":"1992-09-29","release_year":1992,"source":"tidal"}`),
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, []eventsourcing.Event{v1}); err != nil {
+		t.Fatalf("project v1: %v", err)
+	}
+	if album, _, releaseType, _ := readRow(); releaseType != "album" {
+		t.Fatalf("v1 projection wiped release_type: %q (album %q)", releaseType, album)
+	}
+}
+
+func TestCatalogProjectionSongTidalEvents(t *testing.T) {
+	database, store, proj := setupProjectionDB(t)
+	ctx := t.Context()
+
+	agg, err := song.NewSong("sg_t1", "Cais", "Milton Nascimento, ...", "Clube da Esquina - Single", "1972-01-01", "single", "spot_t1", 1972, 0, 0, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.Append(ctx, "sg_t1", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("append created: %v", err)
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, agg.UncommittedEvents()); err != nil {
+		t.Fatalf("project created: %v", err)
+	}
+
+	// Link Tidal ID
+	if _, err := agg.LinkTidalID("tidal_cais", "fuzzy", 0.95); err != nil {
+		t.Fatalf("link tidal: %v", err)
+	}
+	// Correct metadata
+	if _, err := agg.CorrectMetadata("Clube da Esquina", "1972-03-01", "album", "tidal"); err != nil {
+		t.Fatalf("correct metadata: %v", err)
+	}
+	// Correct artist credits
+	if _, err := agg.CorrectArtistCredits("Milton Nascimento, Lô Borges", "tidal"); err != nil {
+		t.Fatalf("correct credits: %v", err)
+	}
+	// Mark duplicate
+	if _, err := agg.MarkDuplicate("sg_canonical_cais", "tidal"); err != nil {
+		t.Fatalf("mark duplicate: %v", err)
+	}
+
+	newEvents := agg.UncommittedEvents()[1:]
+	if err := store.Append(ctx, "sg_t1", 1, newEvents...); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := proj.Project(ctx, song.StreamTypeSong, newEvents); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+
+	var tidalID, albumName, artistName, duplicateOf string
+	err = database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT tidal_id, album, artist_name, duplicate_of FROM songs WHERE id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, "sg_t1")
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			t.Fatalf("row not found")
+		}
+		tidalID = stmt.ColumnText(0)
+		albumName = stmt.ColumnText(1)
+		artistName = stmt.ColumnText(2)
+		duplicateOf = stmt.ColumnText(3)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("readTX: %v", err)
+	}
+
+	if tidalID != "tidal_cais" {
+		t.Errorf("expected tidal_id 'tidal_cais', got %q", tidalID)
+	}
+	if albumName != "Clube da Esquina" {
+		t.Errorf("expected album 'Clube da Esquina', got %q", albumName)
+	}
+	if artistName != "Milton Nascimento, Lô Borges" {
+		t.Errorf("expected artist 'Milton Nascimento, Lô Borges', got %q", artistName)
+	}
+	if duplicateOf != "sg_canonical_cais" {
+		t.Errorf("expected duplicate_of 'sg_canonical_cais', got %q", duplicateOf)
+	}
+}

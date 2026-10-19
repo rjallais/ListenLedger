@@ -6,8 +6,9 @@
 // publish with per-aggregate OCC, reads via filtered consumers). Anything
 // else fails fast at startup — a typo must never silently pick a store.
 //
-// Jetstream mode notes: repositories degrade snapshot paths to full replay
-// (JetStreamStore is not a SnapshotStore); write sites must use
+// Jetstream mode notes: JetStreamStore is a SnapshotStore (KV bucket
+// "snapshots", anchored to a DOMAIN_EVENTS sequence), so artist repositories
+// keep their O(tail) loads; write sites must use
 // AppendWithRetry (JetStream publishes are non-atomic); the SQLite events
 // table freezes (admin/audit/replay tooling reads stale history — the audit
 // tool is the parity checker before flipping production).

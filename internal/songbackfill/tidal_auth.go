@@ -1,4 +1,4 @@
-package main
+package songbackfill
 
 import (
 	"context"
@@ -13,14 +13,19 @@ import (
 	"time"
 )
 
-type tidalCredentials struct {
+// TidalCredentials configures the TIDAL client-credentials token flow.
+type TidalCredentials struct {
 	TokenURL     string
 	ClientID     string
 	ClientSecret string
 	HTTPTimeout  time.Duration
 }
 
-func resolveTidalToken(ctx context.Context, httpClient *http.Client, creds tidalCredentials, flagToken string) string {
+// ResolveTidalToken resolves a usable TIDAL bearer token: the flag token,
+// then TIDAL_TOKEN, then the client-credentials flow with TIDAL_CLIENT_ID /
+// TIDAL_CLIENT_SECRET. Failures only warn and return "" (lookups degrade to
+// no-op); the caller decides whether an empty token is fatal.
+func ResolveTidalToken(ctx context.Context, httpClient *http.Client, creds TidalCredentials, flagToken string) string {
 	token := strings.TrimSpace(flagToken)
 	if token == "" {
 		token = strings.TrimSpace(os.Getenv("TIDAL_TOKEN"))
@@ -48,22 +53,26 @@ func resolveTidalToken(ctx context.Context, httpClient *http.Client, creds tidal
 	}
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	t, err := fetchTidalAccessToken(ctxWithTimeout, httpClient, creds.TokenURL, clientID, clientSecret)
+	t, err := FetchTidalAccessToken(ctxWithTimeout, httpClient, creds.TokenURL, clientID, clientSecret)
 	if err != nil {
-		log.Printf("[backfill_song_artists] warning: failed to obtain TIDAL access token: %v", err)
+		log.Printf("[songbackfill] warning: failed to obtain TIDAL access token: %v", err)
 		return ""
 	}
-	log.Printf("[backfill_song_artists] obtained TIDAL access token via client credentials")
+	log.Printf("[songbackfill] obtained TIDAL access token via client credentials")
 	return t
 }
 
-func fetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret string) (string, error) {
+// FetchTidalAccessToken exchanges client credentials for a bearer token.
+func FetchTidalAccessToken(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret string) (string, error) {
 	tokenURL = strings.TrimSpace(tokenURL)
 	if tokenURL == "" {
 		tokenURL = "https://auth.tidal.com/v1/oauth2/token"
 	}
 	if strings.TrimSpace(clientID) == "" || strings.TrimSpace(clientSecret) == "" {
 		return "", fmt.Errorf("missing TIDAL client credentials")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
 	}
 
 	form := url.Values{}

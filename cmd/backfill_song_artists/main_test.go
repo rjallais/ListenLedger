@@ -145,12 +145,12 @@ func TestFetchTidalAccessTokenUsesClientCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	token, err := fetchTidalAccessToken(t.Context(), server.Client(), server.URL, "client-id", "client-secret")
+	token, err := songbackfill.FetchTidalAccessToken(t.Context(), server.Client(), server.URL, "client-id", "client-secret")
 	if err != nil {
-		t.Fatalf("fetchTidalAccessToken() error = %v", err)
+		t.Fatalf("songbackfill.FetchTidalAccessToken() error = %v", err)
 	}
 	if token != "token-123" {
-		t.Fatalf("fetchTidalAccessToken() = %q, want token-123", token)
+		t.Fatalf("songbackfill.FetchTidalAccessToken() = %q, want token-123", token)
 	}
 
 	close(handlerErrors)

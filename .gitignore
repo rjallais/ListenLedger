@@ -27,9 +27,15 @@ node_modules/
 /ListenLedger
 /update_listeners
 /seed
+/audit
+/build
+/safebackup
 backups/
+backfill_reports/
 server.log
 pb_schema.json
+*~lock.*#
+.*~lock.*#
 
 # CSV data files (user-specific)
 Music - Sheet*.csv
@@ -49,6 +55,10 @@ __pycache__/
 /AGENTS.md
 .gemini/
 .agents/
+.entire/
+.opencode/
+.stitch/
+.stitch.json
 
 # Local scratch notes
 missing_artists.txt

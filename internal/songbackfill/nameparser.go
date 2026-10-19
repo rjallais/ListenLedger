@@ -170,6 +170,14 @@ func parseStoredArtists(raw string) parsedArtists {
 	return result
 }
 
+// PrimaryArtistPrefix returns the normalized leading-artist fragment of a
+// stored artist name ("A, B" -> "A"; "A, ..." -> "A"). External lookups use
+// it to reject candidates whose credited artists do not include the song's
+// primary artist.
+func PrimaryArtistPrefix(raw string) string {
+	return parseStoredArtists(raw).PrimaryPrefix
+}
+
 func firstArtistFragment(parts []string, raw string) string {
 	if len(parts) > 0 {
 		return parts[0]

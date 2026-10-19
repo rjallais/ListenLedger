@@ -21,16 +21,18 @@ const StreamTypeArtist = "artist"
 type Artist struct {
 	eventsourcing.BaseAggregate
 
-	Name             string
-	SpotifyID        string
-	MonthlyListeners int64
-	GenreGroup       string
-	ListStatus       string
-	FetchStatus      string
-	CollectionSongs  int64
-	TotalSongs       int64
-	LastUpdated      time.Time
-	CreatedAt        time.Time
+	Name                   string
+	SpotifyID              string
+	MonthlyListeners       int64
+	GenreGroup             string
+	ListStatus             string
+	FetchStatus            string
+	CollectionSongs        int64
+	TotalSongs             int64
+	LastUpdated            time.Time
+	CreatedAt              time.Time
+	LastListenersRequestID string
+	lastScrapedMetadata    []byte
 }
 
 // NewArtist creates an Artist and records the ArtistCreated event.
@@ -208,6 +210,8 @@ func (a *Artist) apply(evt eventsourcing.Event) error {
 		a.MonthlyListeners = pl.MonthlyListeners
 		a.FetchStatus = "idle"
 		a.LastUpdated = pl.ScrapedAt
+		a.lastScrapedMetadata = evt.Metadata
+		a.LastListenersRequestID = ""
 
 	case EventTypeArtistStatusChanged:
 		var pl StatusChangedPayload
@@ -252,4 +256,25 @@ func Replay(id string, events []eventsourcing.Event) (*Artist, error) {
 	}
 
 	return agg, nil
+}
+
+// HasRecordedListenersForRequest reports whether the latest listener scrape
+// on this aggregate was recorded under requestID, deduplicating redeliveries
+// without re-loading the raw event stream.
+func (a *Artist) HasRecordedListenersForRequest(requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	return a.lastListenersRequestID() == requestID
+}
+
+func (a *Artist) lastListenersRequestID() string {
+	if a.LastListenersRequestID == "" && len(a.lastScrapedMetadata) > 0 {
+		if meta, err := eventsourcing.DecodeMetadata(a.lastScrapedMetadata); err == nil && meta != nil {
+			a.LastListenersRequestID = eventsourcing.RequestIDFromMetadata(meta)
+		}
+		a.lastScrapedMetadata = nil
+	}
+	return a.LastListenersRequestID
 }
