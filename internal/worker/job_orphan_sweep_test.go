@@ -167,6 +167,40 @@ func TestOrphanedQueuedSweepPaginatesPastDispatchedRows(t *testing.T) {
 	}
 }
 
+// TestIsOrphanedQueuedRequest covers the preflight guard: only the sweep's
+// exact seed pair is recognized, so ordinary failures still process.
+func TestIsOrphanedQueuedRequest(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+
+	w.recordJobEventWarn(ctx, "req_orphan_guard", "ar_orphan_guard", "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed(orphanedQueuedReason)
+		return err
+	})
+	if !w.isOrphanedQueuedRequest(ctx, "req_orphan_guard") {
+		t.Fatal("orphan verdict stream should be detected")
+	}
+
+	w.recordJobEventWarn(ctx, "req_ordinary_failure", "ar_ordinary_failure", "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed("fetch_failed")
+		return err
+	})
+	if w.isOrphanedQueuedRequest(ctx, "req_ordinary_failure") {
+		t.Fatal("ordinary failed stream must not be treated as an orphan verdict")
+	}
+
+	w.recordJobEventWarn(ctx, "req_succeeded_guard", "ar_succeeded_guard", "succeeded", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordSucceeded("test", 0)
+		return err
+	})
+	if w.isOrphanedQueuedRequest(ctx, "req_succeeded_guard") {
+		t.Fatal("succeeded stream must not be treated as an orphan verdict")
+	}
+
+	if w.isOrphanedQueuedRequest(ctx, "req_missing") {
+		t.Fatal("missing stream must not be treated as an orphan verdict")
+	}
+}
+
 func seedSweepArtist(t *testing.T, ctx context.Context, w *Worker, artistID, fetchStatus string) {
 	t.Helper()
 	err := w.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {

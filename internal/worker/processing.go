@@ -40,6 +40,10 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 		return w.handleDedupSkip(ctx, env)
 	}
 
+	if w.isOrphanedQueuedRequest(ctx, env.req.RequestID) {
+		return w.handleOrphanedQueuedSkip(ctx, env)
+	}
+
 	if result, ok := w.runProviderPreflight(ctx, provider, env); ok {
 		return result
 	}
@@ -86,6 +90,17 @@ func (w *Worker) handleDedupSkip(ctx context.Context, env msgEnvelope) msgResult
 	if err := w.ackMsg(ctx, env.msg); err != nil {
 		w.recordAckError(env.label)
 		log.Printf("[worker] Failed to ack deduplicated message: %v", err)
+	}
+	return msgOK
+}
+
+// handleOrphanedQueuedSkip acks a late message whose request already carries
+// the orphan sweep's terminal verdict, so it cannot re-open that stream.
+func (w *Worker) handleOrphanedQueuedSkip(ctx context.Context, env msgEnvelope) msgResult {
+	log.Printf("[worker] Skipping orphaned queued request_id=%s (provider=%s)", env.req.RequestID, env.label)
+	if err := w.ackMsg(ctx, env.msg); err != nil {
+		w.recordAckError(env.label)
+		log.Printf("[worker] Failed to ack orphaned queued message: %v", err)
 	}
 	return msgOK
 }

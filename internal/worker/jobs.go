@@ -910,6 +910,21 @@ func isOrphanedQueuedVerdict(events []eventsourcing.Event) bool {
 	return pl.Error == orphanedQueuedReason
 }
 
+// isOrphanedQueuedRequest reports whether requestID's stream is exactly the
+// orphan sweep's terminal seed pair. That verdict is final for the request:
+// a late message must not re-open it and diverge the row from the stream.
+func (w *Worker) isOrphanedQueuedRequest(ctx context.Context, requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || w.jobStore == nil {
+		return false
+	}
+	events, err := w.jobStore.Load(ctx, requestID)
+	if err != nil {
+		return false
+	}
+	return isOrphanedQueuedVerdict(events)
+}
+
 // markOrphanedQueuedRowFailedSQLite flips one queued row to
 // failed(orphaned_no_dispatch) and reports whether the row changed.
 // Conditional on status and queued_at so a job that started processing
