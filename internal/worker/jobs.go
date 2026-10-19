@@ -212,10 +212,19 @@ func (w *Worker) setScrapeJobFinishedWithContext(ctx context.Context, requestID,
 	return nil
 }
 
+// isRequestAlreadySucceeded reports whether the request stream or row records
+// a terminal success.
 func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string) bool {
+	succeeded, _ := w.requestStreamVerdict(ctx, requestID)
+	return succeeded
+}
+
+// requestStreamVerdict derives the preflight skip disposition from one job
+// stream load, reusing the succeeded cache and PocketBase fallback.
+func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (succeeded, orphaned bool) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return false
+		return false, false
 	}
 
 	now := time.Now()
@@ -223,7 +232,7 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 	w.pruneSucceededLocked(now)
 	if _, ok := w.succeededRequests[requestID]; ok {
 		w.succeededMu.Unlock()
-		return true
+		return true, false
 	}
 	w.succeededMu.Unlock()
 
@@ -235,39 +244,36 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 	// ScrapeSucceeded fact while the PocketBase row already flipped.
 	if w.jobStore != nil {
 		if evts, err := w.jobStore.Load(ctx, requestID); err == nil && len(evts) > 0 {
+			if isOrphanedQueuedVerdict(evts) {
+				return false, true
+			}
 			if agg, err := scrapejob.Replay(requestID, evts); err == nil {
 				if agg.Status() == scrapejob.StatusSucceeded {
-					w.succeededMu.Lock()
-					w.pruneSucceededLocked(now)
-					w.succeededRequests[requestID] = now
-					w.succeededMu.Unlock()
-					return true
+					w.markRequestSucceeded(requestID)
+					return true, false
 				}
 				if agg.IsTerminal() {
-					return false
+					return false, false
 				}
 			}
 		}
 	}
 
 	if w.app == nil {
-		return false
+		return false, false
 	}
 
 	job, err := w.scrapeJobByRequestID(requestID)
 	if err != nil {
 		log.Printf("[worker] Warning: dedupe check failed for request_id=%s: %v", requestID, err)
-		return false
+		return false, false
 	}
 	if job == nil || job.GetString("status") != "succeeded" {
-		return false
+		return false, false
 	}
 
-	w.succeededMu.Lock()
-	w.pruneSucceededLocked(now)
-	w.succeededRequests[requestID] = now
-	w.succeededMu.Unlock()
-	return true
+	w.markRequestSucceeded(requestID)
+	return true, false
 }
 
 func (w *Worker) markRequestSucceeded(requestID string) {
@@ -908,21 +914,6 @@ func isOrphanedQueuedVerdict(events []eventsourcing.Event) bool {
 		return false
 	}
 	return pl.Error == orphanedQueuedReason
-}
-
-// isOrphanedQueuedRequest reports whether requestID's stream is exactly the
-// orphan sweep's terminal seed pair. That verdict is final for the request:
-// a late message must not re-open it and diverge the row from the stream.
-func (w *Worker) isOrphanedQueuedRequest(ctx context.Context, requestID string) bool {
-	requestID = strings.TrimSpace(requestID)
-	if requestID == "" || w.jobStore == nil {
-		return false
-	}
-	events, err := w.jobStore.Load(ctx, requestID)
-	if err != nil {
-		return false
-	}
-	return isOrphanedQueuedVerdict(events)
 }
 
 // markOrphanedQueuedRowFailedSQLite flips one queued row to

@@ -167,37 +167,37 @@ func TestOrphanedQueuedSweepPaginatesPastDispatchedRows(t *testing.T) {
 	}
 }
 
-// TestIsOrphanedQueuedRequest covers the preflight guard: only the sweep's
-// exact seed pair is recognized, so ordinary failures still process.
-func TestIsOrphanedQueuedRequest(t *testing.T) {
+// TestRequestStreamVerdict covers the preflight guard: only the sweep's exact
+// seed pair is recognized as orphaned, so ordinary failures still process.
+func TestRequestStreamVerdict(t *testing.T) {
 	w, ctx := setupTestJobWorker(t)
 
 	w.recordJobEventWarn(ctx, "req_orphan_guard", "ar_orphan_guard", "failed", func(j *scrapejob.Job) error {
 		_, _, err := j.RecordFailed(orphanedQueuedReason)
 		return err
 	})
-	if !w.isOrphanedQueuedRequest(ctx, "req_orphan_guard") {
-		t.Fatal("orphan verdict stream should be detected")
+	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || !orphaned {
+		t.Fatalf("orphan verdict = succeeded=%v orphaned=%v, want false/true", succeeded, orphaned)
 	}
 
 	w.recordJobEventWarn(ctx, "req_ordinary_failure", "ar_ordinary_failure", "failed", func(j *scrapejob.Job) error {
 		_, _, err := j.RecordFailed("fetch_failed")
 		return err
 	})
-	if w.isOrphanedQueuedRequest(ctx, "req_ordinary_failure") {
-		t.Fatal("ordinary failed stream must not be treated as an orphan verdict")
+	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_ordinary_failure"); succeeded || orphaned {
+		t.Fatalf("ordinary failure = succeeded=%v orphaned=%v, want false/false", succeeded, orphaned)
 	}
 
 	w.recordJobEventWarn(ctx, "req_succeeded_guard", "ar_succeeded_guard", "succeeded", func(j *scrapejob.Job) error {
 		_, _, err := j.RecordSucceeded("test", 0)
 		return err
 	})
-	if w.isOrphanedQueuedRequest(ctx, "req_succeeded_guard") {
-		t.Fatal("succeeded stream must not be treated as an orphan verdict")
+	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_succeeded_guard"); !succeeded || orphaned {
+		t.Fatalf("succeeded = succeeded=%v orphaned=%v, want true/false", succeeded, orphaned)
 	}
 
-	if w.isOrphanedQueuedRequest(ctx, "req_missing") {
-		t.Fatal("missing stream must not be treated as an orphan verdict")
+	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_missing"); succeeded || orphaned {
+		t.Fatalf("missing stream = succeeded=%v orphaned=%v, want false/false", succeeded, orphaned)
 	}
 }
 

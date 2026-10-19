@@ -36,11 +36,12 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 	item.dispatchProgress.Stop()
 
-	if w.isRequestAlreadySucceeded(ctx, env.req.RequestID) {
+	succeeded, orphaned := w.requestStreamVerdict(ctx, env.req.RequestID)
+	if succeeded {
 		return w.handleDedupSkip(ctx, env)
 	}
 
-	if w.isOrphanedQueuedRequest(ctx, env.req.RequestID) {
+	if orphaned {
 		return w.handleOrphanedQueuedSkip(ctx, env)
 	}
 
