@@ -49,7 +49,7 @@ func main() {
 window.addEventListener('load',()=>{window.__loadMS=performance.now();});
 (()=>{const o=window.fetch;window.fetch=function(input,init){let u=(typeof input==='string')?input:(input&&input.url)||'';
 if(u.indexOf('/api/events')!==-1){window.__sseFetchAt=performance.now();
-return o.apply(this,arguments).then(async(r)=>{try{const c=r.clone();const rd=c.body.getReader();const {value}=await rd.read();window.__sseMS=performance.now();window.__sseB=value?value.length:0;rd.cancel();}catch(e){window.__sseStatus='read-error:'+e;}return r;});}
+return o.apply(this,arguments).then((r)=>{(async()=>{try{const rd=r.clone().body.getReader();const {value}=await rd.read();window.__sseMS=performance.now();window.__sseB=value?value.length:0;rd.cancel();}catch(e){window.__sseStatus='read-error:'+e;}})();return r;});}
 return o.apply(this,arguments);};})();`); err != nil {
 		fmt.Fprintf(os.Stderr, "EvalOnNewDocument: %v\n", err)
 		os.Exit(1)
@@ -87,6 +87,7 @@ return o.apply(this,arguments);};})();`); err != nil {
 	fmt.Printf("\nAVG LOAD = %.0f ms\n", sum/float64(*rounds))
 	if sseFailed {
 		fmt.Fprintln(os.Stderr, "SSE health check FAILED: fetch or first-byte observation missing within timeout")
+		_, _ = proto.TargetCloseTarget{TargetID: page.TargetID}.Call(browser)
 		os.Exit(1)
 	}
 	fmt.Println("\nSSE health check: sseFetchAt > 0 proves the stream now opens only AFTER load;")

@@ -172,9 +172,11 @@ func (r *Repository) SaveBatch(ctx context.Context, aggs []*Artist) error {
 	)
 	for _, agg := range dirty {
 		if err := ctx.Err(); err != nil {
+			mu.Lock()
 			if firstErr == nil {
-				firstErr = err
+				firstErr = fmt.Errorf("saving artist batch: %w", err)
 			}
+			mu.Unlock()
 			break
 		}
 		wg.Go(func() {
