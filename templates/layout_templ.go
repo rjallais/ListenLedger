@@ -108,14 +108,14 @@ func Layout(title string, activeNav string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<!-- Classic script: runs before the deferred module scripts below, so\n\t\t\tit observes datastar-ready whenever Datastar fires it (the scan is\n\t\t\twhat attaches the data-on listeners, and it lands a moment after the\n\t\t\tmodule import resolves). --><script>\n\t\t\t\twindow.__datastarReady = false;\n\t\t\t\tdocument.addEventListener('datastar-ready', () => { window.__datastarReady = true; }, { once: true });\n\t\t\t</script><script type=\"module\">\n\t\t\t\t// Fire the live-lane start once Datastar has scanned the DOM.\n\t\t\t\t// Waiting for the import to resolve is not enough: the scan\n\t\t\t\t// completes on datastar-ready, slightly later, and a\n\t\t\t\t// datastar-booted event dispatched earlier would find no\n\t\t\t\t// listener attached yet. The SSE and hot-reload lanes listen\n\t\t\t\t// for `datastar-booted` instead of `load` directly, so a\n\t\t\t\t// prerendered page — where `load` may fire before Datastar\n\t\t\t\t// boots — still opens them.\n\t\t\t\tlet booted = false;\n\t\t\t\tfunction openLiveLanes() {\n\t\t\t\t\tif (booted) return;\n\t\t\t\t\tbooted = true;\n\t\t\t\t\twindow.dispatchEvent(new CustomEvent('datastar-booted'));\n\t\t\t\t}\n\t\t\t\tfunction bootDatastar() {\n\t\t\t\t\timport('datastar').then(() => {\n\t\t\t\t\t\tif (window.__datastarReady) {\n\t\t\t\t\t\t\topenLiveLanes();\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdocument.addEventListener('datastar-ready', openLiveLanes, { once: true });\n\t\t\t\t\t}).catch(() => {\n\t\t\t\t\t\topenLiveLanes();\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tif (document.prerendering) {\n\t\t\t\t\tdocument.addEventListener('prerenderingchange', bootDatastar, { once: true });\n\t\t\t\t} else {\n\t\t\t\t\tbootDatastar();\n\t\t\t\t}\n\t\t\t</script><script type=\"module\" src=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<!-- Classic script: runs before the deferred module scripts below, so\n\t\t\tit observes datastar-ready whenever Datastar fires it (the scan is\n\t\t\twhat attaches the data-on listeners, and it lands a moment after the\n\t\t\tmodule import resolves). --><script>\n\t\t\t\twindow.__datastarReady = false;\n\t\t\t\tdocument.addEventListener('datastar-ready', () => { window.__datastarReady = true; }, { once: true });\n\t\t\t</script><script type=\"module\">\n\t\t\t\t// Fire the live-lane start once Datastar has scanned the DOM\n\t\t\t\t// and the window has finished loading, so long-lived SSE lanes\n\t\t\t\t// never compete with page-load requests. Waiting for the import\n\t\t\t\t// to resolve is not enough: the scan completes on\n\t\t\t\t// datastar-ready, slightly later, and a datastar-booted event\n\t\t\t\t// dispatched earlier would find no listener attached yet. The\n\t\t\t\t// SSE and hot-reload lanes listen for `datastar-booted` instead\n\t\t\t\t// of `load` directly, so a prerendered page — where `load` may\n\t\t\t\t// fire before Datastar boots — still opens them.\n\t\t\t\tlet booted = false;\n\t\t\t\tfunction openLiveLanes() {\n\t\t\t\t\tif (booted) return;\n\t\t\t\t\tbooted = true;\n\t\t\t\t\twindow.dispatchEvent(new CustomEvent('datastar-booted'));\n\t\t\t\t}\n\t\t\t\tfunction bootDatastar() {\n\t\t\t\t\timport('datastar').then(() => {\n\t\t\t\t\t\t// Start only after both Datastar's DOM scan and the window\n\t\t\t\t\t\t// load event, so long-lived SSE lanes never compete with\n\t\t\t\t\t\t// page-load requests. Either event may arrive first.\n\t\t\t\t\t\tlet started = false;\n\t\t\t\t\t\tconst start = () => {\n\t\t\t\t\t\t\tif (started || !window.__datastarReady || document.readyState !== 'complete') {\n\t\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\tstarted = true;\n\t\t\t\t\t\t\topenLiveLanes();\n\t\t\t\t\t\t};\n\t\t\t\t\t\tif (!window.__datastarReady) {\n\t\t\t\t\t\t\tdocument.addEventListener('datastar-ready', start, { once: true });\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (document.readyState !== 'complete') {\n\t\t\t\t\t\t\twindow.addEventListener('load', start, { once: true });\n\t\t\t\t\t\t}\n\t\t\t\t\t\tstart();\n\t\t\t\t\t}).catch(() => {\n\t\t\t\t\t\topenLiveLanes();\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\tif (document.prerendering) {\n\t\t\t\t\tdocument.addEventListener('prerenderingchange', bootDatastar, { once: true });\n\t\t\t\t} else {\n\t\t\t\t\tbootDatastar();\n\t\t\t\t}\n\t\t\t</script><script type=\"module\" src=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.ResolveAttributeValue(AssetURL("sb-modal.js"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 97, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 111, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var7)
 		if templ_7745c5c3_Err != nil {
@@ -255,7 +255,7 @@ func NavLink(href, icon, label string, active bool) templ.Component {
 		var templ_7745c5c3_Var11 templ.SafeURL
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(href))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 147, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 161, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -281,7 +281,7 @@ func NavLink(href, icon, label string, active bool) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(icon)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 148, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 162, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -294,7 +294,7 @@ func NavLink(href, icon, label string, active bool) templ.Component {
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 149, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 163, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -337,7 +337,7 @@ func NavLinkExternal(href, icon, label string) templ.Component {
 		var templ_7745c5c3_Var16 templ.SafeURL
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(href))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 157, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 171, Col: 31}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -350,7 +350,7 @@ func NavLinkExternal(href, icon, label string) templ.Component {
 		var templ_7745c5c3_Var17 string
 		templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(icon)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 158, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 172, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 		if templ_7745c5c3_Err != nil {
@@ -363,7 +363,7 @@ func NavLinkExternal(href, icon, label string) templ.Component {
 		var templ_7745c5c3_Var18 string
 		templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 159, Col: 41}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 173, Col: 41}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 		if templ_7745c5c3_Err != nil {
@@ -436,7 +436,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var21 string
 		templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.ResolveAttributeValue(theme.Value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 192, Col: 26}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 206, Col: 26}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 		if templ_7745c5c3_Err != nil {
@@ -449,7 +449,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var22 string
 		templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.ResolveAttributeValue("$theme = '" + theme.Value + "'; @post('/api/theme/" + theme.Value + "')")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 193, Col: 91}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 207, Col: 91}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var22)
 		if templ_7745c5c3_Err != nil {
@@ -462,7 +462,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var23 string
 		templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.ResolveAttributeValue("$theme === '" + theme.Value + "'")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 194, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 208, Col: 56}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var23)
 		if templ_7745c5c3_Err != nil {
@@ -475,7 +475,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var24 string
 		templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(theme.Icon)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 196, Col: 14}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 210, Col: 14}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 		if templ_7745c5c3_Err != nil {
@@ -488,7 +488,7 @@ func ThemeButton(theme Theme) templ.Component {
 		var templ_7745c5c3_Var25 string
 		templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(theme.Name)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 196, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 210, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 		if templ_7745c5c3_Err != nil {
@@ -538,7 +538,7 @@ func SSEIndicator() templ.Component {
 			templ_7745c5c3_Var26 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "<div id=\"sse-indicator-container\" class=\"flex items-center gap-2\" data-signals=\"{_sseStatus: 'connected'}\" data-on:datastar-booted__window=\"@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})\" data-on:datastar-fetch=\"if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' }\"><span id=\"sse-indicator\" class=\"badge badge-xs badge-success\" data-class=\"{ 'badge-success': $_sseStatus === 'connected', 'badge-warning animate-pulse': $_sseStatus === 'reconnecting', 'badge-error': $_sseStatus === 'disconnected' }\"></span> <span class=\"text-sm opacity-70 hidden sm:inline\" data-text=\"$_sseStatus === 'reconnecting' ? 'Reconnecting' : ($_sseStatus === 'disconnected' ? 'Disconnected' : 'Live')\">Live</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 32, "<div id=\"sse-indicator-container\" class=\"flex items-center gap-2\" data-signals=\"{_sseStatus: 'connected'}\" data-on:datastar-booted__window=\"@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})\" data-on:datastar-fetch__document=\"if (evt.detail.el?.id === 'sse-indicator-container') { if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' } }\"><span id=\"sse-indicator\" class=\"badge badge-xs badge-success\" data-class=\"{ 'badge-success': $_sseStatus === 'connected', 'badge-warning animate-pulse': $_sseStatus === 'reconnecting', 'badge-error': $_sseStatus === 'disconnected' }\"></span> <span class=\"text-sm opacity-70 hidden sm:inline\" data-text=\"$_sseStatus === 'reconnecting' ? 'Reconnecting' : ($_sseStatus === 'disconnected' ? 'Disconnected' : 'Live')\">Live</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -607,7 +607,7 @@ func QueueJobsWidgetContent(stats QueueStats) templ.Component {
 		var templ_7745c5c3_Var29 string
 		templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(FormatUint(stats.QueuePending))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 251, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 265, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 		if templ_7745c5c3_Err != nil {
@@ -620,7 +620,7 @@ func QueueJobsWidgetContent(stats QueueStats) templ.Component {
 		var templ_7745c5c3_Var30 string
 		templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(FormatUint(stats.QueueAckPending))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 254, Col: 46}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 268, Col: 46}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 		if templ_7745c5c3_Err != nil {
@@ -633,7 +633,7 @@ func QueueJobsWidgetContent(stats QueueStats) templ.Component {
 		var templ_7745c5c3_Var31 string
 		templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(FormatInt64(stats.JobsFailed))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 257, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 271, Col: 42}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 		if templ_7745c5c3_Err != nil {
@@ -651,7 +651,7 @@ func QueueJobsWidgetContent(stats QueueStats) templ.Component {
 			var templ_7745c5c3_Var32 string
 			templ_7745c5c3_Var32, templ_7745c5c3_Err = templ.JoinStringErrs(FormatUint(stats.QueueRedelivered))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 275, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/layout.templ`, Line: 289, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var32))
 			if templ_7745c5c3_Err != nil {

@@ -12,40 +12,42 @@ import (
 // Snapshots are a load optimization only: the event log stays the source of
 // truth and loaders replay every event after Snapshot.Version.
 type artistSnapshot struct {
-	SchemaVersion          int       `json:"schema_version"`
-	Name                   string    `json:"name"`
-	SpotifyID              string    `json:"spotify_id"`
-	MonthlyListeners       int64     `json:"monthly_listeners"`
-	GenreGroup             string    `json:"genre_group"`
-	ListStatus             string    `json:"list_status"`
-	FetchStatus            string    `json:"fetch_status"`
-	CollectionSongs        int64     `json:"collection_songs"`
-	TotalSongs             int64     `json:"total_songs"`
-	LastUpdated            time.Time `json:"last_updated"`
-	CreatedAt              time.Time `json:"created_at"`
-	LastListenersRequestID string    `json:"last_listeners_request_id,omitzero"`
+	SchemaVersion              int                 `json:"schema_version"`
+	Name                       string              `json:"name"`
+	SpotifyID                  string              `json:"spotify_id"`
+	MonthlyListeners           int64               `json:"monthly_listeners"`
+	GenreGroup                 string              `json:"genre_group"`
+	ListStatus                 string              `json:"list_status"`
+	FetchStatus                string              `json:"fetch_status"`
+	CollectionSongs            int64               `json:"collection_songs"`
+	TotalSongs                 int64               `json:"total_songs"`
+	LastUpdated                time.Time           `json:"last_updated"`
+	CreatedAt                  time.Time           `json:"created_at"`
+	LastListenersRequestID     string              `json:"last_listeners_request_id,omitzero"`
+	RecordedListenerRequestIDs map[string]struct{} `json:"recorded_listener_request_ids,omitzero"`
 }
 
-// snapshotSchemaVersion is the writer version for artist snapshots. v2 adds
-// LastListenersRequestID; older payloads cannot carry it, so a mismatch is
+// snapshotSchemaVersion is the writer version for artist snapshots. v3 adds
+// RecordedListenerRequestIDs; older payloads cannot carry it, so a mismatch is
 // reported as a missing snapshot and the stream heals by replaying in full.
-const snapshotSchemaVersion = 2
+const snapshotSchemaVersion = 3
 
 // marshalSnapshot encodes current aggregate state for SaveSnapshot.
 func (a *Artist) marshalSnapshot() ([]byte, error) {
 	payload, err := json.Marshal(artistSnapshot{
-		SchemaVersion:          snapshotSchemaVersion,
-		Name:                   a.Name,
-		SpotifyID:              a.SpotifyID,
-		MonthlyListeners:       a.MonthlyListeners,
-		GenreGroup:             a.GenreGroup,
-		ListStatus:             a.ListStatus,
-		FetchStatus:            a.FetchStatus,
-		CollectionSongs:        a.CollectionSongs,
-		TotalSongs:             a.TotalSongs,
-		LastUpdated:            a.LastUpdated,
-		CreatedAt:              a.CreatedAt,
-		LastListenersRequestID: a.lastListenersRequestID(),
+		SchemaVersion:              snapshotSchemaVersion,
+		Name:                       a.Name,
+		SpotifyID:                  a.SpotifyID,
+		MonthlyListeners:           a.MonthlyListeners,
+		GenreGroup:                 a.GenreGroup,
+		ListStatus:                 a.ListStatus,
+		FetchStatus:                a.FetchStatus,
+		CollectionSongs:            a.CollectionSongs,
+		TotalSongs:                 a.TotalSongs,
+		LastUpdated:                a.LastUpdated,
+		CreatedAt:                  a.CreatedAt,
+		LastListenersRequestID:     a.lastListenersRequestID(),
+		RecordedListenerRequestIDs: a.recordedListenerRequestIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshaling artist snapshot: %w", err)
@@ -74,6 +76,7 @@ func (a *Artist) restoreFromSnapshot(version int64, payload []byte) error {
 	a.LastUpdated = snap.LastUpdated
 	a.CreatedAt = snap.CreatedAt
 	a.LastListenersRequestID = snap.LastListenersRequestID
+	a.recordedListenerRequestIDs = snap.RecordedListenerRequestIDs
 	a.lastScrapedMetadata = nil
 	a.SetVersion(version)
 	return nil

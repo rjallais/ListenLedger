@@ -21,9 +21,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/batchprogress"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
@@ -674,12 +677,14 @@ type batchRow struct {
 	total     int64
 	completed int64
 	done      int64
+	stats     map[string]int
+	statsOK   bool
 }
 
 func readBatchRow(ctx context.Context, database *toolbeltdb.Database, id string) (batchRow, error) {
 	var row batchRow
 	err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("SELECT total, completed, done FROM batches WHERE id = ? LIMIT 1;")
+		stmt := tx.Prep("SELECT total, completed, done, stats FROM batches WHERE id = ? LIMIT 1;")
 		defer func() { _ = stmt.Reset() }()
 		stmt.BindText(1, id)
 		hasRow, err := stmt.Step()
@@ -689,7 +694,22 @@ func readBatchRow(ctx context.Context, database *toolbeltdb.Database, id string)
 		if !hasRow {
 			return nil
 		}
-		row = batchRow{found: true, total: stmt.ColumnInt64(0), completed: stmt.ColumnInt64(1), done: stmt.ColumnInt64(2)}
+		rawStats := stmt.ColumnText(3)
+		stats := make(map[string]int)
+		statsOK := true
+		if strings.TrimSpace(rawStats) != "" {
+			if err := json.Unmarshal([]byte(rawStats), &stats); err != nil {
+				statsOK = false
+			}
+		}
+		row = batchRow{
+			found:     true,
+			total:     stmt.ColumnInt64(0),
+			completed: stmt.ColumnInt64(1),
+			done:      stmt.ColumnInt64(2),
+			stats:     stats,
+			statsOK:   statsOK,
+		}
 		return nil
 	})
 	return row, err
@@ -718,6 +738,12 @@ func readBatchMembers(ctx context.Context, database *toolbeltdb.Database, batchI
 }
 
 func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport, purgedInfos *int) error {
+	type batchAuditStream struct {
+		id     string
+		events []eventsourcing.Event
+	}
+	streams := make([]batchAuditStream, 0, len(ids))
+	starts := make(map[string]time.Time, len(ids))
 	for _, id := range ids {
 		rep.Checked++
 		events, err := store.Load(ctx, id)
@@ -729,6 +755,11 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 			rep.addSample(maxSamples, fmt.Sprintf("batch %s: stream listed but has no events", id))
 			continue
 		}
+		streams = append(streams, batchAuditStream{id: id, events: events})
+		starts[id] = events[0].CreatedAt
+	}
+	for _, stream := range streams {
+		id, events := stream.id, stream.events
 		agg, err := batch.Replay(id, events)
 		if err != nil {
 			rep.Mismatched++
@@ -740,9 +771,8 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 			return fmt.Errorf("reading batch row %s: %w", id, err)
 		}
 		if !row.found {
-			// Start prunes done batches after 2h; the stream survives by design.
-			// A younger done batch without a row is a missing projection.
-			if agg.Done() && time.Since(events[len(events)-1].CreatedAt) >= 2*time.Hour {
+			lastEvent := events[len(events)-1]
+			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, starts) {
 				*purgedInfos++
 				continue
 			}
@@ -756,10 +786,15 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		}
 		wantTotal := int64(agg.Total())
 		wantCompleted := int64(agg.Completed())
-		if row.total != wantTotal || row.completed != wantCompleted || row.done != wantDone {
+		rowStats := fmt.Sprintf("%v", row.stats)
+		if !row.statsOK {
+			rowStats = "<invalid>"
+		}
+		if row.total != wantTotal || row.completed != wantCompleted || row.done != wantDone ||
+			!row.statsOK || !maps.Equal(row.stats, agg.Stats()) {
 			rep.Mismatched++
-			rep.addSample(maxSamples, fmt.Sprintf("batch %s: row(total=%d completed=%d done=%d) != stream(total=%d completed=%d done=%d)",
-				id, row.total, row.completed, row.done, wantTotal, wantCompleted, wantDone))
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: row(total=%d completed=%d done=%d stats=%s) != stream(total=%d completed=%d done=%d stats=%v)",
+				id, row.total, row.completed, row.done, rowStats, wantTotal, wantCompleted, wantDone, agg.Stats()))
 			continue
 		}
 
@@ -784,4 +819,21 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		}
 	}
 	return auditUnloggedRows(ctx, database, "batches", "id", ids, maxSamples, rep, "batch")
+}
+
+// batchCouldHaveBeenPruned reports whether a later batch start could have run
+// the pruning that removed the missing row. Without a later start, an old done
+// stream still needs its row; exempting it would hide projection loss. The
+// missing row's updated_at is gone, so the final event time is the latest
+// surviving timestamp. A later start must clear it by the full retention.
+func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, starts map[string]time.Time) bool {
+	for otherID, startedAt := range starts {
+		if otherID == id {
+			continue
+		}
+		if startedAt.Sub(lastEventAt) > batchprogress.PruneRetention {
+			return true
+		}
+	}
+	return false
 }

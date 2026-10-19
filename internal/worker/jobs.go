@@ -743,14 +743,29 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 	if w.jobStore == nil {
 		return
 	}
-	type orphanJob struct{ requestID, artistID string }
+	type orphanJob struct{ requestID, artistID, queuedAt string }
 	var candidates []orphanJob
 	if w.db != nil {
 		err := w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("SELECT request_id, artist_id FROM scrape_jobs WHERE status = 'queued' AND queued_at < ? ORDER BY queued_at ASC LIMIT ?;")
+			query := "SELECT request_id, artist_id, queued_at FROM scrape_jobs WHERE status = 'queued' AND queued_at < ?"
+			if w.orphanScanQueuedAt != "" {
+				query += " AND (queued_at > ? OR (queued_at = ? AND request_id > ?))"
+			}
+			query += " ORDER BY queued_at ASC, request_id ASC LIMIT ?;"
+			stmt := tx.Prep(query)
 			defer func() { _ = stmt.Reset() }()
-			stmt.BindText(1, cutoff)
-			stmt.BindInt64(2, orphanedQueuedScanLimit)
+			bind := 1
+			stmt.BindText(bind, cutoff)
+			bind++
+			if w.orphanScanQueuedAt != "" {
+				stmt.BindText(bind, w.orphanScanQueuedAt)
+				bind++
+				stmt.BindText(bind, w.orphanScanQueuedAt)
+				bind++
+				stmt.BindText(bind, w.orphanScanRequestID)
+				bind++
+			}
+			stmt.BindInt64(bind, orphanedQueuedScanLimit)
 			for {
 				hasRow, err := stmt.Step()
 				if err != nil {
@@ -759,7 +774,11 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 				if !hasRow {
 					break
 				}
-				candidates = append(candidates, orphanJob{requestID: stmt.ColumnText(0), artistID: stmt.ColumnText(1)})
+				candidates = append(candidates, orphanJob{
+					requestID: stmt.ColumnText(0),
+					artistID:  stmt.ColumnText(1),
+					queuedAt:  stmt.ColumnText(2),
+				})
 			}
 			return nil
 		})
@@ -768,29 +787,52 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 			return
 		}
 	} else if w.app != nil {
-		records := make([]*core.Record, 0)
-		err := w.app.RecordQuery("scrape_jobs").
+		query := w.app.RecordQuery("scrape_jobs").
 			WithContext(ctx).
-			AndWhere(dbx.NewExp("status = {:status} AND queued_at < {:cutoff}", dbx.Params{"status": "queued", "cutoff": cutoff})).
-			OrderBy("queued_at ASC").
-			Limit(50).
+			AndWhere(dbx.NewExp("status = {:status} AND queued_at < {:cutoff}", dbx.Params{"status": "queued", "cutoff": cutoff}))
+		if w.orphanScanQueuedAt != "" {
+			query = query.AndWhere(dbx.NewExp("(queued_at > {:cursor_at} OR (queued_at = {:cursor_at} AND request_id > {:cursor_id}))",
+				dbx.Params{"cursor_at": w.orphanScanQueuedAt, "cursor_id": w.orphanScanRequestID}))
+		}
+		records := make([]*core.Record, 0)
+		err := query.
+			OrderBy("queued_at ASC", "request_id ASC").
+			Limit(orphanedQueuedScanLimit).
 			All(&records)
 		if err != nil {
 			log.Printf("[worker] Warning: failed to query orphaned queued jobs: %v", err)
 			return
 		}
 		for _, rec := range records {
-			candidates = append(candidates, orphanJob{requestID: rec.GetString("request_id"), artistID: rec.GetString("artist")})
+			candidates = append(candidates, orphanJob{
+				requestID: rec.GetString("request_id"),
+				artistID:  rec.GetString("artist"),
+				queuedAt:  rec.GetString("queued_at"),
+			})
 		}
 	} else {
 		return
 	}
 	if len(candidates) == 0 {
+		w.orphanScanQueuedAt, w.orphanScanRequestID = "", ""
 		return
+	}
+	// A short page means the scan reached the end; restart from the oldest row
+	// next tick. A full page advances the keyset cursor past the rows already
+	// checked (including dispatched rows that stay queued), so older dispatched
+	// rows cannot starve real orphans behind them.
+	if len(candidates) < orphanedQueuedScanLimit {
+		w.orphanScanQueuedAt, w.orphanScanRequestID = "", ""
+	} else {
+		last := candidates[len(candidates)-1]
+		w.orphanScanQueuedAt, w.orphanScanRequestID = last.queuedAt, last.requestID
 	}
 	marked := 0
 	for _, job := range candidates {
 		if ctx.Err() != nil {
+			// Timed out mid-page: restart from the oldest rows so nothing the
+			// cursor already passed is skipped until the next reset.
+			w.orphanScanQueuedAt, w.orphanScanRequestID = "", ""
 			return
 		}
 		if strings.TrimSpace(job.requestID) == "" {
@@ -818,10 +860,8 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 				continue
 			}
 		}
-		// Without a SQLite read model there is no flip to observe; keep the
-		// legacy behavior of mirroring, warning, and counting every sweep hit.
-		flipped := w.db == nil
-		artistFlipped := w.db == nil
+		flipped := false
+		artistFlipped := false
 		if w.db != nil {
 			flipped = w.markOrphanedQueuedRowFailedSQLite(ctx, job.requestID, cutoff)
 			if flipped {
@@ -830,8 +870,15 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 				// stream never opened, so batch members still leave pending.
 				artistFlipped = w.markArtistFetchStatusFailedSQLite(ctx, job.artistID)
 			}
+			// PocketBase stays a best-effort mirror when SQLite is configured.
+			w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
+		} else {
+			// PocketBase-only mode: the guarded save is the authoritative flip,
+			// so its result decides whether the artist failed fact may be
+			// recorded.
+			flipped = w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
+			artistFlipped = flipped
 		}
-		w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
 		if !flipped {
 			continue
 		}
@@ -926,10 +973,11 @@ func (w *Worker) markArtistFetchStatusFailedSQLite(ctx context.Context, artistID
 // flip plus artist failed if still pending (fires the artist.updated hook so
 // batch progress converges without waiting for the reconciler). Best-effort:
 // the SQLite read model stays authoritative when configured.
-func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, cutoff string) {
+func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, cutoff string) bool {
 	if w.app == nil || strings.TrimSpace(requestID) == "" {
-		return
+		return false
 	}
+	saved := false
 	err := w.app.RunInTransaction(func(txApp core.App) error {
 		var guard []*core.Record
 		guardErr := txApp.RecordQuery("scrape_jobs").
@@ -951,11 +999,14 @@ func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, c
 		if err := txApp.Save(job); err != nil {
 			return fmt.Errorf("fail orphaned job %s: %w", requestID, err)
 		}
+		saved = true
 		return w.markStaleJobArtistFailed(ctx, txApp, job.Id, job.GetString("artist"))
 	})
 	if err != nil {
 		log.Printf("[worker] Warning: failed to mirror orphaned queued job %s to PocketBase: %v", requestID, err)
+		return false
 	}
+	return saved
 }
 
 // recordArtistFetchStatusWarn folds a fetch-status fact into the artist stream

@@ -10,6 +10,7 @@ import (
 
 	"zombiezen.com/go/sqlite"
 
+	"ListenLedger/internal/batchprogress"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
@@ -174,14 +175,18 @@ func seedAuditDB(ctx context.Context, t *testing.T, dataDir string) {
 		}
 		return b
 	}
-	batchRow := func(id string, total, completed, done int64) {
-		exec("INSERT INTO batches (id, total, completed, done) VALUES (?, ?, ?, ?);",
+	batchRowStats := func(id string, total, completed, done int64, stats string) {
+		exec("INSERT INTO batches (id, total, completed, done, stats) VALUES (?, ?, ?, ?, ?);",
 			func(s *sqlite.Stmt) {
 				s.BindText(1, id)
 				s.BindInt64(2, total)
 				s.BindInt64(3, completed)
 				s.BindInt64(4, done)
+				s.BindText(5, stats)
 			})
+	}
+	batchRow := func(id string, total, completed, done int64) {
+		batchRowStats(id, total, completed, done, `{"priority":1}`)
 	}
 	memberRow := func(batchID, artistID string, done int64) {
 		exec("INSERT INTO batch_members (batch_id, artist_id, done) VALUES (?, ?, ?);",
@@ -212,6 +217,30 @@ func seedAuditDB(ctx context.Context, t *testing.T, dataDir string) {
 
 	bNoRow := newBatch("bt_norow", []string{"ar_1"})
 	appendAgg("bt_norow", 0, bNoRow.UncommittedEvents()...)
+
+	bMemberDrift := newBatch("bt_member_drift", []string{"ar_1", "ar_2"})
+	if _, _, err := bMemberDrift.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	appendAgg("bt_member_drift", 0, bMemberDrift.UncommittedEvents()...)
+	batchRow("bt_member_drift", 2, 1, 0)
+	memberRow("bt_member_drift", "ar_1", 0)
+	memberRow("bt_member_drift", "ar_2", 0)
+
+	bStats := newBatch("bt_stats", []string{"ar_1"})
+	appendAgg("bt_stats", 0, bStats.UncommittedEvents()...)
+	batchRowStats("bt_stats", 1, 0, 0, `{"priority":2}`)
+	memberRow("bt_stats", "ar_1", 0)
+
+	bPruned := newBatch("bt_pruned", []string{"ar_1"})
+	if _, _, err := bPruned.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	appendAgg("bt_pruned", 0, bPruned.UncommittedEvents()...)
+	exec("UPDATE events SET created_at = ? WHERE stream_id = 'bt_pruned';",
+		func(s *sqlite.Stmt) {
+			s.BindText(1, time.Now().Add(-3*time.Hour).UTC().Format(time.RFC3339Nano))
+		})
 
 	batchRow("bt_nostream", 1, 1, 1)
 }
@@ -251,14 +280,14 @@ func TestAuditFindsDivergence(t *testing.T) {
 	if rep.Jobs.Mismatched != 1 || rep.Jobs.MissingRows != 1 || rep.Jobs.UnloggedRows != 1 {
 		t.Fatalf("jobs = %+v, want 1 mismatch + 1 missing + 1 unlogged", rep.Jobs)
 	}
-	if rep.Batches.Checked != 3 {
-		t.Fatalf("batches checked = %d, want 3", rep.Batches.Checked)
+	if rep.Batches.Checked != 6 {
+		t.Fatalf("batches checked = %d, want 6", rep.Batches.Checked)
 	}
-	if rep.Batches.Mismatched != 1 || rep.Batches.MissingRows != 1 || rep.Batches.UnloggedRows != 1 {
-		t.Fatalf("batches = %+v, want 1 mismatch + 1 missing + 1 unlogged", rep.Batches)
+	if rep.Batches.Mismatched != 3 || rep.Batches.MissingRows != 1 || rep.Batches.UnloggedRows != 1 {
+		t.Fatalf("batches = %+v, want 3 mismatches + 1 missing + 1 unlogged", rep.Batches)
 	}
-	if rep.PurgedInfos != 1 {
-		t.Fatalf("purged infos = %d, want 1", rep.PurgedInfos)
+	if rep.PurgedInfos != 2 {
+		t.Fatalf("purged infos = %d, want 2", rep.PurgedInfos)
 	}
 	if !rep.hasMismatch() {
 		t.Fatal("hasMismatch should be true")
@@ -484,51 +513,6 @@ func TestAuditCensusWarnsInJetstreamMode(t *testing.T) {
 	}
 }
 
-func TestAuditPurgedDoneBatch(t *testing.T) {
-	ctx := t.Context()
-	dataDir := t.TempDir()
-	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
-	if err != nil {
-		t.Fatalf("SetupDB: %v", err)
-	}
-	store := eventsourcing.NewSQLiteStore(database)
-	b, err := batch.NewBatch("bt_purged_done", []string{"ar_1"}, nil)
-	if err != nil {
-		t.Fatalf("NewBatch: %v", err)
-	}
-	if _, _, err := b.RecordCompletion("ar_1"); err != nil {
-		t.Fatalf("RecordCompletion: %v", err)
-	}
-	if !b.Done() {
-		t.Fatalf("fixture batch should be done")
-	}
-	events := b.UncommittedEvents()
-	for i := range events {
-		events[i].CreatedAt = time.Now().Add(-3 * time.Hour)
-	}
-	if err := store.Append(ctx, "bt_purged_done", 0, events...); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	_ = database.Close()
-	selected := map[string]struct{}{batch.StreamTypeBatch: {}}
-	rep, err := audit(ctx, dataDir, selected, 20)
-	if err != nil {
-		t.Fatalf("audit: %v", err)
-	}
-	if rep.Batches.MissingRows != 0 {
-		t.Fatalf("purged done batch should not count as missing: %+v", rep.Batches)
-	}
-	if rep.Batches.Checked != 1 {
-		t.Fatalf("batches checked = %d, want 1", rep.Batches.Checked)
-	}
-	if rep.PurgedInfos != 1 {
-		t.Fatalf("purged infos = %d, want 1", rep.PurgedInfos)
-	}
-	if rep.hasMismatch() {
-		t.Fatalf("purged done batch should be clean: %+v", rep.Batches)
-	}
-}
-
 func TestAuditRecentDoneBatchMissingRow(t *testing.T) {
 	ctx := t.Context()
 	dataDir := t.TempDir()
@@ -563,4 +547,77 @@ func TestAuditRecentDoneBatchMissingRow(t *testing.T) {
 	if !rep.hasMismatch() {
 		t.Fatalf("recent done batch missing row should trigger hasMismatch")
 	}
+}
+
+func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	store := eventsourcing.NewSQLiteStore(database)
+	batches := batchprogress.NewStore(database, store)
+
+	if _, err := batches.Start(ctx, "bt_old_norow", []string{"ar_1"}, map[string]int{"priority": 1}, time.Time{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := batches.CompleteArtist(ctx, "ar_1", "idle"); err != nil {
+		t.Fatalf("CompleteArtist: %v", err)
+	}
+
+	old := time.Now().Add(-6 * time.Hour).UTC().Format(time.RFC3339Nano)
+	err = database.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE events SET created_at = ? WHERE stream_id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, old)
+		stmt.BindText(2, "bt_old_norow")
+		if _, err := stmt.Step(); err != nil {
+			return err
+		}
+		del := tx.Prep("DELETE FROM batches WHERE id = ?;")
+		defer func() { _ = del.Reset() }()
+		del.BindText(1, "bt_old_norow")
+		_, err := del.Step()
+		return err
+	})
+	if err != nil {
+		t.Fatalf("age and remove batch row: %v", err)
+	}
+
+	t.Run("no later start reports missing", func(t *testing.T) {
+		rep := &streamReport{}
+		if err := auditBatches(ctx, database, store, []string{"bt_old_norow"}, 10, rep, new(int)); err != nil {
+			t.Fatalf("auditBatches: %v", err)
+		}
+		if rep.MissingRows != 1 {
+			t.Fatalf("MissingRows = %d, want 1 without a later pruning start", rep.MissingRows)
+		}
+		if rep.Mismatched != 0 {
+			t.Fatalf("Mismatched = %d, want 0", rep.Mismatched)
+		}
+	})
+
+	t.Run("later start crossing cutoff exempts", func(t *testing.T) {
+		if _, err := batches.Start(ctx, "bt_later", []string{"ar_1"}, map[string]int{"priority": 1}, time.Time{}); err != nil {
+			t.Fatalf("Start later batch: %v", err)
+		}
+		rep := &streamReport{}
+		purged := 0
+		if err := auditBatches(ctx, database, store, []string{"bt_old_norow", "bt_later"}, 10, rep, &purged); err != nil {
+			t.Fatalf("auditBatches: %v", err)
+		}
+		if rep.MissingRows != 0 {
+			t.Fatalf("MissingRows = %d, want 0 when a later start crossed the cutoff", rep.MissingRows)
+		}
+		if rep.Mismatched != 0 {
+			t.Fatalf("Mismatched = %d, want 0", rep.Mismatched)
+		}
+		if purged != 1 {
+			t.Fatalf("purged = %d, want 1 exempted stream", purged)
+		}
+	})
 }

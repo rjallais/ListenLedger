@@ -29,6 +29,10 @@ type Snapshot struct {
 	Done      bool           `json:"done"`
 }
 
+// PruneRetention is how long completed batch rows are kept before the next
+// batch start removes them. Batch streams outlive their rows.
+const PruneRetention = 2 * time.Hour
+
 // Store projects batch lifecycle into SQLite.
 type Store struct {
 	db *toolbeltdb.Database

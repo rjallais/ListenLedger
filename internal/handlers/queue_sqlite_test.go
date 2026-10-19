@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/correlation"
@@ -302,5 +303,26 @@ func TestIsArtistRefreshPending_AggregateState(t *testing.T) {
 	}
 	if dup, _ := h.isArtistRefreshPending(ctx, "ar_v1"); !dup {
 		t.Fatal("pending artist should read as pending (restart-surviving duplicate detection)")
+	}
+}
+
+func TestShouldSkipStreamPurgeRequiresPrimaryCounts(t *testing.T) {
+	h := &Handler{}
+	streamInfo := &jetstream.StreamInfo{State: jetstream.StreamState{Msgs: 1}}
+
+	if h.shouldSkipStreamPurge(streamInfo, true, true, 0, 0) {
+		t.Fatal("purge should run when stream, primary counts, and consumer counts are all available")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, false, 0, 0) {
+		t.Fatal("purge must be skipped when only provider fallback counts are available")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, true, 1, 0) {
+		t.Fatal("purge must be skipped with unacked primary requests")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, true, 0, 1) {
+		t.Fatal("purge must be skipped with redelivered primary requests")
+	}
+	if !h.shouldSkipStreamPurge(nil, true, true, 0, 0) {
+		t.Fatal("purge must be skipped without stream info")
 	}
 }

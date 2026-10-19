@@ -331,17 +331,19 @@ func SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort 
 
 // songRecentChangeAction is the delegated change handler for a songs <tbody>.
 // Disabling the clicked checkbox prevents double submits; the SSE response
-// morphs the sections, which restores it. The prior checked state is stashed
-// so songRecentFetchErrorAction can restore it if the fetch fails before any
-// morph lands.
+// morphs the sections, which restores it. Only one row toggle may be in flight
+// per tbody: a second change is reverted so the document-scoped failure
+// handler can identify the single disabled checkbox. The prior checked state is
+// stashed so songRecentFetchErrorAction can restore it if the fetch fails
+// before any morph lands.
 func songRecentChangeAction() string {
-	return "if (evt.target.dataset.songId) { evt.target.dataset.wasChecked = String(!evt.target.checked); evt.target.disabled = true; @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
+	return "if (evt.target.dataset.songId) { const tbody = evt.target.closest('tbody'); if (tbody && tbody.querySelector('input[data-song-id]:disabled')) { evt.target.checked = !evt.target.checked; return; } evt.target.dataset.wasChecked = String(!evt.target.checked); evt.target.disabled = true; @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
 }
 
 // songRecentFetchErrorAction re-enables the in-flight checkbox when a recent
 // toggle fetch errors (Datastar dispatches document-scoped datastar-fetch
 // events; detail.el is the element carrying the action attribute — here the
-// <tbody> hosting the delegated change handler). Only the submitting checkbox
+// <tbody> hosting the delegated change handler). Exactly one checkbox per tbody
 // is disabled, and it is re-checked from the stashed pre-click state.
 func songRecentFetchErrorAction() string {
 	return "if ((evt.detail.type === 'error' || evt.detail.type === 'retries-failed') && evt.detail.el) { const box = evt.detail.el.querySelector('input[data-song-id]:disabled'); if (box) { box.disabled = false; if (box.dataset.wasChecked !== undefined) { box.checked = box.dataset.wasChecked === 'true' } } }"

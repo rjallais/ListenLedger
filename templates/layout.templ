@@ -63,14 +63,15 @@ templ Layout(title string, activeNav string) {
 				document.addEventListener('datastar-ready', () => { window.__datastarReady = true; }, { once: true });
 			</script>
 			<script type="module">
-				// Fire the live-lane start once Datastar has scanned the DOM.
-				// Waiting for the import to resolve is not enough: the scan
-				// completes on datastar-ready, slightly later, and a
-				// datastar-booted event dispatched earlier would find no
-				// listener attached yet. The SSE and hot-reload lanes listen
-				// for `datastar-booted` instead of `load` directly, so a
-				// prerendered page — where `load` may fire before Datastar
-				// boots — still opens them.
+				// Fire the live-lane start once Datastar has scanned the DOM
+				// and the window has finished loading, so long-lived SSE lanes
+				// never compete with page-load requests. Waiting for the import
+				// to resolve is not enough: the scan completes on
+				// datastar-ready, slightly later, and a datastar-booted event
+				// dispatched earlier would find no listener attached yet. The
+				// SSE and hot-reload lanes listen for `datastar-booted` instead
+				// of `load` directly, so a prerendered page — where `load` may
+				// fire before Datastar boots — still opens them.
 				let booted = false;
 				function openLiveLanes() {
 					if (booted) return;
@@ -79,11 +80,24 @@ templ Layout(title string, activeNav string) {
 				}
 				function bootDatastar() {
 					import('datastar').then(() => {
-						if (window.__datastarReady) {
+						// Start only after both Datastar's DOM scan and the window
+						// load event, so long-lived SSE lanes never compete with
+						// page-load requests. Either event may arrive first.
+						let started = false;
+						const start = () => {
+							if (started || !window.__datastarReady || document.readyState !== 'complete') {
+								return;
+							}
+							started = true;
 							openLiveLanes();
-							return;
+						};
+						if (!window.__datastarReady) {
+							document.addEventListener('datastar-ready', start, { once: true });
 						}
-						document.addEventListener('datastar-ready', openLiveLanes, { once: true });
+						if (document.readyState !== 'complete') {
+							window.addEventListener('load', start, { once: true });
+						}
+						start();
 					}).catch(() => {
 						openLiveLanes();
 					});
@@ -218,7 +232,7 @@ templ SSEIndicator() {
 		class="flex items-center gap-2"
 		data-signals="{_sseStatus: 'connected'}"
 		data-on:datastar-booted__window="@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})"
-		data-on:datastar-fetch="if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' }"
+		data-on:datastar-fetch__document="if (evt.detail.el?.id === 'sse-indicator-container') { if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' } }"
 	>
 		<span
 			id="sse-indicator"
