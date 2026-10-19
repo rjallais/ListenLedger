@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"testing"
@@ -455,7 +456,7 @@ func TestSQLiteStore_AppendBatchIsAtomicOnConflict(t *testing.T) {
 			return err
 		}
 		if hasRow && stmt.ColumnInt(0) != 0 {
-			t.Errorf("outbox holds %d rows for atomic-s1's event despite batch rejection", stmt.ColumnInt(0))
+			return fmt.Errorf("outbox holds %d rows for atomic-s1's event despite batch rejection", stmt.ColumnInt(0))
 		}
 		return nil
 	}); err != nil {
