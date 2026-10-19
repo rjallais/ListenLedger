@@ -290,7 +290,7 @@ func TestHealerTermsUnfoldableCatalogStreams(t *testing.T) {
 // type to its projection without erroring on unsupported types.
 func TestHealerHandlesAllStreamTypes(t *testing.T) {
 	ctx := context.Background()
-	_, store, h, cleanup := setupHeal(t)
+	database, store, h, cleanup := setupHeal(t)
 	defer cleanup()
 
 	cases := []struct {
@@ -300,13 +300,13 @@ func TestHealerHandlesAllStreamTypes(t *testing.T) {
 		payload    map[string]any
 		version    int64
 	}{
-		{artist.StreamTypeArtist, artist.StreamTypeArtist, artist.EventTypeArtistCreated,
+		{"ar_all", artist.StreamTypeArtist, artist.EventTypeArtistCreated,
 			map[string]any{"id": "ar_all", "name": "All", "spotify_id": "sp_all",
 				"genre_group": "rock_metal", "list_status": "waiting"}, 1},
-		{album.StreamTypeAlbum, album.StreamTypeAlbum, album.EventTypeAlbumCreated,
+		{"al_all", album.StreamTypeAlbum, album.EventTypeAlbumCreated,
 			map[string]any{"id": "al_all", "title": "All", "artist_name": "Artist",
 				"status": "waiting", "collection_songs": 0, "total_songs": 0}, 1},
-		{song.StreamTypeSong, song.StreamTypeSong, song.EventTypeSongCreated,
+		{"sg_all", song.StreamTypeSong, song.EventTypeSongCreated,
 			map[string]any{"id": "sg_all", "title": "All", "artist_name": "Artist",
 				"album": "", "release_date": "", "release_year": 0, "release_type": "",
 				"spotify_id": "sp_all", "is_recent": false, "recent_batch_seq": 0,
@@ -332,6 +332,35 @@ func TestHealerHandlesAllStreamTypes(t *testing.T) {
 	}
 	if err := h.HandleEvent(ctx, scrapeEvt); err != nil {
 		t.Fatalf("HandleEvent(scrapejob): %v", err)
+	}
+
+	for _, table := range []struct {
+		table string
+		id    string
+	}{
+		{"artists", "ar_all"},
+		{"albums", "al_all"},
+		{"songs", "sg_all"},
+	} {
+		var count int
+		if err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT count(*) FROM " + table.table + " WHERE id = ?;")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, table.id)
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if hasRow {
+				count = int(stmt.ColumnInt(0))
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("read %s: %v", table.table, err)
+		}
+		if count != 1 {
+			t.Fatalf("%s row for %s: count %d, want 1", table.table, table.id, count)
+		}
 	}
 }
 

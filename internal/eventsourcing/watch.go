@@ -278,36 +278,37 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 		}
 	})
 
+	stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("jetstream watch: stream lookup: %w", err)
+	}
+	// NATS consumer names must not contain '.', '*', '>' or whitespace.
+	// A random UUID keeps concurrent watchers on separate consumers.
+	name := "watch_" + strings.ReplaceAll(uuid.New().String(), "-", "")
+	ccfg := jetstream.ConsumerConfig{
+		Durable:           name,
+		AckPolicy:         jetstream.AckNonePolicy,
+		InactiveThreshold: 30 * time.Second,
+		MemoryStorage:     true,
+		DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:       uint64(afterPosition + 1),
+	}
+	// Multiple patterns may overlap, and the server rejects overlapping
+	// FilterSubjects. wcfg.matches already filters on the client side.
+	if subjects := wcfg.subjectFilters(); len(subjects) == 1 {
+		ccfg.FilterSubject = subjects[0]
+	} else {
+		ccfg.FilterSubject = messaging.SubjectDomainEventsWildcard
+	}
+	cons, err := stream.CreateOrUpdateConsumer(ctx, ccfg)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("jetstream watch: create consumer: %w", err)
+	}
+
 	go func() {
 		defer close(w.events)
-		stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
-		if err != nil {
-			slog.Warn("[jetstream watch] stream lookup failed", "error", err)
-			return
-		}
-		// NATS consumer names must not contain '.', '*', '>' or whitespace.
-		// A random UUID keeps concurrent watchers on separate consumers.
-		name := "watch_" + strings.ReplaceAll(uuid.New().String(), "-", "")
-		ccfg := jetstream.ConsumerConfig{
-			Durable:           name,
-			AckPolicy:         jetstream.AckNonePolicy,
-			InactiveThreshold: 30 * time.Second,
-			MemoryStorage:     true,
-			DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
-			OptStartSeq:       uint64(afterPosition + 1),
-		}
-		// Multiple patterns may overlap, and the server rejects overlapping
-		// FilterSubjects. wcfg.matches already filters on the client side.
-		if subjects := wcfg.subjectFilters(); len(subjects) == 1 {
-			ccfg.FilterSubject = subjects[0]
-		} else {
-			ccfg.FilterSubject = messaging.SubjectDomainEventsWildcard
-		}
-		cons, err := stream.CreateOrUpdateConsumer(ctx, ccfg)
-		if err != nil {
-			slog.Warn("[jetstream watch] consumer creation failed", "error", err)
-			return
-		}
 		defer func() {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 			defer cancel()

@@ -553,8 +553,14 @@ func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *l
 	if createErr != nil {
 		return nil, createErr
 	}
-	if _, err := h.songRepo.Save(ctx, createAgg); err != nil {
+	events, err := h.songRepo.Save(ctx, createAgg)
+	if err != nil {
 		return nil, err
+	}
+	if h.catalogProjection != nil && len(events) > 0 {
+		if err := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); err != nil {
+			return nil, err
+		}
 	}
 	return h.songRepo.Load(ctx, songID)
 }

@@ -354,15 +354,18 @@ func TestRunApplyRequiresReviewAndStaleLink(t *testing.T) {
 	}
 
 	// sg_review should NOT have been applied by --approve-all-above 0.90 because requires_review is true
+	if len(rep.Proposals) != 2 {
+		t.Fatalf("report has %d proposals, want 2", len(rep.Proposals))
+	}
 	if rep.Proposals[0].Applied {
-		t.Errorf("proposal with requires_review=true must not be applied by threshold approval")
+		t.Fatalf("proposal with requires_review=true must not be applied by threshold approval")
 	}
 
 	// sg_stale was approved=true, but song is already linked to tidal-existing (not ""), so it should be skipped as stale
 	if rep.Proposals[1].Applied {
-		t.Errorf("stale link proposal must not be applied")
+		t.Fatalf("stale link proposal must not be applied")
 	}
 	if !strings.Contains(rep.Proposals[1].Note, "stale proposal: song now linked to tidal-existing") {
-		t.Errorf("expected stale proposal note, got %q", rep.Proposals[1].Note)
+		t.Fatalf("expected stale proposal note, got %q", rep.Proposals[1].Note)
 	}
 }

@@ -7,17 +7,13 @@ import (
 )
 
 func TestFindProjectConfig(t *testing.T) {
-	tmp := t.TempDir()
-	origWd, err := os.Getwd()
+	tmp, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
-		t.Fatalf("Getwd: %v", err)
+		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	defer func() { _ = os.Chdir(origWd) }()
 
 	// Case 1: no fnox.toml in tree
-	if err := os.Chdir(tmp); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(tmp)
 	got, err := findProjectConfig()
 	if err != nil {
 		t.Fatalf("findProjectConfig error: %v", err)
@@ -35,9 +31,7 @@ func TestFindProjectConfig(t *testing.T) {
 	if err := os.MkdirAll(subDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.Chdir(subDir); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(subDir)
 	got, err = findProjectConfig()
 	if err != nil {
 		t.Fatalf("findProjectConfig in sub-dir error: %v", err)
