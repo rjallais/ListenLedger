@@ -106,3 +106,19 @@ func TestBatchProgressTrackerRejectsStaleAndDone(t *testing.T) {
 		t.Fatal("a different batch should be accepted")
 	}
 }
+
+func TestBatchProgressTrackerApplySkipsRejectedSnapshot(t *testing.T) {
+	tracker := newBatchProgressTracker()
+	if !tracker.apply(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 2, Done: true}, func() {}) {
+		t.Fatal("completion snapshot should be accepted")
+	}
+	patched := false
+	if tracker.apply(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 1}, func() {
+		patched = true
+	}) {
+		t.Fatal("stale snapshot should be rejected")
+	}
+	if patched {
+		t.Fatal("rejected stale snapshot must not be patched")
+	}
+}

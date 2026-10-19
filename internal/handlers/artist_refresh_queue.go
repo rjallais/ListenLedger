@@ -442,8 +442,8 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 			statusStmt := tx.Prep(`UPDATE artists SET fetch_status = 'pending' WHERE id = ?;`)
 			defer func() { _ = statusStmt.Reset() }()
 			for _, candidate := range candidates {
-				if ctx.Err() != nil {
-					break
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 				_ = stmt.Reset()
 				stmt.BindText(1, candidate.requestID)
