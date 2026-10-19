@@ -191,13 +191,15 @@ func RenderTempl(w http.ResponseWriter, r *http.Request, component templ.Compone
 		// Callers discard this error, so answer here rather than
 		// returning a bare 200 with an empty body.
 		http.Error(w, "Failed to render page", http.StatusInternalServerError)
-		return err
+		return fmt.Errorf("render templ component: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-	_, err := buf.WriteTo(w)
-	return err
+	if _, err := buf.WriteTo(w); err != nil {
+		return fmt.Errorf("write templ response: %w", err)
+	}
+	return nil
 }
 
 // RenderDatastar renders a templ component patch via Datastar SSE using Handler configuration.

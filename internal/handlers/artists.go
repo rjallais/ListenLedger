@@ -303,12 +303,12 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 func (h *Handler) fetchArtistGenrePage(ctx context.Context, genre string, page, limit int) ([]templates.Artist, int, error) {
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("count artists in genre %q: %w", genre, err)
 	}
 
 	artists, err := h.fetchArtistSlice(ctx, genre, page, limit, totalCount)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("fetch artist page %d for genre %q: %w", page, genre, err)
 	}
 	return artists, totalCount, nil
 }
@@ -353,7 +353,7 @@ func (h *Handler) fetchArtistSlice(ctx context.Context, genre string, page, limi
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read artist rows for genre %q (sqlite): %w", genre, err)
 		}
 		return artists, nil
 	}
@@ -367,7 +367,7 @@ func (h *Handler) fetchArtistSlice(ctx context.Context, genre string, page, limi
 		Offset(int64(offset)).
 		All(&records)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query artist records for genre %q: %w", genre, err)
 	}
 
 	return artistsFromRankedRecords(records, totalCount, offset), nil

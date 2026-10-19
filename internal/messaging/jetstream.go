@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -118,6 +119,7 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 	if discard == 0 {
 		discard = jetstream.DiscardOld
 	}
+	warnCompressionDeferred(ctx, js, sc, displayName)
 	cfg := jetstream.StreamConfig{
 		Name:        sc.Name,
 		Subjects:    sc.Subjects,
@@ -136,6 +138,26 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 		return fmt.Errorf("ensure %s stream: %w", displayName, err)
 	}
 	return nil
+}
+
+// warnCompressionDeferred logs a one-boot warning when an existing stream's
+// live compression differs from the configured codec: nats-server accepts
+// the config update but the active file store keeps its old codec until the
+// next server restart, after which the stored config self-heals. Missing
+// streams or lookup errors stay silent; this is observability, not migration.
+func warnCompressionDeferred(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) {
+	if sc.Compression == jetstream.NoCompression {
+		return
+	}
+	existing, err := js.Stream(ctx, sc.Name)
+	if err != nil {
+		return
+	}
+	info := existing.CachedInfo()
+	if info == nil || info.Config.Compression == sc.Compression {
+		return
+	}
+	log.Printf("[messaging] %s stream: compression %s applies to new blocks after the next server restart", displayName, sc.Compression)
 }
 
 // EnsureScrapeRequestStream creates or updates the scrape request stream.

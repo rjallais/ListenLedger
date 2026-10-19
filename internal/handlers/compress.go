@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/CAFxX/httpcompression"
@@ -59,7 +60,7 @@ func mustCompressMiddleware() func(http.Handler) http.Handler {
 		httpcompression.Compressor(brotli.Encoding, brotliPriority, mustBrotliCompressor()),
 	)
 	if err != nil {
-		panic("handlers: build compression middleware: " + err.Error())
+		panic(fmt.Errorf("handlers: build compression middleware: %w", err))
 	}
 	return mw
 }
@@ -68,7 +69,7 @@ func mustCompressMiddleware() func(http.Handler) http.Handler {
 func mustBrotliCompressor() httpcompression.CompressorProvider {
 	c, err := brotli.New(brotli.Options{Quality: brotliLevel})
 	if err != nil {
-		panic("handlers: build brotli compressor: " + err.Error())
+		panic(fmt.Errorf("handlers: build brotli compressor: %w", err))
 	}
 	return c
 }

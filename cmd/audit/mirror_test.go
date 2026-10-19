@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	"log/slog"
 	"testing"
+
+	"zombiezen.com/go/sqlite"
+
+	"ListenLedger/internal/db"
 )
 
 func mirrorRowFor(id string, fields map[string]any) mirrorRow {
@@ -51,6 +57,50 @@ func TestCompareMirrorsFindsDrift(t *testing.T) {
 	// Only the first differing field is sampled per row.
 	if len(rep.Samples) != 3 {
 		t.Fatalf("samples = %d, want 3", len(rep.Samples))
+	}
+}
+
+func TestFetchSQLiteSongsLoadsTidalID(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("INSERT INTO songs (id, title, artist_name, tidal_id) VALUES ('s1', 'One', 'Artist', 'td_s1');")
+		defer func() { _ = stmt.Reset() }()
+		_, err := stmt.Step()
+		return err
+	}); err != nil {
+		t.Fatalf("insert song: %v", err)
+	}
+
+	rows, err := fetchSQLiteSongs(ctx, database)
+	if err != nil {
+		t.Fatalf("fetchSQLiteSongs: %v", err)
+	}
+	if len(rows) != 1 || rows[0].id != "s1" {
+		t.Fatalf("rows = %+v, want one row for s1", rows)
+	}
+	if rows[0].fields["tidal_id"] != "td_s1" {
+		t.Fatalf("tidal_id = %v, want td_s1", rows[0].fields["tidal_id"])
+	}
+
+	fields := []string{"title", "artist_name", "is_recent", "album", "release_date", "release_year", "release_type", "spotify_id", "tidal_id", "duplicate_of"}
+	pb := []mirrorRow{mirrorRowFor("s1", map[string]any{
+		"title": "One", "artist_name": "Artist", "is_recent": int64(0), "album": "",
+		"release_date": "", "release_year": int64(0), "release_type": "", "spotify_id": "",
+		"tidal_id": "td_s1", "duplicate_of": "",
+	})}
+	if rep := compareMirrors("song", fields, pb, rows, 20); rep.hasMismatch() {
+		t.Fatalf("matching mirrors should not mismatch: %+v", rep)
+	}
+
+	pb[0].fields["tidal_id"] = "td_drift"
+	if rep := compareMirrors("song", fields, pb, rows, 20); rep.Mismatched != 1 {
+		t.Fatalf("mismatched = %d, want 1 (tidal_id drift)", rep.Mismatched)
 	}
 }
 
