@@ -460,6 +460,8 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 			return nil
 		}); err != nil {
 			log.Printf("[batch] Warning: failed to mirror %d scrape jobs to SQLite: %v", len(candidates), err)
+			h.abortBatchRefreshCandidates(candidates)
+			return fmt.Errorf("mirroring %d batch scrape jobs to SQLite: %w", len(candidates), err)
 		}
 	}
 	return nil

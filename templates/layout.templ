@@ -227,7 +227,7 @@ templ SSEIndicator() {
 		class="flex items-center gap-2"
 		data-signals="{_sseStatus: 'connected'}"
 		data-on:datastar-booted__window="@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})"
-		data-on:datastar-fetch__document="if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' }"
+		data-on:datastar-fetch__document="if (evt.detail.el?.id === 'sse-indicator-container') { if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' } }"
 	>
 		<span
 			id="sse-indicator"
