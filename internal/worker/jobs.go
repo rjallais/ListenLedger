@@ -871,13 +871,12 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 				artistFlipped = w.markArtistFetchStatusFailedSQLite(ctx, job.artistID)
 			}
 			// PocketBase stays a best-effort mirror when SQLite is configured.
-			w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
+			_, _ = w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
 		} else {
 			// PocketBase-only mode: the guarded save is the authoritative flip,
-			// so its result decides whether the artist failed fact may be
-			// recorded.
-			flipped = w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
-			artistFlipped = flipped
+			// so its job and artist results decide whether the artist failed
+			// fact may be recorded.
+			flipped, artistFlipped = w.markOrphanedQueuedJobFailedPB(ctx, job.requestID, cutoff)
 		}
 		if !flipped {
 			continue
@@ -970,14 +969,14 @@ func (w *Worker) markArtistFetchStatusFailedSQLite(ctx context.Context, artistID
 }
 
 // markOrphanedQueuedJobFailedPB mirrors the sweep to PocketBase: guarded job
-// flip plus artist failed if still pending (fires the artist.updated hook so
-// batch progress converges without waiting for the reconciler). Best-effort:
-// the SQLite read model stays authoritative when configured.
-func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, cutoff string) bool {
+// flip plus artist failed if still pending and no newer queued/processing job
+// owns the artist (fires the artist.updated hook so batch progress converges
+// without waiting for the reconciler). Best-effort: the SQLite read model stays
+// authoritative when configured.
+func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, cutoff string) (jobFlipped, artistFlipped bool) {
 	if w.app == nil || strings.TrimSpace(requestID) == "" {
-		return false
+		return false, false
 	}
-	saved := false
 	err := w.app.RunInTransaction(func(txApp core.App) error {
 		var guard []*core.Record
 		guardErr := txApp.RecordQuery("scrape_jobs").
@@ -999,14 +998,32 @@ func (w *Worker) markOrphanedQueuedJobFailedPB(ctx context.Context, requestID, c
 		if err := txApp.Save(job); err != nil {
 			return fmt.Errorf("fail orphaned job %s: %w", requestID, err)
 		}
-		saved = true
-		return w.markStaleJobArtistFailed(ctx, txApp, job.Id, job.GetString("artist"))
+		jobFlipped = true
+
+		artistID := job.GetString("artist")
+		var live []*core.Record
+		if err := txApp.RecordQuery("scrape_jobs").
+			WithContext(ctx).
+			AndWhere(dbx.NewExp("artist = {:artist} AND status IN ('queued','processing')", dbx.Params{"artist": artistID})).
+			Limit(1).
+			All(&live); err != nil {
+			return fmt.Errorf("check live jobs for artist %s: %w", artistID, err)
+		}
+		if len(live) > 0 {
+			return nil
+		}
+		flipped, err := w.markStaleJobArtistFailed(ctx, txApp, job.Id, artistID)
+		if err != nil {
+			return err
+		}
+		artistFlipped = flipped
+		return nil
 	})
 	if err != nil {
 		log.Printf("[worker] Warning: failed to mirror orphaned queued job %s to PocketBase: %v", requestID, err)
-		return false
+		return false, false
 	}
-	return saved
+	return jobFlipped, artistFlipped
 }
 
 // recordArtistFetchStatusWarn folds a fetch-status fact into the artist stream
@@ -1089,16 +1106,18 @@ func (w *Worker) markSingleStaleJob(ctx context.Context, job *core.Record, cutof
 		}
 		jobUpdated = true
 
-		return w.markStaleJobArtistFailed(ctx, txApp, job.Id, freshJob.GetString("artist"))
+		_, err = w.markStaleJobArtistFailed(ctx, txApp, job.Id, freshJob.GetString("artist"))
+		return err
 	})
 	return jobUpdated, err
 }
 
 // markStaleJobArtistFailed updates the artist's fetch_status to "failed" if it
-// is currently "pending". It is called inside the same transaction as the job update.
-func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, jobID string, artistID string) error {
+// is currently "pending". It reports whether the artist row was flipped. It is
+// called inside the same transaction as the job update.
+func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, jobID string, artistID string) (bool, error) {
 	if artistID == "" {
-		return nil
+		return false, nil
 	}
 	artist, err := txApp.FindRecordById("artists", artistID, func(q *dbx.SelectQuery) error {
 		q.WithContext(ctx)
@@ -1107,19 +1126,19 @@ func (w *Worker) markStaleJobArtistFailed(ctx context.Context, txApp core.App, j
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("[markStaleJobArtistFailed] artist %s not found for job %s; no-op — job already failed", artistID, jobID)
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)
+		return false, fmt.Errorf("failed to load artist %s for stale job %s: %w", artistID, jobID, err)
 	}
 	if artist.GetString("fetch_status") != "pending" {
-		return nil
+		return false, nil
 	}
 	artist.Set("fetch_status", "failed")
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if err := txApp.Save(artist); err != nil {
-		return fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, jobID, err)
+		return false, fmt.Errorf("failed to save artist %s for stale job %s: %w", artistID, jobID, err)
 	}
-	return nil
+	return true, nil
 }
