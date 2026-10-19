@@ -65,7 +65,7 @@ func loadSongsMissingMetadata(ctx context.Context, database *toolbeltdb.Database
 // migration dropped from the PocketBase songs table (data.db in the same
 // data dir), keyed by song id — the migration copies PB ids verbatim. A
 // missing data.db (PocketBase retired) yields no labels.
-func loadPocketBaseReleaseTypes(dataDir string) (map[string]string, error) {
+func loadPocketBaseReleaseTypes(ctx context.Context, dataDir string) (map[string]string, error) {
 	path := filepath.Join(dataDir, "data.db")
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -82,6 +82,9 @@ func loadPocketBaseReleaseTypes(dataDir string) (map[string]string, error) {
 	stmt := conn.Prep("SELECT id, release_type FROM songs WHERE TRIM(release_type) != '';")
 	defer func() { _ = stmt.Reset() }()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("reading PocketBase release types: %w", err)
+		}
 		hasRow, err := stmt.Step()
 		if err != nil {
 			return nil, fmt.Errorf("reading PocketBase release types: %w", err)

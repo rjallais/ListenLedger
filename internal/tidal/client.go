@@ -378,7 +378,7 @@ func (c *Client) FetchFavoriteAlbums(ctx context.Context, userID string, limit i
 	for nextURL != "" {
 		resp, err := c.doRequest(ctx, nextURL)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("requesting favorite albums: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
@@ -388,7 +388,7 @@ func (c *Client) FetchFavoriteAlbums(ctx context.Context, userID string, limit i
 		var payload jsonAPIResponse
 		if err := json.UnmarshalRead(resp.Body, &payload); err != nil {
 			_ = resp.Body.Close()
-			return nil, err
+			return nil, fmt.Errorf("decoding favorite albums response: %w", err)
 		}
 		_ = resp.Body.Close()
 
@@ -450,7 +450,7 @@ func (c *Client) FetchFavoriteArtists(ctx context.Context, userID string, limit 
 	for nextURL != "" {
 		resp, err := c.doRequest(ctx, nextURL)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("requesting favorite artists: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
@@ -460,7 +460,7 @@ func (c *Client) FetchFavoriteArtists(ctx context.Context, userID string, limit 
 		var payload jsonAPIResponse
 		if err := json.UnmarshalRead(resp.Body, &payload); err != nil {
 			_ = resp.Body.Close()
-			return nil, err
+			return nil, fmt.Errorf("decoding favorite artists response: %w", err)
 		}
 		_ = resp.Body.Close()
 

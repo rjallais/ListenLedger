@@ -158,7 +158,7 @@ func main() {
 		return
 	}
 
-	pbTypes, err := loadPocketBaseReleaseTypes(*dataDir)
+	pbTypes, err := loadPocketBaseReleaseTypes(ctx, *dataDir)
 	if err != nil {
 		log.Fatalf("[backfill_song_metadata] failed to load PocketBase release types: %v", err)
 	}

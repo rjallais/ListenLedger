@@ -337,6 +337,7 @@ func runApply(ctx context.Context, args []string) error {
 	approveAllAbove := fs.Float64("approve-all-above", 0.0, "Approve all proposals with confidence >= threshold")
 	liveOK := fs.Bool("live-ok", false, "Acknowledge running against the live data directory")
 	limit := fs.Int("limit", 0, "Max proposals to apply (0 = all)")
+	reportDir := fs.String("report-dir", "backfill_reports", "Directory to search for the latest report")
 	_ = fs.Parse(args)
 
 	if storeutil.IsLiveDataDir(*dataDir) && !*liveOK {
@@ -345,7 +346,7 @@ func runApply(ctx context.Context, args []string) error {
 
 	reportPath := strings.TrimSpace(*reportFile)
 	if reportPath == "" {
-		latest, err := findLatestReport("backfill_reports")
+		latest, err := findLatestReport(*reportDir)
 		if err != nil {
 			return fmt.Errorf("no report specified and failed to find latest: %w", err)
 		}

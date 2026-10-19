@@ -3,10 +3,13 @@ package eventsourcing_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"testing"
 	"time"
+
+	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/eventsourcing"
@@ -400,5 +403,62 @@ func TestEventTypeCensusSamplesNewestEnd(t *testing.T) {
 	}
 	if newest := ids[len(ids)-1]; !slices.Contains(samples, newest) {
 		t.Fatalf("newest event %s not sampled: %v", newest, samples)
+	}
+}
+
+func TestSQLiteStore_AppendBatchIsAtomicOnConflict(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("failed to create test db: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	store := eventsourcing.NewSQLiteStore(database)
+
+	seed, err := eventsourcing.NewEvent("atomic-s2", "artist", 1, "ArtistCreated", map[string]string{"name": "Two"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent seed: %v", err)
+	}
+	if err := store.Append(ctx, "atomic-s2", 0, seed); err != nil {
+		t.Fatalf("seed Append: %v", err)
+	}
+
+	e1, err := eventsourcing.NewEvent("atomic-s1", "artist", 1, "ArtistCreated", map[string]string{"name": "One"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent e1: %v", err)
+	}
+	e2, err := eventsourcing.NewEvent("atomic-s2", "artist", 1, "ArtistCreated", map[string]string{"name": "Dup"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent e2: %v", err)
+	}
+
+	err = store.AppendBatch(ctx, []eventsourcing.StreamAppend{
+		{StreamID: "atomic-s1", ExpectedVersion: 0, Events: []eventsourcing.Event{e1}},
+		{StreamID: "atomic-s2", ExpectedVersion: 0, Events: []eventsourcing.Event{e2}},
+	})
+	if !errors.Is(err, eventsourcing.ErrConcurrencyConflict) {
+		t.Fatalf("AppendBatch = %v, want ErrConcurrencyConflict", err)
+	}
+	if evts, _ := store.Load(ctx, "atomic-s1"); len(evts) != 0 {
+		t.Fatalf("atomic-s1 committed %d events despite batch rejection", len(evts))
+	}
+	if evts, _ := store.Load(ctx, "atomic-s2"); len(evts) != 1 {
+		t.Fatalf("atomic-s2 has %d events, want only the seed", len(evts))
+	}
+
+	if err := database.ReadTX(ctx, func(conn *sqlite.Conn) error {
+		stmt := conn.Prep("SELECT COUNT(*) FROM outbox WHERE event_id = ?")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, e1.ID)
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if hasRow && stmt.ColumnInt(0) != 0 {
+			t.Errorf("outbox holds %d rows for atomic-s1's event despite batch rejection", stmt.ColumnInt(0))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("counting outbox rows: %v", err)
 	}
 }

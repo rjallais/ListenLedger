@@ -88,6 +88,11 @@ description = "Build and run the application (LISTENLEDGER_EVENT_STORE defaults 
 run = "env LISTENLEDGER_EVENT_STORE=${LISTENLEDGER_EVENT_STORE:-sqlite} go run . serve --http=localhost:8091"
 depends = ["build"]
 
+[tasks."run:jetstream"]
+description = "Run the application forcing the one-way JetStream event-store flip (recorded on first boot; run 'go run ./cmd/audit' clean first)"
+run = "env LISTENLEDGER_EVENT_STORE=jetstream go run . serve --http=localhost:8091"
+depends = ["build"]
+
 [tasks."browserless:up"]
 description = "Start the self-hosted Browserless container"
 run = """
