@@ -162,6 +162,12 @@ type Worker struct {
 	lastPurge time.Time
 	purgeMu   sync.Mutex
 
+	// orphanScanCursor paginates the orphaned-queued sweep across ticks. It
+	// holds the keyset position (queued_at, request_id) of the last scanned
+	// row and resets after a short page. The sweep runs on one goroutine.
+	orphanScanQueuedAt  string
+	orphanScanRequestID string
+
 	// accepting gates whether dispatch callbacks may enqueue into work.
 	accepting atomic.Bool
 	started   bool

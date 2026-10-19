@@ -20,17 +20,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
+	"time"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/pocketbase/pocketbase"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/batchprogress"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
@@ -596,12 +600,14 @@ type batchRow struct {
 	total     int64
 	completed int64
 	done      int64
+	stats     map[string]int
+	statsOK   bool
 }
 
 func readBatchRow(ctx context.Context, database *toolbeltdb.Database, id string) (batchRow, error) {
 	var row batchRow
 	err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("SELECT total, completed, done FROM batches WHERE id = ? LIMIT 1;")
+		stmt := tx.Prep("SELECT total, completed, done, stats FROM batches WHERE id = ? LIMIT 1;")
 		defer func() { _ = stmt.Reset() }()
 		stmt.BindText(1, id)
 		hasRow, err := stmt.Step()
@@ -611,7 +617,22 @@ func readBatchRow(ctx context.Context, database *toolbeltdb.Database, id string)
 		if !hasRow {
 			return nil
 		}
-		row = batchRow{found: true, total: stmt.ColumnInt64(0), completed: stmt.ColumnInt64(1), done: stmt.ColumnInt64(2)}
+		rawStats := stmt.ColumnText(3)
+		stats := make(map[string]int)
+		statsOK := true
+		if strings.TrimSpace(rawStats) != "" {
+			if err := json.Unmarshal([]byte(rawStats), &stats); err != nil {
+				statsOK = false
+			}
+		}
+		row = batchRow{
+			found:     true,
+			total:     stmt.ColumnInt64(0),
+			completed: stmt.ColumnInt64(1),
+			done:      stmt.ColumnInt64(2),
+			stats:     stats,
+			statsOK:   statsOK,
+		}
 		return nil
 	})
 	return row, err
@@ -662,6 +683,10 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 			return fmt.Errorf("reading batch row %s: %w", id, err)
 		}
 		if !row.found {
+			lastEvent := events[len(events)-1]
+			if agg.Done() && time.Since(lastEvent.CreatedAt) >= batchprogress.PruneRetention {
+				continue
+			}
 			rep.MissingRows++
 			rep.addSample(maxSamples, fmt.Sprintf("batch %s: stream v%d has no batches row", id, agg.Version()))
 			continue
@@ -672,10 +697,15 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		}
 		wantTotal := int64(agg.Total())
 		wantCompleted := int64(agg.Completed())
-		if row.total != wantTotal || row.completed != wantCompleted || row.done != wantDone {
+		rowStats := fmt.Sprintf("%v", row.stats)
+		if !row.statsOK {
+			rowStats = "<invalid>"
+		}
+		if row.total != wantTotal || row.completed != wantCompleted || row.done != wantDone ||
+			!row.statsOK || !maps.Equal(row.stats, agg.Stats()) {
 			rep.Mismatched++
-			rep.addSample(maxSamples, fmt.Sprintf("batch %s: row(total=%d completed=%d done=%d) != stream(total=%d completed=%d done=%d)",
-				id, row.total, row.completed, row.done, wantTotal, wantCompleted, wantDone))
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: row(total=%d completed=%d done=%d stats=%s) != stream(total=%d completed=%d done=%d stats=%v)",
+				id, row.total, row.completed, row.done, rowStats, wantTotal, wantCompleted, wantDone, agg.Stats()))
 			continue
 		}
 

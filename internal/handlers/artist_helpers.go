@@ -616,7 +616,9 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 			}
 			return nil
 		})
-		if err == nil && len(orderedIDs) > 0 {
+		if err != nil {
+			log.Printf("[handlers] batchRefreshJobs: SQLite artist selection failed, falling back to PocketBase: %v", err)
+		} else if len(orderedIDs) > 0 {
 			idInterfaces := make([]any, len(orderedIDs))
 			for i, id := range orderedIDs {
 				idInterfaces[i] = id
@@ -626,7 +628,9 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 				WithContext(ctx).
 				AndWhere(dbx.In("id", idInterfaces...)).
 				All(&records)
-			if err == nil {
+			if err != nil {
+				log.Printf("[handlers] batchRefreshJobs: loading SQLite-selected artists failed, falling back to PocketBase: %v", err)
+			} else {
 				recMap := make(map[string]*core.Record, len(records))
 				for _, r := range records {
 					recMap[r.Id] = r

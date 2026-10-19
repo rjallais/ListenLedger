@@ -54,6 +54,27 @@ func (h *Handler) newSSESignalsPatcher(ctx context.Context, sse *datastar.Server
 	}
 }
 
+// batchProgressTracker keeps one SSE client's view monotonic per batch:
+// out-of-order publishes must not lower the completion count or reopen a
+// finished batch.
+type batchProgressTracker struct {
+	latest map[string]batchProgressSnapshot
+}
+
+func newBatchProgressTracker() *batchProgressTracker {
+	return &batchProgressTracker{latest: make(map[string]batchProgressSnapshot)}
+}
+
+func (t *batchProgressTracker) accept(snapshot batchProgressSnapshot) bool {
+	if prev, ok := t.latest[snapshot.ID]; ok {
+		if prev.Done || snapshot.Completed < prev.Completed {
+			return false
+		}
+	}
+	t.latest[snapshot.ID] = snapshot
+	return true
+}
+
 // patchBatchProgressSnapshot streams both the batch result fragment and Datastar signals.
 func (h *Handler) patchBatchProgressSnapshot(patch ssePatcher, patchSignals func([]byte) error, snapshot batchProgressSnapshot, logger *slog.Logger) {
 	if patchSignals != nil {
@@ -90,8 +111,11 @@ func (h *Handler) patchLatestBatchResult(ctx context.Context, patch ssePatcher, 
 }
 
 // patchInitialBatchProgress streams batch progress on connection start only if a batch is active.
-func (h *Handler) patchInitialBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger) {
+func (h *Handler) patchInitialBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger, tracker *batchProgressTracker) {
 	if snapshot, ok := h.getActiveBatchSnapshot(ctx); ok {
+		if tracker != nil {
+			tracker.accept(snapshot)
+		}
 		h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
 	}
 }
@@ -324,7 +348,7 @@ func (h *Handler) subscribeArtistUpdates(ctx context.Context, patch ssePatcher, 
 }
 
 // subscribeBatchProgress subscribes to authoritative batch progress updates and streams DOM and signal changes.
-func (h *Handler) subscribeBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger, wg *sync.WaitGroup) (*managedSubscription, error) {
+func (h *Handler) subscribeBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger, wg *sync.WaitGroup, tracker *batchProgressTracker) (*managedSubscription, error) {
 	managed := newManagedSubscription(wg)
 	sub, err := h.nc.Subscribe(messaging.SubjectBatchProgress, func(msg *nats.Msg) {
 		select {
@@ -345,6 +369,9 @@ func (h *Handler) subscribeBatchProgress(ctx context.Context, patch ssePatcher, 
 			Completed: update.Completed,
 			Done:      update.Done,
 			Stats:     update.Stats,
+		}
+		if tracker != nil && !tracker.accept(snapshot) {
+			return
 		}
 		h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
 	})
@@ -472,7 +499,8 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	patchSignals := h.newSSESignalsPatcher(ctx, sse, &patchMu)
 	scheduleQueueStats := h.newDebouncedQueueStatsTrigger(ctx, patch, logger)
 
-	h.patchInitialBatchProgress(ctx, patch, patchSignals, logger)
+	tracker := newBatchProgressTracker()
+	h.patchInitialBatchProgress(ctx, patch, patchSignals, logger, tracker)
 	h.patchLatestQueueStats(ctx, patch, logger)
 
 	var wg sync.WaitGroup
@@ -495,7 +523,7 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("[sse] failed to subscribe to ranks updates", "error", err)
 	}
 
-	batchSub, err := h.subscribeBatchProgress(ctx, patch, patchSignals, logger, &wg)
+	batchSub, err := h.subscribeBatchProgress(ctx, patch, patchSignals, logger, &wg, tracker)
 	if err != nil {
 		logger.Warn("[sse] failed to subscribe to batch progress updates", "error", err)
 	}

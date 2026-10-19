@@ -75,10 +75,34 @@ func TestSSEChromePatchesSkipViewTransitions(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	sse := datastar.NewSSE(rec, httptest.NewRequest(http.MethodPost, "/api/events", nil))
-	if err := sse.PatchElements(`<div id="batch-refresh-result"></div>`, got...); err != nil {
+	if err := sse.PatchElements(`<div id="batch-refresh-result"></div>`,
+		patchOpts(&config.Config{UseViewTransitions: true}, "", got...)...); err != nil {
 		t.Fatalf("PatchElements() error = %v", err)
 	}
 	if body := rec.Body.String(); strings.Contains(body, "useViewTransition") {
 		t.Fatalf("batch progress patch must not request view transitions, got:\n%s", body)
+	}
+}
+
+func TestBatchProgressTrackerRejectsStaleAndDone(t *testing.T) {
+	tracker := newBatchProgressTracker()
+
+	if !tracker.accept(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 1}) {
+		t.Fatal("first snapshot should be accepted")
+	}
+	if tracker.accept(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 0}) {
+		t.Fatal("lower completion count should be rejected")
+	}
+	if !tracker.accept(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 2, Done: true}) {
+		t.Fatal("completion snapshot should be accepted")
+	}
+	if tracker.accept(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 3}) {
+		t.Fatal("update after Done should be rejected")
+	}
+	if tracker.accept(batchProgressSnapshot{ID: "b1", Total: 2, Completed: 2, Done: false}) {
+		t.Fatal("reopening a finished batch should be rejected")
+	}
+	if !tracker.accept(batchProgressSnapshot{ID: "b2", Total: 1, Completed: 0}) {
+		t.Fatal("a different batch should be accepted")
 	}
 }

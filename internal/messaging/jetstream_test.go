@@ -1,8 +1,11 @@
 package messaging
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -339,6 +342,61 @@ func TestDomainEventsStreamDurability(t *testing.T) {
 	}
 	if info.Config.MaxAge != DomainEventsRetention {
 		t.Fatalf("domain events MaxAge = %s, want %s", info.Config.MaxAge, DomainEventsRetention)
+	}
+}
+
+// TestEnsureStreamWarnsOnCompressionMismatch covers the rollout case: an
+// existing stream was created uncompressed, and the update only changes the
+// reported config until the next server restart. The warning must fire rather
+// than silently implying the active file store already compresses new blocks.
+func TestEnsureStreamWarnsOnCompressionMismatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	ns := startTestNATSServer(t, t.TempDir())
+	defer ns.Shutdown()
+	nc := connectTestNATS(t, ns.ClientURL())
+	defer nc.Close()
+
+	js, err := NewJetStream(nc)
+	if err != nil {
+		t.Fatalf("NewJetStream() error = %v", err)
+	}
+	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:        ScrapeDLQStreamName,
+		Subjects:    []string{SubjectScrapeDLQ},
+		Retention:   jetstream.LimitsPolicy,
+		Storage:     jetstream.FileStorage,
+		MaxAge:      7 * 24 * time.Hour,
+		MaxMsgs:     100_000,
+		Compression: jetstream.NoCompression,
+	})
+	if err != nil {
+		t.Fatalf("CreateStream(uncompressed) error = %v", err)
+	}
+
+	var logs bytes.Buffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousWriter) })
+
+	if err := EnsureScrapeDLQStream(ctx, js); err != nil {
+		t.Fatalf("EnsureScrapeDLQStream() error = %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "next server restart") {
+		t.Fatalf("compression warning not logged, got:\n%s", got)
+	}
+
+	stream, err := js.Stream(ctx, ScrapeDLQStreamName)
+	if err != nil {
+		t.Fatalf("js.Stream() error = %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream.Info() error = %v", err)
+	}
+	if info.Config.Compression != jetstream.S2Compression {
+		t.Fatalf("stream compression = %s, want %s", info.Config.Compression, jetstream.S2Compression)
 	}
 }
 

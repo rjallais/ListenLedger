@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -53,12 +54,116 @@ func TestOrphanedQueuedSweep(t *testing.T) {
 	if status, _ := sweepJobRow(t, ctx, w, "req_young"); status != "queued" {
 		t.Fatalf("young row = %q, want queued", status)
 	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_dispatched"); got != "pending" {
+		t.Fatalf("dispatched artist fetch_status = %q, want pending", got)
+	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_young"); got != "pending" {
+		t.Fatalf("young artist fetch_status = %q, want pending", got)
+	}
 
 	// Second sweep over the same cutoff is a no-op: the row already left
 	// queued and no second verdict is appended.
 	w.markOrphanedQueuedJobs(ctx, cutoff)
 	if types := jobStreamTypes(t, ctx, w, "req_orphan"); len(types) != 2 {
 		t.Fatalf("orphan stream after second sweep = %v, want unchanged", types)
+	}
+}
+
+// TestOrphanedQueuedSweepRepairsVerdict covers a partial sweep: the verdict
+// pair exists but the row flip did not land, so the next sweep must repair the
+// row without appending a third event.
+func TestOrphanedQueuedSweepRepairsVerdict(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-orphanedQueuedGrace).Format(jobTimestampFormat)
+	old := now.Add(-time.Hour).Format(jobTimestampFormat)
+
+	seedSweepArtist(t, ctx, w, "ar_repair", "pending")
+	seedSweepQueuedRow(t, ctx, w, "req_repair", "ar_repair", old)
+	w.recordJobEventWarn(ctx, "req_repair", "ar_repair", "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed(orphanedQueuedReason)
+		return err
+	})
+	if types := jobStreamTypes(t, ctx, w, "req_repair"); len(types) != 2 {
+		t.Fatalf("seeded verdict stream = %v, want the seed pair", types)
+	}
+
+	w.markOrphanedQueuedJobs(ctx, cutoff)
+
+	status, errText := sweepJobRow(t, ctx, w, "req_repair")
+	if status != "failed" || errText != orphanedQueuedReason {
+		t.Fatalf("repair row = %q/%q, want failed/%q", status, errText, orphanedQueuedReason)
+	}
+	if types := jobStreamTypes(t, ctx, w, "req_repair"); len(types) != 2 {
+		t.Fatalf("repair stream = %v, want the existing verdict pair unchanged", types)
+	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_repair"); got != "failed" {
+		t.Fatalf("repair artist fetch_status = %q, want failed", got)
+	}
+}
+
+// TestOrphanedQueuedSweepKeepsArtistForNewerJob covers the artist guard: a
+// swept orphan must not fail the artist while a newer queued/processing job
+// still owns the live scrape.
+func TestOrphanedQueuedSweepKeepsArtistForNewerJob(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-orphanedQueuedGrace).Format(jobTimestampFormat)
+	old := now.Add(-time.Hour).Format(jobTimestampFormat)
+	fresh := now.Format(jobTimestampFormat)
+
+	seedSweepArtist(t, ctx, w, "ar_guarded", "pending")
+	seedSweepQueuedRow(t, ctx, w, "req_guarded_old", "ar_guarded", old)
+	seedSweepQueuedRow(t, ctx, w, "req_guarded_new", "ar_guarded", fresh)
+
+	w.markOrphanedQueuedJobs(ctx, cutoff)
+
+	if status, _ := sweepJobRow(t, ctx, w, "req_guarded_old"); status != "failed" {
+		t.Fatalf("old orphan row = %q, want failed", status)
+	}
+	if status, _ := sweepJobRow(t, ctx, w, "req_guarded_new"); status != "queued" {
+		t.Fatalf("newer row = %q, want queued", status)
+	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_guarded"); got != "pending" {
+		t.Fatalf("artist fetch_status = %q, want pending while a newer job is live", got)
+	}
+}
+
+// TestOrphanedQueuedSweepPaginatesPastDispatchedRows covers the backlog case:
+// a full page of dispatched-but-still-queued rows must not make the sweep
+// rescan the same oldest rows forever.
+func TestOrphanedQueuedSweepPaginatesPastDispatchedRows(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-orphanedQueuedGrace).Format(jobTimestampFormat)
+	old := now.Add(-time.Hour).Format(jobTimestampFormat)
+
+	for i := range orphanedQueuedScanLimit {
+		requestID := fmt.Sprintf("req_disp_%03d", i)
+		artistID := fmt.Sprintf("ar_disp_%03d", i)
+		seedSweepArtist(t, ctx, w, artistID, "pending")
+		seedSweepQueuedRow(t, ctx, w, requestID, artistID, old)
+		w.recordJobEventWarn(ctx, requestID, artistID, "started", func(j *scrapejob.Job) error {
+			_, _, err := j.RecordStarted()
+			return err
+		})
+	}
+	seedSweepArtist(t, ctx, w, "ar_page_orphan", "pending")
+	seedSweepQueuedRow(t, ctx, w, "req_z_orphan", "ar_page_orphan", old)
+
+	// First sweep consumes exactly one full page of dispatched rows.
+	w.markOrphanedQueuedJobs(ctx, cutoff)
+	if status, _ := sweepJobRow(t, ctx, w, "req_z_orphan"); status != "queued" {
+		t.Fatalf("orphan behind a full page = %q, want queued until the next page", status)
+	}
+
+	// The cursor advances, so the next sweep reaches the real orphan.
+	w.markOrphanedQueuedJobs(ctx, cutoff)
+	if status, errText := sweepJobRow(t, ctx, w, "req_z_orphan"); status != "failed" || errText != orphanedQueuedReason {
+		t.Fatalf("orphan row = %q/%q, want failed/%q", status, errText, orphanedQueuedReason)
+	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_page_orphan"); got != "failed" {
+		t.Fatalf("orphan artist fetch_status = %q, want failed", got)
 	}
 }
 

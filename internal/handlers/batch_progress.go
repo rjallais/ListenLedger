@@ -212,7 +212,7 @@ func (h *Handler) createBatchProgress(ctx context.Context, artistIDs []string, s
 	}
 	storeCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	snap, err := h.batchStore.Start(storeCtx, batchID, artistIDs, stats, now.Add(-2*time.Hour))
+	snap, err := h.batchStore.Start(storeCtx, batchID, artistIDs, stats, now.Add(-batchprogress.PruneRetention))
 	if err != nil {
 		return batchProgressSnapshot{}, fmt.Errorf("starting batch %s: %w", batchID, err)
 	}
