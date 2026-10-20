@@ -1,7 +1,8 @@
 package templates
 
 // SongSortControls is entirely signal-driven; ignore morphs so a pending
-// recent-toggle response cannot restore the request-start sort state.
+// recent-toggle response cannot restore the request-start sort state. The
+// songs-sortable component observes the sort prop and reorders the tables.
 templ SongSortControls(playlistSort string) {
 	<div class="flex flex-wrap items-center gap-2 mb-4" data-ignore-morph>
 		<span class="text-sm opacity-70">Sort by:</span>
@@ -17,7 +18,7 @@ templ SongSortButton(sortValue, label, playlistSort string) {
 		data-class:btn-primary={ "$_playlist_sort == '" + sortValue + "'" }
 		data-class:btn-outline={ "$_playlist_sort != '" + sortValue + "'" }
 		data-attr:aria-pressed={ "String($_playlist_sort == '" + sortValue + "')" }
-		data-on:click={ "$_playlist_sort = '" + sortValue + "'; sortSongsTable('" + sortValue + "')" }
+		data-on:click={ "$_playlist_sort = '" + sortValue + "'" }
 	>
 		{ label }
 	</button>

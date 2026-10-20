@@ -54,24 +54,9 @@ templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort
 }
 
 // songRecentChangeAction is the delegated change handler for a songs <tbody>.
-// Disabling the clicked checkbox prevents double submits; the SSE response
-// morphs the sections, which restores it. Only one row toggle may be in flight
-// across the songs page: a second change in any table is reverted so the
-// document-scoped failure handler can identify the single disabled checkbox.
-// The prior checked state is stashed so songRecentFetchAction can restore it
-// if the fetch fails before any morph lands.
+// The songs-sortable Rocket component owns the document-wide in-flight guard
+// and stashes the pre-click state; this expression only sends the request when
+// the component guard accepts the toggle.
 func songRecentChangeAction() string {
-	return "if (evt.target.dataset.songId) { if (document.querySelector('input[data-song-id]:disabled')) { evt.target.checked = !evt.target.checked; return; } evt.target.dataset.wasChecked = String(!evt.target.checked); evt.target.disabled = true; @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
-}
-
-// songRecentFetchAction handles the document-scoped datastar-fetch events for
-// recent toggles. The response was rendered with the sort captured when the
-// request started, so a user who changed sort while it was pending would get
-// the older order back; after a successful morph, reapply the current local
-// sort. The not-recent tbody is included because a toggle there also morphs the
-// current/waiting sections; load-more fetches carry the button, not the tbody,
-// as detail.el. On failure, restore the single in-flight checkbox from the
-// stashed pre-click state.
-func songRecentFetchAction() string {
-	return "if (evt.detail.el) { const songsTbodies = ['songs-current', 'songs-waiting-removal', 'songs-not-recent']; if (evt.detail.type === 'finished' && evt.detail.el.tagName === 'TBODY' && songsTbodies.includes(evt.detail.el.id)) { sortSongsTable($_playlist_sort); return; } if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { const box = evt.detail.el.querySelector('input[data-song-id]:disabled'); if (box) { box.disabled = false; if (box.dataset.wasChecked !== undefined) { box.checked = box.dataset.wasChecked === 'true' } } } }"
+	return "if (evt.target.closest('songs-sortable')?.songsToggle?.(evt)) { @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
 }
