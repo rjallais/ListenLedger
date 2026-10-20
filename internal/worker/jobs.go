@@ -220,11 +220,14 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 }
 
 // requestStreamVerdict derives the preflight skip disposition from one job
-// stream load, reusing the succeeded cache and PocketBase fallback.
-func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (succeeded, orphaned bool) {
+// stream load. The returned orphanedAt is non-zero when the stream contains
+// the sweep's orphaned_no_dispatch verdict; callers compare it with the
+// delivery timestamp so a retry published after the verdict is processed while
+// the original late delivery is skipped.
+func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (succeeded bool, orphanedAt time.Time) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return false, false
+		return false, time.Time{}
 	}
 
 	now := time.Now()
@@ -232,7 +235,7 @@ func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (su
 	w.pruneSucceededLocked(now)
 	if _, ok := w.succeededRequests[requestID]; ok {
 		w.succeededMu.Unlock()
-		return true, false
+		return true, time.Time{}
 	}
 	w.succeededMu.Unlock()
 
@@ -241,39 +244,41 @@ func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (su
 	// Terminal streams are definitive — return without querying PocketBase on
 	// every queued job. Non-terminal streams (queued or processing) fall
 	// through to the row lookup: recordJobEventWarn can drop the
-	// ScrapeSucceeded fact while the PocketBase row already flipped.
+	// ScrapeSucceeded fact while the PocketBase row already flipped. Keep the
+	// orphan verdict time across that fallback for the delivery-time guard.
 	if w.jobStore != nil {
 		if evts, err := w.jobStore.Load(ctx, requestID); err == nil && len(evts) > 0 {
 			if isOrphanedQueuedVerdict(evts) {
-				return false, true
+				return false, evts[1].CreatedAt
 			}
+			orphanedAt, _ = orphanedQueuedVerdictAt(evts)
 			if agg, err := scrapejob.Replay(requestID, evts); err == nil {
 				if agg.Status() == scrapejob.StatusSucceeded {
 					w.markRequestSucceeded(requestID)
-					return true, false
+					return true, orphanedAt
 				}
 				if agg.IsTerminal() {
-					return false, false
+					return false, orphanedAt
 				}
 			}
 		}
 	}
 
 	if w.app == nil {
-		return false, false
+		return false, orphanedAt
 	}
 
 	job, err := w.scrapeJobByRequestID(requestID)
 	if err != nil {
 		log.Printf("[worker] Warning: dedupe check failed for request_id=%s: %v", requestID, err)
-		return false, false
+		return false, orphanedAt
 	}
 	if job == nil || job.GetString("status") != "succeeded" {
-		return false, false
+		return false, orphanedAt
 	}
 
 	w.markRequestSucceeded(requestID)
-	return true, false
+	return true, orphanedAt
 }
 
 func (w *Worker) markRequestSucceeded(requestID string) {
@@ -914,6 +919,29 @@ func isOrphanedQueuedVerdict(events []eventsourcing.Event) bool {
 		return false
 	}
 	return pl.Error == orphanedQueuedReason
+}
+
+// orphanedQueuedVerdictAt returns when the sweep recorded its
+// orphaned_no_dispatch verdict, if the stream contains one. The verdict stays
+// relevant after a retry reopens the stream: a delivery stored before it is
+// the original late message, while a delivery stored after it is the retry.
+func orphanedQueuedVerdictAt(events []eventsourcing.Event) (time.Time, bool) {
+	if len(events) == 0 || events[0].EventType != scrapejob.EventTypeScrapeRequested {
+		return time.Time{}, false
+	}
+	for _, evt := range events {
+		if evt.EventType != scrapejob.EventTypeScrapeFailed {
+			continue
+		}
+		var pl scrapejob.FailedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			continue
+		}
+		if pl.Error == orphanedQueuedReason {
+			return evt.CreatedAt, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // markOrphanedQueuedRowFailedSQLite flips one queued row to

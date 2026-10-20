@@ -62,9 +62,9 @@ func SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount 
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var4 string
-			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(songRecentFetchErrorAction())
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.ResolveAttributeValue(songRecentFetchAction())
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs.templ`, Line: 8, Col: 198}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `templates/songs.templ`, Line: 8, Col: 193}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var4)
 			if templ_7745c5c3_Err != nil {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/domain/scrapejob"
@@ -167,8 +168,8 @@ func TestOrphanedQueuedSweepPaginatesPastDispatchedRows(t *testing.T) {
 	}
 }
 
-// TestRequestStreamVerdict covers the preflight guard: only the sweep's exact
-// seed pair is recognized as orphaned, so ordinary failures still process.
+// TestRequestStreamVerdict covers the preflight guard: the sweep's verdict is
+// still reported after a retry starts, so callers can compare delivery time.
 func TestRequestStreamVerdict(t *testing.T) {
 	w, ctx := setupTestJobWorker(t)
 
@@ -176,28 +177,51 @@ func TestRequestStreamVerdict(t *testing.T) {
 		_, _, err := j.RecordFailed(orphanedQueuedReason)
 		return err
 	})
-	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || !orphaned {
-		t.Fatalf("orphan verdict = succeeded=%v orphaned=%v, want false/true", succeeded, orphaned)
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || orphanedAt.IsZero() {
+		t.Fatalf("orphan verdict = succeeded=%v orphanedAt=%v, want false/non-zero", succeeded, orphanedAt)
+	}
+
+	// A retry can append more events to the same stream. The verdict must
+	// remain visible so a late original delivery is still recognized.
+	w.recordJobEventWarn(ctx, "req_orphan_guard", "ar_orphan_guard", "started", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordStarted()
+		return err
+	})
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || orphanedAt.IsZero() {
+		t.Fatalf("reopened orphan stream = succeeded=%v orphanedAt=%v, want false/non-zero", succeeded, orphanedAt)
 	}
 
 	w.recordJobEventWarn(ctx, "req_ordinary_failure", "ar_ordinary_failure", "failed", func(j *scrapejob.Job) error {
 		_, _, err := j.RecordFailed("fetch_failed")
 		return err
 	})
-	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_ordinary_failure"); succeeded || orphaned {
-		t.Fatalf("ordinary failure = succeeded=%v orphaned=%v, want false/false", succeeded, orphaned)
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_ordinary_failure"); succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("ordinary failure = succeeded=%v orphanedAt=%v, want false/zero", succeeded, orphanedAt)
 	}
 
 	w.recordJobEventWarn(ctx, "req_succeeded_guard", "ar_succeeded_guard", "succeeded", func(j *scrapejob.Job) error {
 		_, _, err := j.RecordSucceeded("test", 0)
 		return err
 	})
-	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_succeeded_guard"); !succeeded || orphaned {
-		t.Fatalf("succeeded = succeeded=%v orphaned=%v, want true/false", succeeded, orphaned)
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_succeeded_guard"); !succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("succeeded = succeeded=%v orphanedAt=%v, want true/zero", succeeded, orphanedAt)
 	}
 
-	if succeeded, orphaned := w.requestStreamVerdict(ctx, "req_missing"); succeeded || orphaned {
-		t.Fatalf("missing stream = succeeded=%v orphaned=%v, want false/false", succeeded, orphaned)
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_missing"); succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("missing stream = succeeded=%v orphanedAt=%v, want false/zero", succeeded, orphanedAt)
+	}
+}
+
+func TestDeliveredAfterOrphanVerdict(t *testing.T) {
+	verdictAt := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	if deliveredAfterOrphanVerdict(nil, verdictAt) {
+		t.Fatal("nil metadata must not bypass the orphan guard")
+	}
+	if deliveredAfterOrphanVerdict(&jetstream.MsgMetadata{Timestamp: verdictAt.Add(-time.Second)}, verdictAt) {
+		t.Fatal("message stored before the verdict must be skipped")
+	}
+	if !deliveredAfterOrphanVerdict(&jetstream.MsgMetadata{Timestamp: verdictAt.Add(time.Second)}, verdictAt) {
+		t.Fatal("retry stored after the verdict must be processed")
 	}
 }
 

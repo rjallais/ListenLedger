@@ -26,6 +26,13 @@ type msgEnvelope struct {
 	label string
 }
 
+// deliveredAfterOrphanVerdict distinguishes a retry republished after the
+// sweep verdict from a late delivery of the original attempt. JetStream keeps
+// the original store timestamp across redeliveries.
+func deliveredAfterOrphanVerdict(meta *jetstream.MsgMetadata, verdictAt time.Time) bool {
+	return meta != nil && !verdictAt.IsZero() && meta.Timestamp.After(verdictAt)
+}
+
 func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spotify.Provider, label string) msgResult {
 	env := msgEnvelope{msg: item.msg, meta: item.meta, req: item.req, label: label}
 	delivered := uint64(0)
@@ -36,12 +43,16 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 	item.dispatchProgress.Stop()
 
-	succeeded, orphaned := w.requestStreamVerdict(ctx, env.req.RequestID)
+	succeeded, orphanedAt := w.requestStreamVerdict(ctx, env.req.RequestID)
 	if succeeded {
 		return w.handleDedupSkip(ctx, env)
 	}
 
-	if orphaned {
+	// The orphan sweep's verdict is final for the original delivery, but a
+	// retry republished after the verdict is a genuine new attempt. JetStream
+	// keeps the original store timestamp across redeliveries, so only a later
+	// publish passes.
+	if !orphanedAt.IsZero() && !deliveredAfterOrphanVerdict(env.meta, orphanedAt) {
 		return w.handleOrphanedQueuedSkip(ctx, env)
 	}
 
