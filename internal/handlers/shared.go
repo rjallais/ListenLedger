@@ -177,7 +177,7 @@ const maxPooledBufferCap = 1 << 20 // 1 MiB
 
 // RenderTempl renders a templ component to the standard HTTP response writer.
 // It buffers output via a sync.Pool to avoid micro-chunked HTTP writes and
-// set an exact Content-Length header.
+// to set an exact Content-Length header.
 func RenderTempl(w http.ResponseWriter, r *http.Request, component templ.Component) error {
 	buf := templBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
