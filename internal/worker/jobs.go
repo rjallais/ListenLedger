@@ -302,6 +302,53 @@ func (w *Worker) pruneSucceededLocked(now time.Time) {
 	}
 }
 
+type failedJob struct{ requestID, artistID string }
+
+// reconcileFailedJobsSQLite flips the selected jobs from failed to succeeded
+// and appends their ScrapeSucceeded facts. The guarded UPDATE runs first, so a
+// concurrent retry that moved a row to queued or processing after the SELECT
+// is left alone and never gets a success fact on its live stream.
+func (w *Worker) reconcileFailedJobsSQLite(ctx context.Context, artistID string, jobs []failedJob, note string) {
+	if w.db == nil || len(jobs) == 0 {
+		return
+	}
+	now := time.Now().UTC().Format(jobTimestampFormat)
+	changed := make([]failedJob, 0, len(jobs))
+	if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ? AND status = 'failed';")
+		defer func() { _ = stmt.Reset() }()
+		for _, job := range jobs {
+			if ctx.Err() != nil {
+				break
+			}
+			_ = stmt.Reset()
+			stmt.BindText(1, now)
+			stmt.BindText(2, note)
+			stmt.BindText(3, job.requestID)
+			if _, err := stmt.Step(); err != nil {
+				return err
+			}
+			if tx.Changes() > 0 {
+				changed = append(changed, job)
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
+		return
+	}
+
+	for _, job := range changed {
+		if ctx.Err() != nil {
+			break
+		}
+		w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
+			_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
+			return err
+		})
+	}
+}
+
 func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeededRequestID string) {
 	if artistID == "" {
 		return
@@ -317,7 +364,6 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 		// is capped at 500 and its errors are handled, while a predicate-wide
 		// UPDATE would flip rows this run never audits (including rows a
 		// concurrent retry moved out of failed after the SELECT ran).
-		type failedJob struct{ requestID, artistID string }
 		var failed []failedJob
 		if err := w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("SELECT request_id, artist_id FROM scrape_jobs WHERE artist_id = ? AND status = 'failed' AND request_id != ? LIMIT 500;")
@@ -340,35 +386,7 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 			return
 		}
 		if len(failed) > 0 {
-			for _, job := range failed {
-				if ctx.Err() != nil {
-					break
-				}
-				w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
-					_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
-					return err
-				})
-			}
-			now := time.Now().UTC().Format(jobTimestampFormat)
-			if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-				stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ? AND status = 'failed';")
-				defer func() { _ = stmt.Reset() }()
-				for _, job := range failed {
-					if ctx.Err() != nil {
-						break
-					}
-					_ = stmt.Reset()
-					stmt.BindText(1, now)
-					stmt.BindText(2, note)
-					stmt.BindText(3, job.requestID)
-					if _, err := stmt.Step(); err != nil {
-						return err
-					}
-				}
-				return nil
-			}); err != nil {
-				log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
-			}
+			w.reconcileFailedJobsSQLite(ctx, artistID, failed, note)
 		}
 	}
 
