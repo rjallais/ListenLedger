@@ -862,6 +862,13 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 		if len(events) > 0 && !isOrphanedQueuedVerdict(events) {
 			continue
 		}
+		if len(events) == 2 {
+			// A row queued after the verdict is a retry waiting for dispatch,
+			// not an unfinished repair from the sweep's original pass.
+			if queuedAt, err := time.Parse(jobTimestampFormat, job.queuedAt); err == nil && queuedAt.After(events[1].CreatedAt) {
+				continue
+			}
+		}
 		if len(events) == 0 {
 			if err := w.recordJobEvent(ctx, job.requestID, job.artistID, func(j *scrapejob.Job) error {
 				_, _, err := j.RecordFailed(orphanedQueuedReason, eventsourcing.Correlation{RequestID: job.requestID})

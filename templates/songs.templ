@@ -24,7 +24,17 @@ templ SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount
 				// is detached (1 mutation), we yield a microtask so the observers'
 				// transient registrations are dropped, reorder offline (0 mutations), then
 				// reattach (1 mutation).
-				async function sortSongsTable(sortMode) {
+				let sortSongsTableQueue = Promise.resolve();
+
+				function sortSongsTable(sortMode) {
+					sortSongsTableQueue = sortSongsTableQueue.then(
+						() => applySongsSort(sortMode),
+						() => applySongsSort(sortMode),
+					);
+					return sortSongsTableQueue;
+				}
+
+				async function applySongsSort(sortMode) {
 					const attr = sortMode === 'release_asc' ? 'data-order-release' : 'data-order-added';
 					const jobs = [];
 					for (const tableId of ['songs-current', 'songs-waiting-removal']) {
