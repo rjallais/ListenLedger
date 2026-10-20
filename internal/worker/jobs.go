@@ -338,11 +338,11 @@ func (w *Worker) reconcileFailedJobsSQLite(ctx context.Context, artistID string,
 		return
 	}
 
+	// The row flips are committed; their facts must follow even if the caller
+	// was cancelled, or the stream and row diverge permanently.
+	appendCtx := context.WithoutCancel(ctx)
 	for _, job := range changed {
-		if ctx.Err() != nil {
-			break
-		}
-		w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
+		w.recordJobEventWarn(appendCtx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
 			_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
 			return err
 		})

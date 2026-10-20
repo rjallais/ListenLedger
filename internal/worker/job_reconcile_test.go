@@ -2,12 +2,14 @@ package worker
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/domain/scrapejob"
+	"ListenLedger/internal/eventsourcing"
 )
 
 func TestReconcileFailedJobsSQLiteGuardsEventAppend(t *testing.T) {
@@ -60,6 +62,58 @@ func TestReconcileFailedJobsSQLiteGuardsEventAppend(t *testing.T) {
 	if !foundSucceeded {
 		t.Fatalf("failed stream missing ScrapeSucceeded: %v", failedStream)
 	}
+}
+
+type cancelOnLoadStore struct {
+	eventsourcing.Store
+	once   sync.Once
+	cancel context.CancelFunc
+}
+
+func (s *cancelOnLoadStore) Load(ctx context.Context, streamID string) ([]eventsourcing.Event, error) {
+	s.once.Do(s.cancel)
+	return s.Store.Load(ctx, streamID)
+}
+
+func TestReconcileFailedJobsSQLiteCompletesAppendsAfterCancellation(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+	queuedAt := time.Now().UTC().Format(jobTimestampFormat)
+	seedSweepArtist(t, ctx, w, "ar_reconcile_cancel", "pending")
+	jobs := []failedJob{
+		{requestID: "req_reconcile_cancel_a", artistID: "ar_reconcile_cancel"},
+		{requestID: "req_reconcile_cancel_b", artistID: "ar_reconcile_cancel"},
+	}
+	for _, job := range jobs {
+		seedSweepQueuedRow(t, ctx, w, job.requestID, job.artistID, queuedAt)
+		setReconcileJobStatus(t, ctx, w, job.requestID, "failed")
+	}
+
+	callerCtx, cancel := context.WithCancel(ctx)
+	w.jobStore = &cancelOnLoadStore{Store: w.jobStore, cancel: cancel}
+
+	w.reconcileFailedJobsSQLite(callerCtx, "ar_reconcile_cancel", jobs, "recovered_by_retry:req_cancel_source")
+
+	if callerCtx.Err() == nil {
+		t.Fatal("expected the store load to cancel the caller context")
+	}
+	for _, job := range jobs {
+		if status, _ := sweepJobRow(t, ctx, w, job.requestID); status != "succeeded" {
+			t.Fatalf("%s status = %q, want succeeded", job.requestID, status)
+		}
+		if !jobStreamHasType(t, ctx, w, job.requestID, scrapejob.EventTypeScrapeSucceeded) {
+			t.Fatalf("%s stream missing ScrapeSucceeded", job.requestID)
+		}
+	}
+}
+
+func jobStreamHasType(t *testing.T, ctx context.Context, w *Worker, requestID, eventType string) bool {
+	t.Helper()
+	for _, got := range jobStreamTypes(t, ctx, w, requestID) {
+		if got == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func setReconcileJobStatus(t *testing.T, ctx context.Context, w *Worker, requestID, status string) {
