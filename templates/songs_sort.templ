@@ -1,7 +1,9 @@
 package templates
 
+// SongSortControls is entirely signal-driven; ignore morphs so a pending
+// recent-toggle response cannot restore the request-start sort state.
 templ SongSortControls(playlistSort string) {
-	<div class="flex flex-wrap items-center gap-2 mb-4">
+	<div class="flex flex-wrap items-center gap-2 mb-4" data-ignore-morph>
 		<span class="text-sm opacity-70">Sort by:</span>
 		@SongSortButton("added_desc", "Most Recently Added", playlistSort)
 		@SongSortButton("release_asc", "Release Date (Oldest First)", playlistSort)
