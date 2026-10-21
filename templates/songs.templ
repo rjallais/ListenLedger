@@ -14,7 +14,7 @@ templ SongsPage(currentPlaylistSongs, waitingRemovalSongs []Song, notRecentCount
 				</button>
 			</div>
 			<p class="mb-4 text-base-content/70">Current playlist keeps the newest 500 recent songs. Older recent songs wait for removal.</p>
-			<songs-sortable class="block" data-attr:sort="$_playlist_sort">
+			<songs-sortable class="block" sort={ playlistSort } data-attr:sort="$_playlist_sort">
 				@SongsSections(currentPlaylistSongs, waitingRemovalSongs, notRecentCount, playlistSort)
 			</songs-sortable>
 			@AddSongModal()

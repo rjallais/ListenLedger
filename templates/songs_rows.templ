@@ -54,9 +54,13 @@ templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort
 }
 
 // songRecentChangeAction is the delegated change handler for a songs <tbody>.
-// The songs-sortable Rocket component owns the document-wide in-flight guard
-// and stashes the pre-click state; this expression only sends the request when
-// the component guard accepts the toggle.
+// Disabling the clicked checkbox prevents double submits; the SSE response
+// morphs the sections, which restores it. Only one row toggle may be in flight
+// across the songs page: a second change in any table is reverted so the
+// document-scoped failure handler can identify the single disabled checkbox.
+// The prior checked state is stashed so songs-sortable can restore it if the
+// fetch fails before any morph lands. The guard stays inline (not on the
+// component) so a missing songs-sortable.js cannot silently swallow toggles.
 func songRecentChangeAction() string {
-	return "if (evt.target.closest('songs-sortable')?.songsToggle?.(evt)) { @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
+	return "if (evt.target.dataset.songId) { if (document.querySelector('input[data-song-id]:disabled')) { evt.target.checked = !evt.target.checked; return; } evt.target.dataset.wasChecked = String(!evt.target.checked); evt.target.disabled = true; @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
 }

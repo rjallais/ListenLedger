@@ -2,32 +2,18 @@ import { rocket } from 'datastar'
 
 const sortableTbodies = ['songs-current', 'songs-waiting-removal', 'songs-not-recent']
 
-// songs-sortable owns the client-side sort queue and the recent-toggle request
-// guard and fetch lifecycle for the songs page. The server still renders the
-// initial order and every mutation response; this component only reorders the
-// existing rows and keeps them in the user's current sort after a response lands.
+// songs-sortable owns the client-side sort queue and the recent-toggle fetch
+// lifecycle for the songs page. The server still renders the initial order and
+// every mutation response; this component only reorders the existing rows and
+// keeps them in the user's current sort after a response lands. The toggle
+// request guard lives in songRecentChangeAction so it still runs when this
+// module fails to load.
 rocket('songs-sortable', {
 	mode: 'light',
 	props: ({ oneOf }) => ({
 		sort: oneOf('added_desc', 'release_asc').default('added_desc'),
 	}),
-	setup: ({ cleanup, defineHostProp, host, observeProps, props }) => {
-		// Rocket local actions are scoped to rendered markup, not host-provided
-		// children, so expose the toggle guard as a host method instead.
-		defineHostProp('songsToggle', {
-			value(evt) {
-				const target = evt.target
-				if (!target?.dataset?.songId) return false
-				if (host.querySelector('input[data-song-id]:disabled')) {
-					target.checked = !target.checked
-					return false
-				}
-				target.dataset.wasChecked = String(!target.checked)
-				target.disabled = true
-				return true
-			},
-		})
-
+	setup: ({ cleanup, host, observeProps, props }) => {
 		let sortQueue = Promise.resolve()
 		let currentSort = props.sort
 

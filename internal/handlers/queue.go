@@ -676,9 +676,10 @@ func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) error 
 }
 
 func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retryJobParams) error {
+	queuedAt := time.Now()
 	err := h.app.RunInTransaction(func(txApp core.App) error {
 		params.Job.Set("status", "queued")
-		params.Job.Set("queued_at", time.Now())
+		params.Job.Set("queued_at", queuedAt)
 		params.Job.Set("error", "")
 		params.Job.Set("started_at", nil)
 		params.Job.Set("finished_at", nil)
@@ -695,8 +696,32 @@ func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retr
 	if err != nil {
 		return err
 	}
+	h.saveRetryQueuedAtSQLite(ctx, params.RequestID, queuedAt)
 	correlation.Associate(params.ArtistID, params.RequestID)
 	return nil
+}
+
+// saveRetryQueuedAtSQLite mirrors a retry's re-queue timestamp into the SQLite
+// read model. The orphan sweep and the stale-queue expiry pass compare their
+// rows' queued_at against the sweep verdict and the retention cutoff, so a
+// PocketBase-only bump leaves a retried job looking as old as its original
+// insert and eligible to be failed or expired immediately.
+func (h *Handler) saveRetryQueuedAtSQLite(ctx context.Context, requestID string, queuedAt time.Time) {
+	if h.db == nil {
+		return
+	}
+	timestamp := queuedAt.UTC().Format("2006-01-02 15:04:05.000Z")
+	err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE scrape_jobs SET queued_at = ? WHERE request_id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, timestamp)
+		stmt.BindText(2, requestID)
+		_, err := stmt.Step()
+		return err
+	})
+	if err != nil {
+		log.Printf("[queue-retry] Warning: failed to mirror queued_at for %s to SQLite: %v", requestID, err)
+	}
 }
 
 func (h *Handler) processRetryCandidate(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) error {
