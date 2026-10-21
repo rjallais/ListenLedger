@@ -119,4 +119,9 @@ func TestEnsureDomainEventsStreamAsTruth(t *testing.T) {
 	if info.Config.Discard != jetstream.DiscardNew {
 		t.Fatalf("Discard = %s, want DiscardNew (truth stream must reject writes, never drop history)", info.Config.Discard)
 	}
+	// S2 keeps the on-disk store small without a wire-format change; the
+	// cap stays logical, so this must not alter limits or discard policy.
+	if info.Config.Compression != jetstream.S2Compression {
+		t.Fatalf("Compression = %s, want S2Compression", info.Config.Compression)
+	}
 }

@@ -1,13 +1,14 @@
 package templates
 
-import (
-	"fmt"
-	"net/url"
-)
+import "fmt"
 
 // SongRow renders a single song row.
 templ SongRow(song Song, playlistSort string) {
-	<tr id={ "song-" + song.ID }>
+	<tr
+		id={ "song-" + song.ID }
+		data-order-added={ fmt.Sprint(song.OrderAdded) }
+		data-order-release={ fmt.Sprint(song.OrderRelease) }
+	>
 		<td class="font-medium">{ song.Title }</td>
 		<td>{ song.ArtistName }</td>
 		<td>{ song.Album }</td>
@@ -36,12 +37,11 @@ templ SongBatchCell(batchSeq, batchPos int) {
 	</td>
 }
 
+// SongRecentToggleCell renders a plain checkbox. It deliberately carries no
+// data-* bindings: the change is handled by one delegated data-on:change on the
+// enclosing <tbody> (see songRecentChangeAction). Per-row bindings meant ~2000
+// Datastar effects that were torn down and rebuilt whenever a row moved.
 templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort string) {
-	{{
-		ind := "_recent_" + songID
-		indSignal := "$" + ind
-		bind := "_song_recent_" + songID
-	}}
 	<td class="text-center">
 		<input
 			type="checkbox"
@@ -49,10 +49,18 @@ templ SongRecentToggleCell(songID, songTitle string, isRecent bool, playlistSort
 			aria-label={ fmt.Sprintf("Mark %s as recently added", songTitle) }
 			checked?={ isRecent }
 			data-song-id={ songID }
-			data-indicator={ ind }
-			data-bind={ bind }
-			data-attr:disabled={ indSignal }
-			data-on:change={ "@post('/api/songs/" + url.PathEscape(songID) + "/recent/' + $" + bind + " + '?playlist_sort=" + url.QueryEscape(playlistSort) + "')" }
 		/>
 	</td>
+}
+
+// songRecentChangeAction is the delegated change handler for a songs <tbody>.
+// Disabling the clicked checkbox prevents double submits; the SSE response
+// morphs the sections, which restores it. Only one row toggle may be in flight
+// across the songs page: a second change in any table is reverted so the
+// document-scoped failure handler can identify the single disabled checkbox.
+// The prior checked state is stashed so songs-sortable can restore it if the
+// fetch fails before any morph lands. The guard stays inline (not on the
+// component) so a missing songs-sortable.js cannot silently swallow toggles.
+func songRecentChangeAction() string {
+	return "if (evt.target.dataset.songId) { if (document.querySelector('input[data-song-id]:disabled')) { evt.target.checked = !evt.target.checked; return; } evt.target.dataset.wasChecked = String(!evt.target.checked); evt.target.disabled = true; @post('/api/songs/' + encodeURIComponent(evt.target.dataset.songId) + '/recent/' + evt.target.checked + '?playlist_sort=' + encodeURIComponent($_playlist_sort)) }"
 }

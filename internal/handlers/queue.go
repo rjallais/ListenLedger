@@ -524,8 +524,8 @@ func (h *Handler) markFailedJobArtists(ctx context.Context, stats *queueRetrySta
 }
 
 func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRetryStats) error {
-	streamInfo, consumerAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
-	if h.shouldSkipStreamPurge(streamInfo, consumerAvailable, queueAckPending, queueRedelivered) {
+	streamInfo, consumerAvailable, primaryCountsAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
+	if h.shouldSkipStreamPurge(streamInfo, consumerAvailable, primaryCountsAvailable, queueAckPending, queueRedelivered) {
 		return nil
 	}
 
@@ -545,8 +545,8 @@ func (h *Handler) purgeOrphanScrapeRequests(ctx context.Context, stats *queueRet
 	return nil
 }
 
-func (h *Handler) shouldSkipStreamPurge(streamInfo *jetstream.StreamInfo, consumerAvailable bool, queueAckPending, queueRedelivered uint64) bool {
-	return streamInfo == nil || !consumerAvailable || streamInfo.State.Msgs == 0 || queueAckPending > 0 || queueRedelivered > 0
+func (h *Handler) shouldSkipStreamPurge(streamInfo *jetstream.StreamInfo, consumerAvailable, primaryCountsAvailable bool, queueAckPending, queueRedelivered uint64) bool {
+	return streamInfo == nil || !consumerAvailable || !primaryCountsAvailable || streamInfo.State.Msgs == 0 || queueAckPending > 0 || queueRedelivered > 0
 }
 
 func (h *Handler) hasPendingJobs(jobsQueued, jobsProcessing, artistsPending int64) bool {
@@ -676,9 +676,10 @@ func (h *Handler) saveRetryDeduped(ctx context.Context, job *core.Record) error 
 }
 
 func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retryJobParams) error {
+	queuedAt := time.Now()
 	err := h.app.RunInTransaction(func(txApp core.App) error {
 		params.Job.Set("status", "queued")
-		params.Job.Set("queued_at", time.Now())
+		params.Job.Set("queued_at", queuedAt)
 		params.Job.Set("error", "")
 		params.Job.Set("started_at", nil)
 		params.Job.Set("finished_at", nil)
@@ -695,8 +696,32 @@ func (h *Handler) saveRetryQueuedAndMarkPending(ctx context.Context, params retr
 	if err != nil {
 		return err
 	}
+	h.saveRetryQueuedAtSQLite(ctx, params.RequestID, queuedAt)
 	correlation.Associate(params.ArtistID, params.RequestID)
 	return nil
+}
+
+// saveRetryQueuedAtSQLite mirrors a retry's re-queue timestamp into the SQLite
+// read model. The orphan sweep and the stale-queue expiry pass compare their
+// rows' queued_at against the sweep verdict and the retention cutoff, so a
+// PocketBase-only bump leaves a retried job looking as old as its original
+// insert and eligible to be failed or expired immediately.
+func (h *Handler) saveRetryQueuedAtSQLite(ctx context.Context, requestID string, queuedAt time.Time) {
+	if h.db == nil {
+		return
+	}
+	timestamp := queuedAt.UTC().Format("2006-01-02 15:04:05.000Z")
+	err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE scrape_jobs SET queued_at = ? WHERE request_id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, timestamp)
+		stmt.BindText(2, requestID)
+		_, err := stmt.Step()
+		return err
+	})
+	if err != nil {
+		log.Printf("[queue-retry] Warning: failed to mirror queued_at for %s to SQLite: %v", requestID, err)
+	}
 }
 
 func (h *Handler) processRetryCandidate(ctx context.Context, job *core.Record, seenArtist map[string]struct{}, stats *queueRetryStats) error {
@@ -810,11 +835,11 @@ func (h *Handler) deleteRetryScrapeJob(requestID, artistID string) {
 	}
 }
 
-func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.StreamInfo, bool, uint64, uint64) {
+func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.StreamInfo, bool, bool, uint64, uint64) {
 	stream, err := h.js.Stream(ctx, messaging.ScrapeRequestsStreamName)
 	if err != nil {
 		log.Printf("[queue] Warning: failed to load stream handle: %v", err)
-		return nil, false, 0, 0
+		return nil, false, false, 0, 0
 	}
 
 	var (
@@ -829,22 +854,41 @@ func (h *Handler) loadQueueConsumerState(ctx context.Context) (*jetstream.Stream
 	}
 
 	consumerAvailable := false
-	for _, consumerName := range messaging.ScrapeWorkerConsumerNames() {
-		consumer, consumerErr := stream.Consumer(ctx, consumerName)
-		if consumerErr != nil {
-			continue
+	primaryCountsAvailable := false
+	consumer, consumerErr := stream.Consumer(ctx, messaging.ScrapeWorkerConsumerName)
+	if consumerErr == nil {
+		if info, infoErr := consumer.Info(ctx); infoErr != nil {
+			log.Printf("[queue] Warning: failed to load consumer info for %s: %v", messaging.ScrapeWorkerConsumerName, infoErr)
+		} else {
+			consumerAvailable = true
+			primaryCountsAvailable = true
+			queueAckPending = uint64(info.NumAckPending)
+			queueRedelivered = uint64(info.NumRedelivered)
 		}
-		info, infoErr := consumer.Info(ctx)
-		if infoErr != nil {
-			log.Printf("[queue] Warning: failed to load consumer info for %s: %v", consumerName, infoErr)
-			continue
+	}
+	// An Info failure on the primary consumer falls through to the per-provider
+	// aggregation too; otherwise its zero counts are indistinguishable from a
+	// missing consumer.
+	if !consumerAvailable {
+		for _, consumerName := range messaging.ScrapeWorkerConsumerNames() {
+			if consumerName == messaging.ScrapeWorkerConsumerName {
+				continue
+			}
+			c, cErr := stream.Consumer(ctx, consumerName)
+			if cErr != nil {
+				continue
+			}
+			info, infoErr := c.Info(ctx)
+			if infoErr != nil {
+				continue
+			}
+			consumerAvailable = true
+			queueAckPending += uint64(info.NumAckPending)
+			queueRedelivered += uint64(info.NumRedelivered)
 		}
-		consumerAvailable = true
-		queueAckPending += uint64(info.NumAckPending)
-		queueRedelivered += uint64(info.NumRedelivered)
 	}
 
-	return streamInfo, consumerAvailable, queueAckPending, queueRedelivered
+	return streamInfo, consumerAvailable, primaryCountsAvailable, queueAckPending, queueRedelivered
 }
 
 func (h *Handler) countQueueState(ctx context.Context) (int64, int64, int64, int64) {
@@ -953,7 +997,7 @@ func (h *Handler) notifyQueueUpdated() {
 func (h *Handler) getQueueStats(ctx context.Context) templates.QueueStats {
 	h.ensureBatchProgressSubscriber()
 
-	streamInfo, consumerAvailable, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
+	streamInfo, consumerAvailable, _, queueAckPending, queueRedelivered := h.loadQueueConsumerState(ctx)
 	jobsQueued, jobsProcessing, jobsFailed, artistsPending := h.countQueueState(ctx)
 	h.applyActiveBatchProgress(ctx, &artistsPending, &jobsProcessing)
 

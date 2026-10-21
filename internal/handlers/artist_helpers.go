@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -21,6 +22,7 @@ import (
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/config"
+	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/priority"
 	"ListenLedger/internal/quota"
@@ -393,6 +395,54 @@ func nonWaitingArtistCountExpr(genre string) dbx.Expression {
 	return dbx.NewExp(nonWaitingArtistFilter, nonWaitingArtistParams(genre))
 }
 
+type artistCountsSummary struct {
+	RockMetalCount      int
+	EverythingElseCount int
+	WaitingCount        int
+}
+
+func (h *Handler) countArtistsSummary(ctx context.Context) (artistCountsSummary, error) {
+	if h.db != nil {
+		var summary artistCountsSummary
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("SELECT COALESCE(SUM(CASE WHEN genre_group = 'rock_metal' AND list_status != 'waiting' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN genre_group = 'everything_else' AND list_status != 'waiting' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN list_status = 'waiting' THEN 1 ELSE 0 END), 0) FROM artists;")
+			defer func() { _ = stmt.Reset() }()
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if hasRow {
+				summary.RockMetalCount = int(stmt.ColumnInt64(0))
+				summary.EverythingElseCount = int(stmt.ColumnInt64(1))
+				summary.WaitingCount = int(stmt.ColumnInt64(2))
+			}
+			return nil
+		})
+		if err != nil {
+			return summary, fmt.Errorf("countArtistsSummary SQLite: %w", err)
+		}
+		return summary, nil
+	}
+
+	rock, err := h.countArtistsByGenreExcludingWaiting(ctx, "rock_metal")
+	if err != nil {
+		return artistCountsSummary{}, err
+	}
+	everything, err := h.countArtistsByGenreExcludingWaiting(ctx, "everything_else")
+	if err != nil {
+		return artistCountsSummary{}, err
+	}
+	waiting, err := h.countWaitingArtists(ctx)
+	if err != nil {
+		return artistCountsSummary{}, err
+	}
+	return artistCountsSummary{
+		RockMetalCount:      rock,
+		EverythingElseCount: everything,
+		WaitingCount:        waiting,
+	}, nil
+}
+
 func (h *Handler) countArtistsByGenreExcludingWaiting(ctx context.Context, genre string) (int, error) {
 	if h.db != nil {
 		var count int
@@ -520,7 +570,90 @@ func prioritizeArtistJobs(records []*core.Record) []priority.Job {
 	return jobs
 }
 
-func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priority.Job, error) {
+// batchRefreshArtistSelectSQL selects the next batch candidates in priority
+// tier order. The CASE tiers mirror priority.Determine for every selectable
+// row; pending artists are excluded by the WHERE clause, so no pending CASE
+// arm is needed.
+const batchRefreshArtistSelectSQL = `SELECT id FROM artists
+	WHERE spotify_id != '' AND spotify_id IS NOT NULL
+	  AND (fetch_status IS NULL OR fetch_status != 'pending')
+	  AND (last_updated IS NULL OR last_updated = '' OR replace(last_updated, ' ', 'T') < ?)
+	ORDER BY
+	  CASE
+	    WHEN list_status = 'waiting' THEN 0
+	    WHEN list_status = 'recently_added' AND genre_group = 'rock_metal' THEN 1
+	    WHEN list_status = 'recently_added' THEN 2
+	    WHEN list_status = 'not_added' AND genre_group = 'rock_metal' THEN 3
+	    WHEN list_status = 'not_added' THEN 4
+	    WHEN list_status = 'included' AND genre_group = 'rock_metal' THEN 5
+	    WHEN list_status = 'included' THEN 6
+	    ELSE 7
+	  END ASC,
+	  monthly_listeners DESC
+	LIMIT ?`
+
+func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int) ([]priority.Job, error) {
+	if count <= 0 {
+		count = 50
+	}
+	if h.db != nil && h.app != nil {
+		sqliteCutoff := cutoff
+		if parsed, err := time.Parse("2006-01-02 15:04:05.000Z", cutoff); err == nil {
+			sqliteCutoff = parsed.Format(time.RFC3339Nano)
+		} else if parsed, err := time.Parse(time.RFC3339, cutoff); err == nil {
+			sqliteCutoff = parsed.Format(time.RFC3339Nano)
+		}
+		var orderedIDs []string
+		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep(batchRefreshArtistSelectSQL)
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, sqliteCutoff)
+			stmt.BindInt64(2, int64(count))
+			for {
+				hasRow, err := stmt.Step()
+				if err != nil {
+					return err
+				}
+				if !hasRow {
+					break
+				}
+				orderedIDs = append(orderedIDs, stmt.ColumnText(0))
+			}
+			return nil
+		})
+		if err != nil {
+			log.Printf("[handlers] batchRefreshJobs: SQLite artist selection failed, falling back to PocketBase: %v", err)
+		} else if len(orderedIDs) > 0 {
+			idInterfaces := make([]any, len(orderedIDs))
+			for i, id := range orderedIDs {
+				idInterfaces[i] = id
+			}
+			records := make([]*core.Record, 0, len(orderedIDs))
+			err = h.app.RecordQuery("artists").
+				WithContext(ctx).
+				AndWhere(dbx.In("id", idInterfaces...)).
+				All(&records)
+			if err != nil {
+				log.Printf("[handlers] batchRefreshJobs: loading SQLite-selected artists failed, falling back to PocketBase: %v", err)
+			} else {
+				recMap := make(map[string]*core.Record, len(records))
+				for _, r := range records {
+					recMap[r.Id] = r
+				}
+				jobs := make([]priority.Job, 0, len(orderedIDs))
+				for _, id := range orderedIDs {
+					if r, ok := recMap[id]; ok {
+						jobs = append(jobs, priority.Job{
+							Record:   r,
+							Priority: priority.Determine(r),
+						})
+					}
+				}
+				return jobs, nil
+			}
+		}
+	}
+
 	records := make([]*core.Record, 0)
 	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
@@ -538,6 +671,17 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string) ([]priori
 // mirrors; the aggregate is the source of truth for isArtistRefreshPending.
 // requestID links the fact to its saga instance in metadata.
 func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) {
+	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, true)
+}
+
+// emitArtistFetchStatusEventOnly appends the fetch-status event to the event
+// store without individually projecting to SQLite, allowing callers that perform
+// a single batch projection update across all items to avoid SQLite lock contention.
+func (h *Handler) emitArtistFetchStatusEventOnly(ctx context.Context, artistID, status, reason, requestID string) {
+	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, false)
+}
+
+func (h *Handler) emitArtistFetchStatusWithOptions(ctx context.Context, artistID, status, reason, requestID string, project bool) {
 	if h.artistRepo == nil || strings.TrimSpace(artistID) == "" {
 		return
 	}
@@ -556,10 +700,47 @@ func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, r
 		log.Printf("[handlers] Warning: fetch-status event %s for %s not saved: %v", status, artistID, err)
 		return
 	}
-	if h.artistProjection != nil && len(events) > 0 {
+	if project && h.artistProjection != nil && len(events) > 0 {
 		if err := h.artistProjection.Project(ctx, agg, events); err != nil {
 			log.Printf("[handlers] Warning: fetch-status projection %s for %s failed: %v", status, artistID, err)
 		}
+	}
+}
+
+// emitBatchArtistFetchStatusEvents loads candidate artist aggregates concurrently
+// and commits all status-transition events in a single batch transaction.
+func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidates []batchCandidate, status, reason string) {
+	if h.artistRepo == nil || len(candidates) == 0 {
+		return
+	}
+	loaded := make([]*artist.Artist, len(candidates))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	for i, c := range candidates {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			artistID := strings.TrimSpace(c.job.Record.Id)
+			if artistID == "" {
+				return
+			}
+			agg, err := h.artistRepo.Load(ctx, artistID)
+			if err != nil || agg == nil || agg.FetchStatus == status {
+				return
+			}
+			if err := agg.SetFetchStatus(status, reason, eventsourcing.Correlation{RequestID: c.requestID}); err != nil {
+				return
+			}
+			loaded[i] = agg
+		})
+	}
+	wg.Wait()
+
+	if err := h.artistRepo.SaveBatch(ctx, loaded); err != nil {
+		log.Printf("[handlers] Warning: batch fetch-status events (%s) save error: %v", status, err)
 	}
 }
 

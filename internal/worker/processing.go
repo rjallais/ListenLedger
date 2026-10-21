@@ -26,6 +26,13 @@ type msgEnvelope struct {
 	label string
 }
 
+// deliveredAfterOrphanVerdict distinguishes a retry republished after the
+// sweep verdict from a late delivery of the original attempt. JetStream keeps
+// the original store timestamp across redeliveries.
+func deliveredAfterOrphanVerdict(meta *jetstream.MsgMetadata, verdictAt time.Time) bool {
+	return meta != nil && !verdictAt.IsZero() && meta.Timestamp.After(verdictAt)
+}
+
 func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spotify.Provider, label string) msgResult {
 	env := msgEnvelope{msg: item.msg, meta: item.meta, req: item.req, label: label}
 	delivered := uint64(0)
@@ -36,8 +43,17 @@ func (w *Worker) handleMsg(ctx context.Context, item inflightMsg, provider spoti
 
 	item.dispatchProgress.Stop()
 
-	if w.isRequestAlreadySucceeded(ctx, env.req.RequestID) {
+	succeeded, orphanedAt := w.requestStreamVerdict(ctx, env.req.RequestID)
+	if succeeded {
 		return w.handleDedupSkip(ctx, env)
+	}
+
+	// The orphan sweep's verdict is final for the original delivery, but a
+	// retry republished after the verdict is a genuine new attempt. JetStream
+	// keeps the original store timestamp across redeliveries, so only a later
+	// publish passes.
+	if !orphanedAt.IsZero() && !deliveredAfterOrphanVerdict(env.meta, orphanedAt) {
+		return w.handleOrphanedQueuedSkip(ctx, env)
 	}
 
 	if result, ok := w.runProviderPreflight(ctx, provider, env); ok {
@@ -86,6 +102,17 @@ func (w *Worker) handleDedupSkip(ctx context.Context, env msgEnvelope) msgResult
 	if err := w.ackMsg(ctx, env.msg); err != nil {
 		w.recordAckError(env.label)
 		log.Printf("[worker] Failed to ack deduplicated message: %v", err)
+	}
+	return msgOK
+}
+
+// handleOrphanedQueuedSkip acks a late message whose request already carries
+// the orphan sweep's terminal verdict, so it cannot re-open that stream.
+func (w *Worker) handleOrphanedQueuedSkip(ctx context.Context, env msgEnvelope) msgResult {
+	log.Printf("[worker] Skipping orphaned queued request_id=%s (provider=%s)", env.req.RequestID, env.label)
+	if err := w.ackMsg(ctx, env.msg); err != nil {
+		w.recordAckError(env.label)
+		log.Printf("[worker] Failed to ack orphaned queued message: %v", err)
 	}
 	return msgOK
 }
@@ -371,7 +398,7 @@ func (w *Worker) processRequest(ctx context.Context, env msgEnvelope, provider s
 	startedAt := time.Now()
 	req := env.req
 
-	if w.isRequestAlreadySucceeded(ctx, req.RequestID) {
+	if provider == spotify.ProviderApify && w.isRequestAlreadySucceeded(ctx, req.RequestID) {
 		log.Printf("[worker] Ignoring stale redelivery for already-succeeded request_id=%s", req.RequestID)
 		return errRequestAlreadySucceeded
 	}

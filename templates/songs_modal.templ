@@ -7,7 +7,6 @@ package templates
 // (button, backdrop, or Escape). The backend can drive it via patch-signals.
 templ AddSongModal() {
 	<sb-modal
-		data-signals="{_add_song_open: false}"
 		data-attr:open="$_add_song_open"
 		data-on:sb-close="$_add_song_open = false"
 		heading="Add New Song"
@@ -22,7 +21,7 @@ templ AddSongModal() {
 templ AddSongForm() {
 	<form
 		id="add-song-form"
-		data-indicator:_add_song_loading
+		data-indicator:_add_song_loading__root
 		data-on:submit__prevent="!$_add_song_loading && @post('/api/songs', {contentType: 'form'})"
 	>
 		<div class="form-control w-full mb-4">
@@ -126,7 +125,7 @@ templ AddSongForm() {
 templ AddSongModalActions() {
 	<div slot="footer" class="flex justify-end gap-2">
 		<button type="button" class="btn btn-ghost" data-sb-close>Cancel</button>
-		<button type="submit" form="add-song-form" class="btn btn-primary" data-attr:disabled="$_add_song_loading">
+		<button type="submit" form="add-song-form" class="btn btn-primary" data-attr:disabled="$_add_song_loading || false">
 			<span data-show="$_add_song_loading" class="loading loading-spinner loading-xs" style="display: none"></span>
 			Add Song
 		</button>

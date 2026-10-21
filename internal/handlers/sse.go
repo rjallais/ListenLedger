@@ -54,18 +54,92 @@ func (h *Handler) newSSESignalsPatcher(ctx context.Context, sse *datastar.Server
 	}
 }
 
-// patchLatestBatchResult patches the latest batch progress into the DOM if an active snapshot exists.
-func (h *Handler) patchLatestBatchResult(ctx context.Context, patch ssePatcher, logger *slog.Logger) {
-	if snapshot, ok := h.getLatestBatchSnapshot(ctx); ok {
+// batchProgressTracker keeps one SSE client's view monotonic per batch:
+// out-of-order publishes must not lower the completion count or reopen a
+// finished batch.
+type batchProgressTracker struct {
+	mu     sync.Mutex
+	latest map[string]batchProgressSnapshot
+}
+
+func newBatchProgressTracker() *batchProgressTracker {
+	return &batchProgressTracker{latest: make(map[string]batchProgressSnapshot)}
+}
+
+func (t *batchProgressTracker) accept(snapshot batchProgressSnapshot) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.acceptLocked(snapshot)
+}
+
+func (t *batchProgressTracker) acceptLocked(snapshot batchProgressSnapshot) bool {
+	if prev, ok := t.latest[snapshot.ID]; ok {
+		if prev.Done || snapshot.Completed < prev.Completed {
+			return false
+		}
+	}
+	t.latest[snapshot.ID] = snapshot
+	return true
+}
+
+// apply accepts snapshot and runs patch while holding the tracker lock so
+// concurrent patches are emitted in tracker order.
+func (t *batchProgressTracker) apply(snapshot batchProgressSnapshot, patch func()) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.acceptLocked(snapshot) {
+		return false
+	}
+	patch()
+	return true
+}
+
+// patchBatchProgressSnapshot streams both the batch result fragment and Datastar signals.
+func (h *Handler) patchBatchProgressSnapshot(patch ssePatcher, patchSignals func([]byte) error, snapshot batchProgressSnapshot, logger *slog.Logger) {
+	if patchSignals != nil {
+		payload := fmt.Appendf(
+			nil,
+			`{"batchID":%q,"batchTotal":%d,"batchCompleted":%d,"batchDone":%t}`,
+			snapshot.ID,
+			snapshot.Total,
+			snapshot.Completed,
+			snapshot.Done,
+		)
+		if err := patchSignals(payload); err != nil {
+			logger.Debug("[sse] Failed to patch batch signals", "error", err)
+		}
+	}
+	if patch != nil {
 		if err := patch(templates.BatchRefreshResult(
 			snapshot.ID,
 			snapshot.Total,
 			snapshot.Completed,
 			snapshot.Stats,
 			snapshot.Done,
-		)); err != nil {
+		), noViewTransitionsOpts...); err != nil {
 			logger.Debug("[sse] Failed to patch batch refresh result", "error", err)
 		}
+	}
+}
+
+// patchLatestBatchResult patches the latest batch progress into the DOM if an active snapshot exists.
+func (h *Handler) patchLatestBatchResult(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger) {
+	if snapshot, ok := h.getLatestBatchSnapshot(ctx); ok {
+		h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
+	}
+}
+
+// patchInitialBatchProgress streams batch progress on connection start only if a batch is active.
+func (h *Handler) patchInitialBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger, tracker *batchProgressTracker) {
+	if snapshot, ok := h.getActiveBatchSnapshot(ctx); ok {
+		emit := func() {
+			h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
+		}
+		if tracker != nil {
+			tracker.apply(snapshot, emit)
+			return
+		}
+		emit()
 	}
 }
 
@@ -74,53 +148,110 @@ func (h *Handler) patchLatestQueueStats(ctx context.Context, patch ssePatcher, l
 	qCtx, qCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer qCancel()
 	queueStats := h.getQueueStats(qCtx)
-	if err := patch(templates.QueueJobsWidgetContent(queueStats)); err != nil {
+	if err := patch(templates.QueueJobsWidgetContent(queueStats), noViewTransitionsOpts...); err != nil {
 		logger.Debug("[sse] Failed to patch queue stats", "error", err)
 	}
 }
 
 // patchBatchAndQueueProgress sends both the batch refresh status and the queue counters.
-func (h *Handler) patchBatchAndQueueProgress(ctx context.Context, patch ssePatcher, logger *slog.Logger) {
-	h.patchLatestBatchResult(ctx, patch, logger)
+func (h *Handler) patchBatchAndQueueProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger) {
+	h.patchLatestBatchResult(ctx, patch, patchSignals, logger)
 	h.patchLatestQueueStats(ctx, patch, logger)
 }
 
+const sseQueueStatsDebounce = 150 * time.Millisecond
+
+// newDebouncedQueueStatsTrigger returns a coalescing trigger that runs
+// patchLatestQueueStats at most once per sseQueueStatsDebounce window per SSE
+// client, preventing 200 artist.updated events during batch enqueue from
+// triggering 200 back-to-back queue stats queries and DOM morphs.
+func (h *Handler) newDebouncedQueueStatsTrigger(ctx context.Context, patch ssePatcher, logger *slog.Logger) func() {
+	var (
+		mu      sync.Mutex
+		timer   *time.Timer
+		running bool
+		pending bool
+	)
+	var fire func()
+	fire = func() {
+		mu.Lock()
+		if ctx.Err() != nil {
+			timer = nil
+			running = false
+			pending = false
+			mu.Unlock()
+			return
+		}
+		if running {
+			pending = true
+			timer = nil
+			mu.Unlock()
+			return
+		}
+		running = true
+		pending = false
+		timer = nil
+		mu.Unlock()
+
+		h.patchLatestQueueStats(ctx, patch, logger)
+
+		mu.Lock()
+		running = false
+		if pending && ctx.Err() == nil {
+			pending = false
+			timer = time.AfterFunc(sseQueueStatsDebounce, fire)
+		}
+		mu.Unlock()
+	}
+
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		if running {
+			pending = true
+			return
+		}
+		if timer != nil {
+			return
+		}
+		timer = time.AfterFunc(sseQueueStatsDebounce, fire)
+	}
+}
+
 // rankArtistPosition returns the (total, rank) of one artist among non-waiting
-// artists of its genre via two indexed counts: total peers, plus peers ranked
-// ahead (more listeners, or equal listeners with a smaller id — the same
-// tie-break as buildArtistRankMap). Used by per-event SSE patches to avoid a
-// full genre scan per event per connection.
+// artists of its genre via two indexed counts in a single ReadTX: total peers,
+// plus peers ranked ahead (more listeners, or equal listeners with a smaller id
+// — the same tie-break as buildArtistRankMap). Used by per-event SSE patches to
+// avoid a full genre scan per event per connection.
 func (h *Handler) rankArtistPosition(ctx context.Context, genre string, listeners int, artistID string) (total, rank int, err error) {
 	if h.db == nil {
 		return 0, 0, fmt.Errorf("rankArtistPosition requires SQLite")
 	}
 	err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting';")
-		defer func() { _ = stmt.Reset() }()
-		stmt.BindText(1, genre)
-		hasRow, err := stmt.Step()
-		if err != nil || !hasRow {
-			return err
+		totalStmt := tx.Prep("SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting';")
+		defer func() { _ = totalStmt.Reset() }()
+		totalStmt.BindText(1, genre)
+		hasRow, stepErr := totalStmt.Step()
+		if stepErr != nil || !hasRow {
+			return stepErr
 		}
-		total = int(stmt.ColumnInt64(0))
-		return nil
-	})
-	if err != nil {
-		return 0, 0, fmt.Errorf("count artists for genre %s: %w", genre, err)
-	}
-	err = h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep(`SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting'
+		total = int(totalStmt.ColumnInt64(0))
+
+		rankStmt := tx.Prep(`SELECT COUNT(*) FROM artists WHERE genre_group = ? AND list_status != 'waiting'
 			AND (monthly_listeners > ? OR (monthly_listeners = ? AND id < ?));`)
-		defer func() { _ = stmt.Reset() }()
-		stmt.BindText(1, genre)
-		stmt.BindInt64(2, int64(listeners))
-		stmt.BindInt64(3, int64(listeners))
-		stmt.BindText(4, artistID)
-		hasRow, err := stmt.Step()
-		if err != nil || !hasRow {
-			return err
+		defer func() { _ = rankStmt.Reset() }()
+		rankStmt.BindText(1, genre)
+		rankStmt.BindInt64(2, int64(listeners))
+		rankStmt.BindInt64(3, int64(listeners))
+		rankStmt.BindText(4, artistID)
+		hasRow, stepErr = rankStmt.Step()
+		if stepErr != nil || !hasRow {
+			return stepErr
 		}
-		rank = int(stmt.ColumnInt64(0)) + 1
+		rank = int(rankStmt.ColumnInt64(0)) + 1
 		return nil
 	})
 	if err != nil {
@@ -140,22 +271,26 @@ func (h *Handler) patchArtistElement(ctx context.Context, patch ssePatcher, logg
 		return
 	}
 
-	genre := record.GetString("genre_group")
 	var totalSongs int
-	if h.db != nil {
-		total, rank, rankErr := h.rankArtistPosition(dbCtx, genre, record.GetInt("monthly_listeners"), artistID)
-		if rankErr != nil {
-			// Rank is display-only (ArtistRow/Card do not render TotalSongs):
-			// never drop the patch, fall back to the full-scan path.
-			logger.Debug("[sse] Failed to rank artist for patch, falling back", "artist_id", artistID, "error", rankErr)
+	if record.GetString("list_status") == waitingArtistStatus {
+		totalSongs = record.GetInt("collection_songs")
+	} else {
+		genre := record.GetString("genre_group")
+		if h.db != nil {
+			total, rank, rankErr := h.rankArtistPosition(dbCtx, genre, record.GetInt("monthly_listeners"), artistID)
+			if rankErr != nil {
+				// Rank is display-only (ArtistRow/Card do not render TotalSongs):
+				// never drop the patch, fall back to the full-scan path.
+				logger.Debug("[sse] Failed to rank artist for patch, falling back", "artist_id", artistID, "error", rankErr)
+				rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
+				totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)
+			} else {
+				totalSongs = rankedArtistTotalSongs(total, 0, rank-1)
+			}
+		} else {
 			rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
 			totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)
-		} else {
-			totalSongs = rankedArtistTotalSongs(total, 0, rank-1)
 		}
-	} else {
-		rankCache, _ := h.buildArtistRankMap(dbCtx, genre)
-		totalSongs = h.dynamicTotalSongs(dbCtx, record, rankCache)
 	}
 	artist := artistFromRecord(record, totalSongs)
 
@@ -201,8 +336,9 @@ func (m *managedSubscription) drain(name string, logger *slog.Logger) {
 }
 
 // subscribeArtistUpdates subscribes to NATS artist update notifications and streams DOM changes.
-func (h *Handler) subscribeArtistUpdates(ctx context.Context, patch ssePatcher, logger *slog.Logger, wg *sync.WaitGroup) (*managedSubscription, error) {
+func (h *Handler) subscribeArtistUpdates(ctx context.Context, patch ssePatcher, scheduleQueueStats func(), logger *slog.Logger, wg *sync.WaitGroup) (*managedSubscription, error) {
 	managed := newManagedSubscription(wg)
+
 	sub, err := h.nc.Subscribe(messaging.SubjectArtistUpdated, func(msg *nats.Msg) {
 		select {
 		case <-ctx.Done():
@@ -216,11 +352,54 @@ func (h *Handler) subscribeArtistUpdates(ctx context.Context, patch ssePatcher, 
 			return
 		}
 
-		// Batch completion is marked once by the global subscriber in
-		// ensureBatchProgressSubscriber; marking here too would repeat it
-		// for every open SSE connection.
 		h.patchArtistElement(ctx, patch, logger, update.ArtistID)
-		h.patchBatchAndQueueProgress(ctx, patch, logger)
+		if scheduleQueueStats != nil {
+			scheduleQueueStats()
+		} else {
+			h.patchLatestQueueStats(ctx, patch, logger)
+		}
+	})
+	if err != nil {
+		managed.done()
+		return nil, err
+	}
+	managed.sub = sub
+	sub.SetClosedHandler(func(_ string) {
+		managed.done()
+	})
+	return managed, nil
+}
+
+// subscribeBatchProgress subscribes to authoritative batch progress updates and streams DOM and signal changes.
+func (h *Handler) subscribeBatchProgress(ctx context.Context, patch ssePatcher, patchSignals func([]byte) error, logger *slog.Logger, wg *sync.WaitGroup, tracker *batchProgressTracker) (*managedSubscription, error) {
+	managed := newManagedSubscription(wg)
+	sub, err := h.nc.Subscribe(messaging.SubjectBatchProgress, func(msg *nats.Msg) {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		update, err := messaging.UnmarshalBatchProgressUpdated(msg.Data)
+		if err != nil {
+			logger.Warn("[sse] Failed to unmarshal batch progress", "error", err)
+			return
+		}
+
+		snapshot := batchProgressSnapshot{
+			ID:        update.BatchID,
+			Total:     update.Total,
+			Completed: update.Completed,
+			Done:      update.Done,
+			Stats:     update.Stats,
+		}
+		if tracker != nil {
+			tracker.apply(snapshot, func() {
+				h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
+			})
+			return
+		}
+		h.patchBatchProgressSnapshot(patch, patchSignals, snapshot, logger)
 	})
 	if err != nil {
 		managed.done()
@@ -283,7 +462,7 @@ func (h *Handler) subscribeRanksUpdates(ctx context.Context, patchSignals func([
 }
 
 // subscribeQueueUpdates subscribes to queue counter updates and streams widget changes.
-func (h *Handler) subscribeQueueUpdates(ctx context.Context, patch ssePatcher, logger *slog.Logger, wg *sync.WaitGroup) (*managedSubscription, error) {
+func (h *Handler) subscribeQueueUpdates(ctx context.Context, patch ssePatcher, scheduleQueueStats func(), logger *slog.Logger, wg *sync.WaitGroup) (*managedSubscription, error) {
 	managed := newManagedSubscription(wg)
 	sub, err := h.nc.Subscribe(messaging.SubjectQueueUpdated, func(msg *nats.Msg) {
 		select {
@@ -292,7 +471,11 @@ func (h *Handler) subscribeQueueUpdates(ctx context.Context, patch ssePatcher, l
 		default:
 		}
 
-		h.patchLatestQueueStats(ctx, patch, logger)
+		if scheduleQueueStats != nil {
+			scheduleQueueStats()
+		} else {
+			h.patchLatestQueueStats(ctx, patch, logger)
+		}
 	})
 	if err != nil {
 		managed.done()
@@ -340,11 +523,12 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	var patchMu sync.Mutex
 	patch := h.newSSEPatcher(ctx, sse, &patchMu)
 	patchSignals := h.newSSESignalsPatcher(ctx, sse, &patchMu)
+	scheduleQueueStats := h.newDebouncedQueueStatsTrigger(ctx, patch, logger)
 
-	h.patchBatchAndQueueProgress(ctx, patch, logger)
+	tracker := newBatchProgressTracker()
 
 	var wg sync.WaitGroup
-	sub, err := h.subscribeArtistUpdates(ctx, patch, logger, &wg)
+	sub, err := h.subscribeArtistUpdates(ctx, patch, scheduleQueueStats, logger, &wg)
 	if err != nil {
 		logger.Error("[sse] failed to subscribe to artist updates", "error", err)
 		patchMu.Lock()
@@ -353,7 +537,7 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queueSub, err := h.subscribeQueueUpdates(ctx, patch, logger, &wg)
+	queueSub, err := h.subscribeQueueUpdates(ctx, patch, scheduleQueueStats, logger, &wg)
 	if err != nil {
 		logger.Warn("[sse] failed to subscribe to queue updates", "error", err)
 	}
@@ -362,6 +546,14 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logger.Warn("[sse] failed to subscribe to ranks updates", "error", err)
 	}
+
+	batchSub, err := h.subscribeBatchProgress(ctx, patch, patchSignals, logger, &wg, tracker)
+	if err != nil {
+		logger.Warn("[sse] failed to subscribe to batch progress updates", "error", err)
+	}
+
+	h.patchInitialBatchProgress(ctx, patch, patchSignals, logger, tracker)
+	h.patchLatestQueueStats(ctx, patch, logger)
 
 	defer func() {
 		go func() {
@@ -373,6 +565,9 @@ func (h *Handler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			}
 			if ranksSub != nil {
 				ranksSub.drain("ranks updates", logger)
+			}
+			if batchSub != nil {
+				batchSub.drain("batch progress updates", logger)
 			}
 
 			done := make(chan struct{})

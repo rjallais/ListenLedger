@@ -5,7 +5,7 @@ templ SongSectionTable(tbodyID string, songs []Song, playlistSort string) {
 	<div class="overflow-x-auto">
 		<table class="table table-zebra">
 			@SongTableHeader()
-			<tbody id={ tbodyID }>
+			<tbody id={ tbodyID } data-on:change={ songRecentChangeAction() }>
 				for _, song := range songs {
 					@SongRow(song, playlistSort)
 				}

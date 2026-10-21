@@ -3,7 +3,17 @@ package templates
 import "strconv"
 
 templ BatchRefreshResult(batchID string, total int, completed int, stats map[string]int, done bool) {
-	<div id="batch-refresh-result" class="mt-4" data-batch-done={ boolString(done) } aria-live="polite" aria-atomic="true">
+	<div
+		id="batch-refresh-result"
+		class="mt-4"
+		data-show="!$_batch_refresh_loading"
+		data-batch-id={ batchID }
+		data-batch-done={ boolString(done) }
+		data-batch-completed={ strconv.Itoa(completed) }
+		data-batch-total={ strconv.Itoa(total) }
+		aria-live="polite"
+		aria-atomic="true"
+	>
 		if total == 0 && done {
 			@BatchRefreshEmptyAlert()
 		} else if done {
@@ -71,7 +81,7 @@ templ BatchRefreshCompleteAlert(completed, total int) {
 }
 
 templ BatchRefreshErrorAlert(errMsg string) {
-	<div id="batch-refresh-result" class="mt-4" aria-live="polite" aria-atomic="true">
+	<div id="batch-refresh-result" class="mt-4" data-show="!$_batch_refresh_loading" aria-live="polite" aria-atomic="true">
 		<div class="alert alert-error">
 			<svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
 			<div class="flex-1">
@@ -90,13 +100,25 @@ templ BatchRefreshID(batchID string) {
 templ BatchRefreshProgress(completed, total int) {
 	<div class="mt-3">
 		<div class="flex items-center justify-between text-xs text-base-content/70 mb-1">
-			<span>Progress: { strconv.Itoa(completed) } / { strconv.Itoa(total) }</span>
-			if total > 0 {
-				<span>{ strconv.Itoa(completed * 100 / total) }%</span>
-			} else {
-				<span>0%</span>
-			}
+			<span>
+				Progress: <span data-text="$batchCompleted != null ? $batchCompleted : ''">{ strconv.Itoa(completed) }</span> / <span data-text="$batchTotal != null ? $batchTotal : ''">{ strconv.Itoa(total) }</span>
+			</span>
+			<span data-text="($batchTotal > 0 ? Math.round(($batchCompleted || 0) * 100 / $batchTotal) : 0) + '%'">
+				if total > 0 {
+					{ strconv.Itoa(completed * 100 / total) }%
+				} else {
+					0%
+				}
+			</span>
 		</div>
-		<progress class="progress progress-primary w-full" value={ strconv.Itoa(completed) } max={ strconv.Itoa(max(total, 1)) }>{ strconv.Itoa(completed) }</progress>
+		<progress
+			class={ "progress w-full", templ.KV("progress-success", completed >= total && total > 0), templ.KV("progress-primary", completed < total || total <= 0) }
+			data-attr:value="$batchCompleted"
+			data-attr:max="Math.max($batchTotal, 1)"
+			data-class:progress-success="$batchDone && $batchTotal > 0"
+			data-class:progress-primary="!$batchDone || $batchTotal <= 0"
+			value={ strconv.Itoa(completed) }
+			max={ strconv.Itoa(max(total, 1)) }
+		>{ strconv.Itoa(completed) }</progress>
 	</div>
 }

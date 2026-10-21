@@ -45,8 +45,12 @@ func registerArtistUpdateFanout(ctx context.Context, app *pocketbase.PocketBase,
 		// triggered this hook.
 		go func(ctx context.Context, snap publishSnapshot, requestID string) {
 			if requestID == "" {
-				requestID = correlation.Pop(snap.artistID)
-			} else {
+				if snap.fetchStatus == "pending" {
+					requestID = correlation.Get(snap.artistID)
+				} else {
+					requestID = correlation.Pop(snap.artistID)
+				}
+			} else if snap.fetchStatus != "pending" {
 				correlation.Clear(snap.artistID)
 			}
 			// Restart-safe fallback: the in-memory registry (5m TTL) misses when

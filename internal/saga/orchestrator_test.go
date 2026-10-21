@@ -2,6 +2,7 @@ package saga
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
@@ -203,6 +204,58 @@ func TestTickTracksLifecycle(t *testing.T) {
 	}
 	if h.State != StateDone {
 		t.Fatalf("History.State = %q, want done", h.State)
+	}
+}
+
+func TestTickExpiresOrphanedInstances(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	store := eventsourcing.NewSQLiteStore(db)
+
+	// A ghost request: an open instance survives, but its scrape_jobs row was
+	// purged and no stream was ever opened. Tick must expire it to dead
+	// instead of re-deriving requested forever.
+	if err := db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep(`INSERT INTO saga_instances (request_id, artist_id, state) VALUES ('req_ghost', 'ar_ghost', 'requested');`)
+		defer func() { _ = stmt.Reset() }()
+		if _, err := stmt.Step(); err != nil {
+			return err
+		}
+
+		// A streamless succeeded row is only reachable for an instance that
+		// was already open, so seed that state for Tick to refresh.
+		open := tx.Prep(`INSERT INTO saga_instances (request_id, artist_id, state) VALUES ('req_rowdone', 'ar_rowdone', 'requested');`)
+		defer func() { _ = open.Reset() }()
+		_, err := open.Step()
+		return err
+	}); err != nil {
+		t.Fatalf("seed saga instance: %v", err)
+	}
+
+	// Row-side convergence for streamless requests: a failed row reads failed
+	// (the row's verdict), a queued row stays requested (dispatch may follow),
+	// and a succeeded row reads done.
+	seedSagaRow(t, db, "req_rowfailed", "ar_rowfailed", "failed")
+	seedSagaRow(t, db, "req_rowqueued", "ar_rowqueued", "queued")
+	seedSagaRow(t, db, "req_rowdone", "ar_rowdone", "succeeded")
+
+	o := NewOrchestrator(db, store)
+	if _, err := o.Tick(ctx); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+
+	state, attempts, lastEvent, failure := sagaInstanceState(t, db, "req_ghost")
+	if state != StateDead || attempts != 0 || lastEvent != "" || !strings.Contains(failure, "orphan") {
+		t.Fatalf("ghost = %q/%d/%q/%q, want dead with orphan error", state, attempts, lastEvent, failure)
+	}
+	if state, _, _, failure := sagaInstanceState(t, db, "req_rowfailed"); state != StateFailed || failure != "failed without an event stream" {
+		t.Fatalf("failed-row = %q/%q, want failed/failed without an event stream", state, failure)
+	}
+	if state, _, _, _ := sagaInstanceState(t, db, "req_rowqueued"); state != StateRequested {
+		t.Fatalf("queued-row = %q, want requested", state)
+	}
+	if state, _, lastEvent, _ := sagaInstanceState(t, db, "req_rowdone"); state != StateDone || lastEvent != "" {
+		t.Fatalf("succeeded-row = %q/%q, want done with empty last event", state, lastEvent)
 	}
 }
 

@@ -237,7 +237,7 @@ func startEmbeddedNATS(ctx context.Context, storeDir string, cfg *config.Config)
 		ns.Shutdown()
 	}()
 
-	if err := waitForNATSServer(ctx, ns, 5*time.Second); err != nil {
+	if err := waitForNATSServer(ctx, ns, 15*time.Second); err != nil {
 		ns.Shutdown()
 		ns.WaitForShutdown()
 		return nil, fmt.Errorf("embedded NATS failed readiness check: %w", err)

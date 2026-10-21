@@ -129,6 +129,15 @@ func TestHandlers_SQLiteArtistQueries(t *testing.T) {
 		t.Fatalf("expected waiting count 1, got %d", waitCount)
 	}
 
+	// 2b. Test countArtistsSummary
+	summary, err := h.countArtistsSummary(ctx)
+	if err != nil {
+		t.Fatalf("countArtistsSummary failed: %v", err)
+	}
+	if summary.RockMetalCount != 2 || summary.WaitingCount != 1 || summary.EverythingElseCount != 1 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+
 	// 3. Test fetchArtistGenrePage
 	artists, total, err := h.fetchArtistGenrePage(ctx, "rock_metal", 1, 10)
 	if err != nil {

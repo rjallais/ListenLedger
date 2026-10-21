@@ -77,8 +77,11 @@ func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) 
 					break
 				}
 
+				titleRaw := stmt.ColumnText(1)
+				titleLower := strings.ToLower(titleRaw)
 				releaseDateRaw := stmt.ColumnText(4)
 				rd, valid := parseSongReleaseDate(releaseDateRaw)
+				releaseDateUI := formatParsedReleaseDate(releaseDateRaw, rd, valid)
 				createdAtRaw := stmt.ColumnText(9)
 				createdAt, _ := time.Parse(time.RFC3339Nano, createdAtRaw)
 				if createdAt.IsZero() {
@@ -96,9 +99,9 @@ func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) 
 				entries = append(entries, songListEntry{
 					song: templates.Song{
 						ID:          stmt.ColumnText(0),
-						Title:       stmt.ColumnText(1),
+						Title:       titleRaw,
 						ArtistName:  stmt.ColumnText(2),
-						ReleaseDate: formatReleaseDateForUI(releaseDateRaw),
+						ReleaseDate: releaseDateUI,
 						ReleaseType: stmt.ColumnText(5),
 						Album:       albumName,
 						IsRecent:    stmt.ColumnInt64(6) != 0,
@@ -108,6 +111,7 @@ func (h *Handler) listSongEntries(ctx context.Context) ([]songListEntry, error) 
 					createdAt:        createdAt,
 					releaseDate:      rd,
 					releaseDateValid: valid,
+					titleLower:       titleLower,
 				})
 			}
 			return nil
@@ -137,12 +141,14 @@ func (h *Handler) listSongEntriesWithApp(ctx context.Context, app core.App) ([]s
 
 	entries := make([]songListEntry, 0, len(records))
 	for _, record := range records {
+		titleRaw := record.GetString("title")
 		rd, valid := parseSongReleaseDate(record.GetString("release_date"))
 		entries = append(entries, songListEntry{
 			song:             songFromRecord(record),
 			createdAt:        record.GetDateTime("created").Time(),
 			releaseDate:      rd,
 			releaseDateValid: valid,
+			titleLower:       strings.ToLower(titleRaw),
 		})
 	}
 
@@ -162,6 +168,9 @@ func (h *Handler) buildSongPageData(ctx context.Context, playlistSort string) (s
 	sortNotRecentSongEntries(notRecent)
 
 	currentPlaylistEntries, waitingRemovalEntries := splitPlaylistBuckets(recent)
+	assignSortOrders(currentPlaylistEntries, playlistSortMode)
+	assignSortOrders(waitingRemovalEntries, waitingRemovalSortMode)
+
 	sortEntriesByMode(currentPlaylistEntries, playlistSort, playlistSortMode)
 	sortEntriesByMode(waitingRemovalEntries, playlistSort, waitingRemovalSortMode)
 
@@ -577,7 +586,7 @@ func (h *Handler) HandleSongsCurrentPlaylistAPI(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
-	_ = h.RenderDatastar(w, r, templates.CurrentPlaylistSection(pageData.CurrentPlaylist, pageData.PlaylistSort))
+	_ = RenderDatastarWithConfig(w, r, noViewTransitionsConfig, templates.CurrentPlaylistSection(pageData.CurrentPlaylist, pageData.PlaylistSort))
 }
 
 func (h *Handler) handleSongsCurrentPlaylistAPI(e *core.RequestEvent) error {
@@ -591,7 +600,7 @@ func (h *Handler) HandleSongsSectionsAPI(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	_ = h.RenderDatastar(w, r, templates.SongsSections(pageData.CurrentPlaylist, pageData.WaitingRemoval, pageData.NotRecentCount, pageData.PlaylistSort))
+	_ = RenderDatastarWithConfig(w, r, noViewTransitionsConfig, templates.SongsSections(pageData.CurrentPlaylist, pageData.WaitingRemoval, pageData.NotRecentCount, pageData.PlaylistSort))
 }
 
 func (h *Handler) handleSongsSectionsAPI(e *core.RequestEvent) error {

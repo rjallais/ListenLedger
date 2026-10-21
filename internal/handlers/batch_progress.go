@@ -78,8 +78,43 @@ const batchReconcileInterval = 2 * time.Second
 func (h *Handler) markBatchArtistDoneStored(artistID, fetchStatus string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := h.batchStore.CompleteArtist(ctx, artistID, fetchStatus); err != nil {
+	batchID, err := h.batchStore.CompleteArtist(ctx, artistID, fetchStatus)
+	if err != nil {
 		log.Printf("[batch] CompleteArtist(%s) failed: %v", artistID, err)
+		return
+	}
+	if batchID == "" {
+		return
+	}
+	snap, found, err := h.batchStore.Snapshot(ctx, batchID)
+	if err != nil {
+		log.Printf("[batch] Snapshot(%s) failed: %v", batchID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	h.publishBatchProgress(ctx, batchSnapshotFromStore(snap))
+}
+
+// publishBatchProgress publishes the authoritative batch progress to NATS.
+func (h *Handler) publishBatchProgress(ctx context.Context, snapshot batchProgressSnapshot) {
+	if h.nc == nil {
+		return
+	}
+	data, err := messaging.MarshalBatchProgressUpdated(messaging.NewBatchProgressUpdated(
+		snapshot.ID,
+		snapshot.Total,
+		snapshot.Completed,
+		snapshot.Done,
+		snapshot.Stats,
+	))
+	if err != nil {
+		log.Printf("[batch] MarshalBatchProgressUpdated failed: %v", err)
+		return
+	}
+	if err := h.nc.Publish(messaging.SubjectBatchProgress, data); err != nil {
+		log.Printf("[batch] Publish to %s failed: %v", messaging.SubjectBatchProgress, err)
 	}
 }
 
@@ -114,6 +149,9 @@ func (h *Handler) reconcileBatchStoreThrottled(ctx context.Context) {
 		log.Printf("[batch] Reconcile failed: %v", err)
 	} else if n > 0 {
 		log.Printf("[batch] Reconcile completed %d member(s) missed by events", n)
+		if snap, found, err := h.batchStore.LatestSnapshot(ctx); err == nil && found {
+			h.publishBatchProgress(ctx, batchSnapshotFromStore(snap))
+		}
 	}
 }
 
@@ -140,6 +178,9 @@ func (h *Handler) RunBatchReconciler(ctx context.Context, interval time.Duration
 			}
 		} else if n > 0 {
 			log.Printf("[batch] background Reconcile completed %d member(s)", n)
+			if snap, found, err := h.batchStore.LatestSnapshot(rctx); err == nil && found {
+				h.publishBatchProgress(rctx, batchSnapshotFromStore(snap))
+			}
 		}
 	}
 	reconcile()
@@ -165,13 +206,19 @@ func (h *Handler) createBatchProgress(ctx context.Context, artistIDs []string, s
 	}
 	now := time.Now()
 	batchID := strconv.FormatInt(now.UnixNano(), 36)
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeout := 30 * time.Second
+	if needed := time.Duration(len(artistIDs)) * 200 * time.Millisecond; needed > timeout {
+		timeout = needed
+	}
+	storeCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	snap, err := h.batchStore.Start(ctx, batchID, artistIDs, stats, now.Add(-2*time.Hour))
+	snap, err := h.batchStore.Start(storeCtx, batchID, artistIDs, stats, now.Add(-batchprogress.PruneRetention))
 	if err != nil {
 		return batchProgressSnapshot{}, fmt.Errorf("starting batch %s: %w", batchID, err)
 	}
-	return batchSnapshotFromStore(snap), nil
+	res := batchSnapshotFromStore(snap)
+	h.publishBatchProgress(storeCtx, res)
+	return res, nil
 }
 
 func (h *Handler) getBatchSnapshot(ctx context.Context, batchID string) (batchProgressSnapshot, bool) {

@@ -100,6 +100,7 @@ rocket('sb-modal', {
 			{ name: 'sb-close', kind: 'custom-event', bubbles: true, composed: true, description: 'After closing. detail: { reason, value }.' },
 		],
 	},
+	renderOnPropChange: ({ changes }) => Object.keys(changes).some((name) => name !== 'open'),
 	setup: ({ $$, action, adoptStyles, defineHostProp, emit, host, observeProps, props }) => {
 		adoptStyles(host, styles)
 		$$.open = props.open
@@ -142,6 +143,7 @@ rocket('sb-modal', {
 		return inline
 			? html`<section class="panel inline" part="panel" role="group" aria-labelledby="title" data-on:click="@click()">${inner}</section>`
 			: html`<dialog class="panel" part="panel" aria-labelledby="title"
+				data-preserve-attr="open"
 				data-effect="$$open ? (el.open || el.showModal()) : (el.open && el.close())"
 				data-on:cancel="evt.preventDefault(); @close('escape')"
 				data-on:click="@click()">${inner}</dialog>`

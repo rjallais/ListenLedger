@@ -29,7 +29,7 @@ func BatchRefreshModal() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-signals=\"{_batch_refresh_open: false}\" data-attr:open=\"$_batch_refresh_open\" data-on:sb-close=\"$_batch_refresh_open = false\" heading=\"Batch Refresh Artists\"><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-indicator:_batch_refresh_loading data-on:submit__prevent=\"!$_batch_refresh_loading && @post('/api/refresh/batch', {contentType: 'form'})\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<sb-modal data-attr:open=\"$_batch_refresh_open\" data-on:sb-close=\"$_batch_refresh_open = false\" heading=\"Batch Refresh Artists\"><p class=\"text-sm text-base-content/70 mb-4\">Refresh monthly listener counts for multiple artists. Artists updated in the last 4 hours are skipped. Jobs are prioritized: queued → recently added (rock first) → not added → included.</p><form id=\"batch-refresh-form\" data-indicator:_batch_refresh_loading__root data-on:submit__prevent=\"!$_batch_refresh_loading && !(!$batchDone && $batchID != '') && @post('/api/refresh/batch', {contentType: 'form'})\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -37,7 +37,7 @@ func BatchRefreshModal() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</form><div id=\"batch-refresh-result\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</form><div data-show=\"$_batch_refresh_loading\" class=\"mt-4 alert alert-info\" style=\"display: none\"><span class=\"loading loading-spinner loading-sm\"></span><div class=\"flex-1\"><h4 class=\"font-bold\">Queueing Batch Refresh</h4><p class=\"text-xs text-base-content/70\">Selecting prioritized artists and dispatching scrape requests...</p></div></div><div id=\"batch-refresh-result\" data-show=\"!$_batch_refresh_loading\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -74,7 +74,7 @@ func BatchRefreshCountField() templ.Component {
 			templ_7745c5c3_Var2 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"batch-refresh-count\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select id=\"batch-refresh-count\" name=\"count\" class=\"select select-bordered w-full\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "<div class=\"form-control w-full mb-4\"><label class=\"label\" for=\"batch-refresh-count\"><span class=\"label-text\">Number of Artists to Refresh</span></label> <select id=\"batch-refresh-count\" name=\"count\" class=\"select select-bordered w-full\" data-attr:disabled=\"$_batch_refresh_loading || (!$batchDone && $batchID != '')\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -113,7 +113,7 @@ func BatchRefreshModalActions() templ.Component {
 			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"batch-refresh-form\" class=\"btn btn-primary gap-2\" data-attr:disabled=\"$_batch_refresh_loading\"><span data-show=\"$_batch_refresh_loading\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> Start Refresh</button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<div slot=\"footer\" class=\"flex justify-end gap-2\"><button type=\"button\" class=\"btn btn-ghost\" data-sb-close>Cancel</button> <button type=\"submit\" form=\"batch-refresh-form\" class=\"btn btn-primary gap-2\" data-attr:disabled=\"$_batch_refresh_loading || (!$batchDone && $batchID != '') || false\"><span data-show=\"$_batch_refresh_loading || (!$batchDone && $batchID != '')\" class=\"loading loading-spinner loading-xs\" style=\"display: none\"></span> <span data-show=\"!$batchDone && $batchID != ''\" style=\"display: none\">Refreshing...</span> <span data-show=\"$batchDone || $batchID == ''\">Start Refresh</span></button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

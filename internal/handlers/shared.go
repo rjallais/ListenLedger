@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/a-h/templ"
@@ -62,6 +64,18 @@ func useViewTransitions(cfg *config.Config) bool {
 		return true
 	}
 	return cfg.UseViewTransitions
+}
+
+var noViewTransitionsConfig = &config.Config{UseViewTransitions: false}
+
+// noViewTransitionsOpts opts a single patch out of the config's
+// transitions-on default. It targets the SSE chrome lanes — the navbar queue
+// counters (pushed on every scrape completion) and the batch progress meter
+// (pushed per completed artist) — where animation adds nothing but transition
+// churn on high-frequency updates. patchOpts appends caller options after the
+// config default, so this later WithUseViewTransitions(false) wins.
+var noViewTransitionsOpts = []datastar.PatchElementOption{
+	datastar.WithUseViewTransitions(false),
 }
 
 var allowedGenreGroups = map[string]bool{
@@ -150,10 +164,42 @@ func getQueryParamInt(r *http.Request, key string, fallback, minVal, maxVal int)
 	return parseBoundedInt(r.URL.Query().Get(key), fallback, minVal, maxVal)
 }
 
+var templBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
+// maxPooledBufferCap bounds the capacity of buffers returned to the pool.
+// The songs page renders ~500 rows; a buffer that grew to hold it must not
+// stay resident for every later render.
+const maxPooledBufferCap = 1 << 20 // 1 MiB
+
 // RenderTempl renders a templ component to the standard HTTP response writer.
+// It buffers output via a sync.Pool to avoid micro-chunked HTTP writes and
+// to set an exact Content-Length header.
 func RenderTempl(w http.ResponseWriter, r *http.Request, component templ.Component) error {
+	buf := templBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPooledBufferCap {
+			templBufferPool.Put(buf)
+		}
+	}()
+
+	if err := component.Render(r.Context(), buf); err != nil {
+		// Callers discard this error, so answer here rather than
+		// returning a bare 200 with an empty body.
+		http.Error(w, "Failed to render page", http.StatusInternalServerError)
+		return fmt.Errorf("render templ component: %w", err)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return component.Render(r.Context(), w)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	if _, err := buf.WriteTo(w); err != nil {
+		return fmt.Errorf("write templ response: %w", err)
+	}
+	return nil
 }
 
 // RenderDatastar renders a templ component patch via Datastar SSE using Handler configuration.

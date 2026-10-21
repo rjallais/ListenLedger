@@ -213,6 +213,9 @@ func albumFilterConfigForStatus(status string) (albumFilterConfig, error) {
 				"LOWER(`title`) ASC",
 		}, nil
 	case "waiting":
+		// NOT IN, not status = 'waiting': albumStatusForUI maps any
+		// non-canonical status to waiting, so an equality predicate would
+		// hide those rows from the section that displays them.
 		return albumFilterConfig{
 			filter: dbx.NewExp(
 				"status != {:full} AND status != {:processed}",
@@ -289,6 +292,9 @@ func (h *Handler) fetchAlbumsFromDB(ctx context.Context, status string, offset, 
 		countQuery = "SELECT COUNT(*) FROM albums WHERE status = 'processed_once';"
 		selectQuery = "SELECT id, title, artist_name, collection_songs, total_songs, status FROM albums WHERE status = 'processed_once' ORDER BY (total_songs - collection_songs) DESC, CASE WHEN total_songs > 0 THEN CAST(collection_songs AS REAL) / total_songs ELSE 0 END DESC, LOWER(title) ASC LIMIT ? OFFSET ?;"
 	case "waiting":
+		// NOT IN, not status = 'waiting': albumStatusForUI maps any
+		// non-canonical status to waiting, so an equality predicate would
+		// hide those rows from the section that displays them.
 		countQuery = "SELECT COUNT(*) FROM albums WHERE status NOT IN ('full', 'processed_once');"
 		selectQuery = "SELECT id, title, artist_name, collection_songs, total_songs, status FROM albums WHERE status NOT IN ('full', 'processed_once') ORDER BY CASE WHEN total_songs > 0 THEN CAST(collection_songs AS REAL) / total_songs ELSE 0 END DESC, collection_songs DESC, LOWER(title) ASC LIMIT ? OFFSET ?;"
 	default:

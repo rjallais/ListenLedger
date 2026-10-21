@@ -275,3 +275,74 @@ func TestRepository_SaveSnapshotsOnBoundaryCrossing(t *testing.T) {
 		t.Fatalf("snapshot version = %d, want %d", snap.Version, agg.Version())
 	}
 }
+
+func TestRepository_SnapshotPreservesListenerRequestIDs(t *testing.T) {
+	ctx := t.Context()
+	store := newFakeSnapshotStore()
+	repo := NewRepository(store)
+
+	agg, err := NewArtist("ar_snap_req", "Snapshot Requests", "sp_snap_req", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := agg.RecordMonthlyListeners(100, "test", 1, eventsourcing.Correlation{RequestID: "req-1"}); err != nil {
+		t.Fatalf("RecordMonthlyListeners(req-1): %v", err)
+	}
+	if _, err := repo.Save(ctx, agg); err != nil {
+		t.Fatalf("Save(req-1): %v", err)
+	}
+	if err := agg.RecordMonthlyListeners(200, "test", 1, eventsourcing.Correlation{RequestID: "req-2"}); err != nil {
+		t.Fatalf("RecordMonthlyListeners(req-2): %v", err)
+	}
+	if _, err := repo.Save(ctx, agg); err != nil {
+		t.Fatalf("Save(req-2): %v", err)
+	}
+
+	// Freeze the aggregate after req-1 and req-2, then append req-3 after the
+	// snapshot so the final load exercises snapshot restore plus tail replay.
+	mid, err := repo.Load(ctx, "ar_snap_req")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	payload, err := mid.marshalSnapshot()
+	if err != nil {
+		t.Fatalf("marshalSnapshot: %v", err)
+	}
+	if err := store.SaveSnapshot(ctx, eventsourcing.Snapshot{
+		StreamID:   "ar_snap_req",
+		StreamType: StreamTypeArtist,
+		Version:    mid.Version(),
+		Payload:    payload,
+		CreatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	live, err := repo.Load(ctx, "ar_snap_req")
+	if err != nil {
+		t.Fatalf("Load live: %v", err)
+	}
+	if err := live.RecordMonthlyListeners(300, "test", 1, eventsourcing.Correlation{RequestID: "req-3"}); err != nil {
+		t.Fatalf("RecordMonthlyListeners(req-3): %v", err)
+	}
+	if _, err := repo.Save(ctx, live); err != nil {
+		t.Fatalf("Save(req-3): %v", err)
+	}
+
+	loadAfters := store.loadAfters
+	final, err := repo.Load(ctx, "ar_snap_req")
+	if err != nil {
+		t.Fatalf("Load final: %v", err)
+	}
+	if store.loadAfters == loadAfters {
+		t.Fatal("final load should use the snapshot path and replay the tail")
+	}
+	for _, requestID := range []string{"req-1", "req-2", "req-3"} {
+		if !final.HasRecordedListenersForRequest(requestID) {
+			t.Fatalf("HasRecordedListenersForRequest(%s) = false after snapshot load", requestID)
+		}
+	}
+	if final.HasRecordedListenersForRequest("req-4") {
+		t.Fatal("HasRecordedListenersForRequest(req-4) = true, want false")
+	}
+}

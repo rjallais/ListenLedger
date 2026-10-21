@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/correlation"
@@ -71,6 +72,28 @@ func queryJobStatus(t *testing.T, ctx context.Context, h *Handler, requestID str
 	return status
 }
 
+func queryJobQueuedAt(t *testing.T, ctx context.Context, h *Handler, requestID string) string {
+	t.Helper()
+	var queuedAt string
+	err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT queued_at FROM scrape_jobs WHERE request_id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, requestID)
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if hasRow {
+			queuedAt = stmt.ColumnText(0)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("query job queued_at %s: %v", requestID, err)
+	}
+	return queuedAt
+}
+
 func queryArtistFetchStatus(t *testing.T, ctx context.Context, h *Handler, artistID string) string {
 	t.Helper()
 	var status string
@@ -109,6 +132,24 @@ func TestCountQueueState_SQLite(t *testing.T) {
 	queued, processing, failed, pending := h.countQueueState(ctx)
 	if queued != 1 || processing != 1 || failed != 1 || pending != 1 {
 		t.Fatalf("countQueueState = (%d,%d,%d,%d), want (1,1,1,1)", queued, processing, failed, pending)
+	}
+}
+
+func TestSaveRetryQueuedAtSQLite(t *testing.T) {
+	h, tempDir := setupTestSQLiteDB(t)
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	defer func() { _ = h.db.Close() }()
+	ctx := context.Background()
+
+	original := time.Now().UTC().Add(-2 * time.Hour).Format(queueTestTS)
+	seedQueueTestArtist(t, ctx, h, "ar_r1", "idle")
+	seedQueueTestJob(t, ctx, h, "job_r1", "req_r1", "ar_r1", "failed", original)
+
+	requeuedAt := time.Now().UTC()
+	h.saveRetryQueuedAtSQLite(ctx, "req_r1", requeuedAt)
+
+	if got, want := queryJobQueuedAt(t, ctx, h, "req_r1"), requeuedAt.Format(queueTestTS); got != want {
+		t.Fatalf("queued_at = %q, want %q", got, want)
 	}
 }
 
@@ -302,5 +343,26 @@ func TestIsArtistRefreshPending_AggregateState(t *testing.T) {
 	}
 	if dup, _ := h.isArtistRefreshPending(ctx, "ar_v1"); !dup {
 		t.Fatal("pending artist should read as pending (restart-surviving duplicate detection)")
+	}
+}
+
+func TestShouldSkipStreamPurgeRequiresPrimaryCounts(t *testing.T) {
+	h := &Handler{}
+	streamInfo := &jetstream.StreamInfo{State: jetstream.StreamState{Msgs: 1}}
+
+	if h.shouldSkipStreamPurge(streamInfo, true, true, 0, 0) {
+		t.Fatal("purge should run when stream, primary counts, and consumer counts are all available")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, false, 0, 0) {
+		t.Fatal("purge must be skipped when only provider fallback counts are available")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, true, 1, 0) {
+		t.Fatal("purge must be skipped with unacked primary requests")
+	}
+	if !h.shouldSkipStreamPurge(streamInfo, true, true, 0, 1) {
+		t.Fatal("purge must be skipped with redelivered primary requests")
+	}
+	if !h.shouldSkipStreamPurge(nil, true, true, 0, 0) {
+		t.Fatal("purge must be skipped without stream info")
 	}
 }

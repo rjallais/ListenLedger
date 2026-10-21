@@ -1,14 +1,10 @@
 package templates
 
-import (
-	"fmt"
-	"net/url"
-
-	"github.com/starfederation/datastar-go/datastar"
-)
-
+// SongSortControls is entirely signal-driven; ignore morphs so a pending
+// recent-toggle response cannot restore the request-start sort state. The
+// songs-sortable component observes the sort prop and reorders the tables.
 templ SongSortControls(playlistSort string) {
-	<div class="flex flex-wrap items-center gap-2 mb-4">
+	<div class="flex flex-wrap items-center gap-2 mb-4" data-ignore-morph>
 		<span class="text-sm opacity-70">Sort by:</span>
 		@SongSortButton("added_desc", "Most Recently Added", playlistSort)
 		@SongSortButton("release_asc", "Release Date (Oldest First)", playlistSort)
@@ -17,18 +13,13 @@ templ SongSortControls(playlistSort string) {
 
 templ SongSortButton(sortValue, label, playlistSort string) {
 	<button
+		type="button"
 		class={ "btn btn-sm", templ.KV("btn-primary", playlistSort == sortValue), templ.KV("btn-outline", playlistSort != sortValue) }
-		aria-pressed={ fmt.Sprintf("%v", playlistSort == sortValue) }
-		data-indicator:_sorting
-		data-attr:disabled="$_sorting"
-		data-on:click={ songsSectionsSortURL(sortValue) }
+		data-class:btn-primary={ "$_playlist_sort == '" + sortValue + "'" }
+		data-class:btn-outline={ "$_playlist_sort != '" + sortValue + "'" }
+		data-attr:aria-pressed={ "String($_playlist_sort == '" + sortValue + "')" }
+		data-on:click={ "$_playlist_sort = '" + sortValue + "'" }
 	>
-		<span data-show="$_sorting" class="loading loading-spinner loading-xs" style="display: none"></span>
 		{ label }
 	</button>
-}
-
-func songsSectionsSortURL(sortValue string) string {
-	query := url.Values{"playlist_sort": []string{sortValue}}.Encode()
-	return datastar.GetSSE("/api/songs/sections?%s", query)
 }

@@ -23,8 +23,8 @@ templ Layout(title string, activeNav string) {
 			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 			<title>{ title } - Music Collection</title>
 			<meta name="description" content="Manage and track your personal music collection, albums, artists, and songs rotation."/>
-		<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>"/>
-		<!-- No imperative global listeners: dropdowns close via
+			<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>"/>
+			<!-- No imperative global listeners: dropdowns close via
 			data-on:click__outside on native <details> elements, and Datastar
 			aborts @get() SSE streams automatically when their element is
 			detached or the document unloads (MPA navigation). -->
@@ -54,9 +54,48 @@ templ Layout(title string, activeNav string) {
 			@templ.JSONScript("", map[string]map[string]string{
 				"imports": map[string]string{"datastar": AssetURL("datastar.js")},
 			}).WithType("importmap")
+			<!-- Classic script: runs before the deferred module scripts below, so
+			it observes datastar-ready whenever Datastar fires it (the scan is
+			what attaches the data-on listeners, and it lands a moment after the
+			module import resolves). -->
+			<script>
+				window.__datastarReady = false;
+				document.addEventListener('datastar-ready', () => { window.__datastarReady = true; }, { once: true });
+			</script>
 			<script type="module">
+				// Fire the live-lane start once Datastar has scanned the DOM
+				// and the window has finished loading, so long-lived SSE lanes
+				// never compete with page-load requests. Waiting for the import
+				// to resolve is not enough: the scan completes on
+				// datastar-ready, slightly later, and a datastar-booted event
+				// dispatched earlier would find no listener attached yet. The
+				// SSE and hot-reload lanes listen for `datastar-booted` instead
+				// of `load` directly, so a prerendered page — where `load` may
+				// fire before Datastar boots — still opens them.
+				function openLiveLanes() {
+					window.dispatchEvent(new CustomEvent('datastar-booted'));
+				}
 				function bootDatastar() {
-					import('datastar');
+					import('datastar').then(() => {
+						// Start only after both Datastar's DOM scan and the window
+						// load event, so long-lived SSE lanes never compete with
+						// page-load requests. Either event may arrive first.
+						let started = false;
+						const start = () => {
+							if (started || !window.__datastarReady || document.readyState !== 'complete') {
+								return;
+							}
+							started = true;
+							openLiveLanes();
+						};
+						if (!window.__datastarReady) {
+							document.addEventListener('datastar-ready', start, { once: true });
+						}
+						if (document.readyState !== 'complete') {
+							window.addEventListener('load', start, { once: true });
+						}
+						start();
+					});
 				}
 				if (document.prerendering) {
 					document.addEventListener('prerenderingchange', bootDatastar, { once: true });
@@ -65,11 +104,15 @@ templ Layout(title string, activeNav string) {
 				}
 			</script>
 			<script type="module" src={ AssetURL("sb-modal.js") } defer></script>
+			<script type="module" src={ AssetURL("songs-sortable.js") } defer></script>
 		</head>
 		<body class="min-h-screen bg-base-200">
 			<a href="#main-content" class="skip-link sr-only">Skip to content</a>
 			if IsDevEnvironment() {
-				<div id="hotreload-container" data-init="@get('/reload', {retryMaxCount: Infinity, retryInterval: 300, retryMaxWait: 2000})"></div>
+				// Open the hot-reload SSE on the `datastar-booted` event (not data-init)
+				// so the never-ending stream stays off the load-event critical path
+				// (same rationale as SSEIndicator). See that component for details.
+				<div id="hotreload-container" data-on:datastar-booted__window="@get('/reload', {retryMaxCount: Infinity, retryInterval: 300, retryMaxWait: 2000})"></div>
 			}
 			@Navbar(activeNav)
 			<main id="main-content" tabindex="-1" class="container mx-auto p-4 md:p-6 outline-none">
@@ -165,13 +208,27 @@ templ ThemeButton(theme Theme) {
 }
 
 // SSEIndicator shows the live connection status
+//
+// The SSE stream is opened on the custom `datastar-booted` window event, which
+// the boot script fires once Datastar has scanned the DOM: immediately when
+// loading has already finished (prerender activation, or a normal page that
+// beat the async import), otherwise after window `load`. Datastar's @get()
+// uses fetch(), and Chromium holds the window `load` event until in-flight
+// fetches settle — but an SSE stream never settles on its own, so opening it
+// during data-init (DOMContentLoaded) delays `load` until the first flushed
+// bytes. Waiting for `load` keeps the live lane fully functional (it connects
+// as soon as the page is interactive) while keeping it off the load-event
+// critical path. Measured ~100-170ms faster load. The custom event is needed
+// because `load` has already fired by the time a prerendered page boots
+// Datastar (activation defers the module import), which would leave a
+// data-on:load__window listener waiting on an event that never comes again.
 templ SSEIndicator() {
 	<div
 		id="sse-indicator-container"
 		class="flex items-center gap-2"
 		data-signals="{_sseStatus: 'connected'}"
-		data-init="@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})"
-		data-on:datastar-fetch="if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' }"
+		data-on:datastar-booted__window="@get('/api/events', {openWhenHidden: false, retry: 'always', retryMaxCount: Infinity, retryInterval: 1000, retryMaxWait: 30000})"
+		data-on:datastar-fetch__document="if (evt.detail.el?.id === 'sse-indicator-container') { if (evt.detail.type === 'retrying') { $_sseStatus = 'reconnecting' } else if (evt.detail.type === 'error' || evt.detail.type === 'retries-failed') { $_sseStatus = 'disconnected' } else if (evt.detail.type === 'started') { $_sseStatus = 'connected' } }"
 	>
 		<span
 			id="sse-indicator"

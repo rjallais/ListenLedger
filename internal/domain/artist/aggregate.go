@@ -3,6 +3,7 @@ package artist
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,12 +11,17 @@ import (
 )
 
 var (
-	ErrEmptyArtistName  = errors.New("artist: name cannot be empty")
-	ErrInvalidListStatus = errors.New("artist: invalid list status")
+	ErrEmptyArtistName    = errors.New("artist: name cannot be empty")
+	ErrInvalidListStatus  = errors.New("artist: invalid list status")
 	ErrInvalidFetchStatus = errors.New("artist: invalid fetch status")
 )
 
 const StreamTypeArtist = "artist"
+
+// recordedListenerRequestIDsLimit bounds the per-artist dedup window. The
+// scrape redelivery window is much smaller; keeping only recent IDs avoids
+// growing every snapshot with the artist's full scrape history.
+const recordedListenerRequestIDsLimit = 64
 
 // Artist represents the domain aggregate for a musical artist.
 type Artist struct {
@@ -33,6 +39,10 @@ type Artist struct {
 	CreatedAt              time.Time
 	LastListenersRequestID string
 	lastScrapedMetadata    []byte
+	// recordedListenerRequestIDs holds the most recent request_ids that
+	// recorded a listener scrape, oldest first, so dedup recognizes recent
+	// redeliveries without retaining unbounded history.
+	recordedListenerRequestIDs []string
 }
 
 // NewArtist creates an Artist and records the ArtistCreated event.
@@ -212,6 +222,11 @@ func (a *Artist) apply(evt eventsourcing.Event) error {
 		a.LastUpdated = pl.ScrapedAt
 		a.lastScrapedMetadata = evt.Metadata
 		a.LastListenersRequestID = ""
+		if meta, err := eventsourcing.DecodeMetadata(evt.Metadata); err == nil && meta != nil {
+			if requestID := eventsourcing.RequestIDFromMetadata(meta); requestID != "" {
+				a.recordListenerRequestID(requestID)
+			}
+		}
 
 	case EventTypeArtistStatusChanged:
 		var pl StatusChangedPayload
@@ -258,13 +273,28 @@ func Replay(id string, events []eventsourcing.Event) (*Artist, error) {
 	return agg, nil
 }
 
-// HasRecordedListenersForRequest reports whether the latest listener scrape
-// on this aggregate was recorded under requestID, deduplicating redeliveries
+// recordListenerRequestID appends a new request ID and trims the oldest entries
+// once the dedup window is full. Duplicates keep their original position.
+func (a *Artist) recordListenerRequestID(requestID string) {
+	if slices.Contains(a.recordedListenerRequestIDs, requestID) {
+		return
+	}
+	a.recordedListenerRequestIDs = append(a.recordedListenerRequestIDs, requestID)
+	if len(a.recordedListenerRequestIDs) > recordedListenerRequestIDsLimit {
+		a.recordedListenerRequestIDs = a.recordedListenerRequestIDs[len(a.recordedListenerRequestIDs)-recordedListenerRequestIDsLimit:]
+	}
+}
+
+// HasRecordedListenersForRequest reports whether a recent listener scrape on
+// this aggregate was recorded under requestID, deduplicating redeliveries
 // without re-loading the raw event stream.
 func (a *Artist) HasRecordedListenersForRequest(requestID string) bool {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return false
+	}
+	if slices.Contains(a.recordedListenerRequestIDs, requestID) {
+		return true
 	}
 	return a.lastListenersRequestID() == requestID
 }

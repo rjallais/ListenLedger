@@ -176,3 +176,36 @@ func TestRedrive_PublishesAndDryRun(t *testing.T) {
 		t.Fatalf("List after redrive len = %d, want 2", len(got))
 	}
 }
+
+func TestLogBatch(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	sqliteDB, err := db.SetupDB(ctx, slog.Default(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = sqliteDB.Close() }()
+
+	cmds := []Command{
+		{RequestID: "b_1", Type: TypeBatch, ArtistID: "ar_1", SpotifyID: "sp_1", ArtistName: "Artist One"},
+		{RequestID: "b_2", Type: TypeBatch, ArtistID: "ar_2", SpotifyID: "sp_2", ArtistName: "Artist Two"},
+		{RequestID: "b_3", Type: TypeBatch, ArtistID: "ar_3", SpotifyID: "sp_3", ArtistName: "Artist Three"},
+	}
+
+	if err := LogBatch(ctx, sqliteDB, cmds); err != nil {
+		t.Fatalf("LogBatch: %v", err)
+	}
+
+	// Idempotency: re-logging same slice should succeed without creating duplicates
+	if err := LogBatch(ctx, sqliteDB, cmds); err != nil {
+		t.Fatalf("LogBatch duplicate: %v", err)
+	}
+
+	got, err := List(ctx, sqliteDB, Filter{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d commands, want 3", len(got))
+	}
+}

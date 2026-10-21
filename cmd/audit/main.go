@@ -20,23 +20,29 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"strings"
+	"time"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
 	"github.com/pocketbase/pocketbase"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/appdir"
+	"ListenLedger/internal/batchprogress"
 	"ListenLedger/internal/db"
 	"ListenLedger/internal/domain/album"
 	"ListenLedger/internal/domain/artist"
+	"ListenLedger/internal/domain/batch"
 	"ListenLedger/internal/domain/scrapejob"
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
+	_ "ListenLedger/migrations"
 )
 
 // streamReport tallies one stream type's convergence check.
@@ -54,6 +60,7 @@ type report struct {
 	Albums      streamReport     `json:"albums"`
 	Songs       streamReport     `json:"songs"`
 	Jobs        streamReport     `json:"jobs"`
+	Batches     streamReport     `json:"batches"`
 	PurgedInfos int              `json:"purged_infos"`
 	OutboxLag   int64            `json:"outbox_lag"`
 	Checkpoints map[string]int64 `json:"checkpoints,omitempty"`
@@ -69,7 +76,7 @@ type report struct {
 
 // hasMismatch reports whether the audit found real divergence.
 func (r *report) hasMismatch() bool {
-	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs} {
+	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs, r.Batches} {
 		if s.Mismatched > 0 || s.MissingRows > 0 || s.UnloggedRows > 0 {
 			return true
 		}
@@ -91,7 +98,7 @@ func main() {
 		pbMirror      bool
 	)
 	flag.StringVar(&dataDir, "data-dir", appdir.ResolveDataDir(), "Directory holding sqlite/ledger.sqlite")
-	flag.StringVar(&streams, "streams", "artist,album,song,scrapejob", "Comma-separated stream types to audit")
+	flag.StringVar(&streams, "streams", "artist,album,song,scrapejob,batch", "Comma-separated stream types to audit")
 	flag.IntVar(&maxMismatches, "max-mismatches", 20, "Maximum mismatch samples kept per stream type")
 	flag.BoolVar(&pbMirror, "pb-mirror", false, "Also compare PocketBase collections against SQLite projections (requires stopped app or backup copy)")
 	flag.Parse()
@@ -113,6 +120,7 @@ func main() {
 		"albums", rep.Albums,
 		"songs", rep.Songs,
 		"jobs", rep.Jobs,
+		"batches", rep.Batches,
 		"purged_infos", rep.PurgedInfos,
 		"outbox_lag", rep.OutboxLag,
 		"checkpoints", rep.Checkpoints,
@@ -188,7 +196,7 @@ func parseStreamTypes(value string) (map[string]struct{}, error) {
 			continue
 		}
 		switch streamType {
-		case artist.StreamTypeArtist, album.StreamTypeAlbum, song.StreamTypeSong, scrapejob.StreamTypeScrapeJob:
+		case artist.StreamTypeArtist, album.StreamTypeAlbum, song.StreamTypeSong, scrapejob.StreamTypeScrapeJob, batch.StreamTypeBatch:
 			selected[streamType] = struct{}{}
 		default:
 			return nil, fmt.Errorf("unknown stream type %q", streamType)
@@ -243,7 +251,7 @@ func audit(ctx context.Context, dataDir string, selected map[string]struct{}, ma
 			rep.MaxStreamVersions[typ] = max(rep.MaxStreamVersions[typ], tip.Version)
 		}
 		if maxArtist, ok := rep.MaxStreamVersions[artist.StreamTypeArtist]; ok && maxArtist > artist.SnapshotInterval {
-			rep.Warnings = append(rep.Warnings, fmt.Sprintf("longest artist stream is v%d (snapshot interval %d): JetStream reads replay it fully", maxArtist, artist.SnapshotInterval))
+			rep.Warnings = append(rep.Warnings, fmt.Sprintf("longest artist stream is v%d (snapshot interval %d): JetStream reads replay it fully until a KV snapshot is stored, then only the tail", maxArtist, artist.SnapshotInterval))
 		}
 	}
 
@@ -264,6 +272,11 @@ func audit(ctx context.Context, dataDir string, selected map[string]struct{}, ma
 	}
 	if _, ok := selected[scrapejob.StreamTypeScrapeJob]; ok {
 		if err := auditJobs(ctx, database, store, byType[scrapejob.StreamTypeScrapeJob], maxSamples, &rep.Jobs, &rep.PurgedInfos); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := selected[batch.StreamTypeBatch]; ok {
+		if err := auditBatches(ctx, database, store, byType[batch.StreamTypeBatch], maxSamples, &rep.Batches); err != nil {
 			return nil, err
 		}
 	}
@@ -457,9 +470,9 @@ func auditSongs(ctx context.Context, database *toolbeltdb.Database, store *event
 		}
 		var found bool
 		var isRecent int64
-		var title, artistName string
+		var title, artistName, tidalID, duplicateOf string
 		err = database.ReadTX(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("SELECT title, artist_name, is_recent FROM songs WHERE id = ? LIMIT 1;")
+			stmt := tx.Prep("SELECT title, artist_name, is_recent, tidal_id, duplicate_of FROM songs WHERE id = ? LIMIT 1;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, id)
 			hasRow, err := stmt.Step()
@@ -471,6 +484,7 @@ func auditSongs(ctx context.Context, database *toolbeltdb.Database, store *event
 			}
 			found = true
 			title, artistName, isRecent = stmt.ColumnText(0), stmt.ColumnText(1), stmt.ColumnInt64(2)
+			tidalID, duplicateOf = stmt.ColumnText(3), stmt.ColumnText(4)
 			return nil
 		})
 		if err != nil {
@@ -485,10 +499,10 @@ func auditSongs(ctx context.Context, database *toolbeltdb.Database, store *event
 		if agg.IsRecent {
 			wantRecent = 1
 		}
-		if title != agg.Title || artistName != agg.ArtistName || isRecent != wantRecent {
+		if title != agg.Title || artistName != agg.ArtistName || isRecent != wantRecent || tidalID != agg.TidalID || duplicateOf != agg.DuplicateOf {
 			rep.Mismatched++
-			rep.addSample(maxSamples, fmt.Sprintf("song %s: row(title=%q artist=%q recent=%d) != stream(title=%q artist=%q recent=%d)",
-				id, title, artistName, isRecent, agg.Title, agg.ArtistName, wantRecent))
+			rep.addSample(maxSamples, fmt.Sprintf("song %s: row(title=%q artist=%q recent=%d tidal=%q dup=%q) != stream(title=%q artist=%q recent=%d tidal=%q dup=%q)",
+				id, title, artistName, isRecent, tidalID, duplicateOf, agg.Title, agg.ArtistName, wantRecent, agg.TidalID, agg.DuplicateOf))
 		}
 	}
 	return auditUnloggedRows(ctx, database, "songs", "id", ids, maxSamples, rep, "song")
@@ -579,4 +593,169 @@ func auditJobs(ctx context.Context, database *toolbeltdb.Database, store *events
 	}
 	// Rows without streams: row-first crash windows that never logged the fact.
 	return auditUnloggedRows(ctx, database, "scrape_jobs", "request_id", ids, maxSamples, rep, "job")
+}
+
+type batchRow struct {
+	found     bool
+	total     int64
+	completed int64
+	done      int64
+	stats     map[string]int
+	statsOK   bool
+}
+
+func readBatchRow(ctx context.Context, database *toolbeltdb.Database, id string) (batchRow, error) {
+	var row batchRow
+	err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT total, completed, done, stats FROM batches WHERE id = ? LIMIT 1;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, id)
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			return nil
+		}
+		rawStats := stmt.ColumnText(3)
+		stats := make(map[string]int)
+		statsOK := true
+		if strings.TrimSpace(rawStats) != "" {
+			if err := json.Unmarshal([]byte(rawStats), &stats); err != nil {
+				statsOK = false
+			}
+		}
+		row = batchRow{
+			found:     true,
+			total:     stmt.ColumnInt64(0),
+			completed: stmt.ColumnInt64(1),
+			done:      stmt.ColumnInt64(2),
+			stats:     stats,
+			statsOK:   statsOK,
+		}
+		return nil
+	})
+	return row, err
+}
+
+func readBatchMembers(ctx context.Context, database *toolbeltdb.Database, batchID string) (map[string]bool, error) {
+	members := make(map[string]bool)
+	err := database.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT artist_id, done FROM batch_members WHERE batch_id = ?;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, batchID)
+		for {
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if !hasRow {
+				return nil
+			}
+			artistID := stmt.ColumnText(0)
+			isDone := stmt.ColumnInt64(1) == 1
+			members[artistID] = isDone
+		}
+	})
+	return members, err
+}
+
+func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport) error {
+	type batchAuditStream struct {
+		id     string
+		events []eventsourcing.Event
+	}
+	streams := make([]batchAuditStream, 0, len(ids))
+	starts := make(map[string]time.Time, len(ids))
+	for _, id := range ids {
+		rep.Checked++
+		events, err := store.Load(ctx, id)
+		if err != nil {
+			return fmt.Errorf("loading batch stream %s: %w", id, err)
+		}
+		if len(events) == 0 {
+			rep.Mismatched++
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: stream listed but has no events", id))
+			continue
+		}
+		streams = append(streams, batchAuditStream{id: id, events: events})
+		starts[id] = events[0].CreatedAt
+	}
+	for _, stream := range streams {
+		id, events := stream.id, stream.events
+		agg, err := batch.Replay(id, events)
+		if err != nil {
+			rep.Mismatched++
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: unreplayable: %v", id, err))
+			continue
+		}
+		row, err := readBatchRow(ctx, database, id)
+		if err != nil {
+			return fmt.Errorf("reading batch row %s: %w", id, err)
+		}
+		if !row.found {
+			lastEvent := events[len(events)-1]
+			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, starts) {
+				continue
+			}
+			rep.MissingRows++
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: stream v%d has no batches row", id, agg.Version()))
+			continue
+		}
+		wantDone := int64(0)
+		if agg.Done() {
+			wantDone = 1
+		}
+		wantTotal := int64(agg.Total())
+		wantCompleted := int64(agg.Completed())
+		rowStats := fmt.Sprintf("%v", row.stats)
+		if !row.statsOK {
+			rowStats = "<invalid>"
+		}
+		if row.total != wantTotal || row.completed != wantCompleted || row.done != wantDone ||
+			!row.statsOK || !maps.Equal(row.stats, agg.Stats()) {
+			rep.Mismatched++
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: row(total=%d completed=%d done=%d stats=%s) != stream(total=%d completed=%d done=%d stats=%v)",
+				id, row.total, row.completed, row.done, rowStats, wantTotal, wantCompleted, wantDone, agg.Stats()))
+			continue
+		}
+
+		members, err := readBatchMembers(ctx, database, id)
+		if err != nil {
+			return fmt.Errorf("reading batch members %s: %w", id, err)
+		}
+		aggMembers := agg.Members()
+		if len(members) != len(aggMembers) {
+			rep.Mismatched++
+			rep.addSample(maxSamples, fmt.Sprintf("batch %s: members count row=%d != stream=%d", id, len(members), len(aggMembers)))
+			continue
+		}
+		for artistID, wantMemberDone := range aggMembers {
+			gotMemberDone, ok := members[artistID]
+			if !ok || gotMemberDone != wantMemberDone {
+				rep.Mismatched++
+				rep.addSample(maxSamples, fmt.Sprintf("batch %s artist %s: row(found=%v done=%v) != stream(done=%v)",
+					id, artistID, ok, gotMemberDone, wantMemberDone))
+				break
+			}
+		}
+	}
+	return auditUnloggedRows(ctx, database, "batches", "id", ids, maxSamples, rep, "batch")
+}
+
+// batchCouldHaveBeenPruned reports whether a later batch start could have run
+// the pruning that removed the missing row. Without a later start, an old done
+// stream still needs its row; exempting it would hide projection loss. The
+// missing row's updated_at is gone, so the final event time is the latest
+// surviving timestamp. A later start must clear it by the full retention.
+func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, starts map[string]time.Time) bool {
+	for otherID, startedAt := range starts {
+		if otherID == id {
+			continue
+		}
+		if startedAt.Sub(lastEventAt) > batchprogress.PruneRetention {
+			return true
+		}
+	}
+	return false
 }

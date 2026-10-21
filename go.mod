@@ -9,6 +9,7 @@ tool (
 )
 
 require (
+	github.com/CAFxX/httpcompression v0.0.9
 	github.com/a-h/templ v0.3.1020
 	github.com/andybalholm/brotli v1.2.4
 	github.com/benbjohnson/hashfs v0.2.2
@@ -31,7 +32,6 @@ require (
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
-	github.com/CAFxX/httpcompression v0.0.9 // indirect
 	github.com/SCKelemen/color v1.0.5 // indirect
 	github.com/SCKelemen/units v1.1.0 // indirect
 	github.com/a-h/parse v0.0.0-20250122154542-74294addb73e // indirect

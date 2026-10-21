@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -94,6 +95,11 @@ type streamConfig struct {
 	// DiscardNew: as the sole log, silently dropping the oldest events
 	// would corrupt replays, so a full stream must reject writes loudly.
 	Discard jetstream.DiscardPolicy
+	// Compression sets the file-store codec. S2 shrinks the on-disk store
+	// ~3.6x on measured payloads with no wire-format change (consumers read
+	// plaintext). Stream limits (MaxBytes) stay logical, so this buys disk,
+	// not cap headroom; blocks written before enabling stay uncompressed.
+	Compression jetstream.StoreCompression
 }
 
 func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) error {
@@ -101,16 +107,18 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 	if discard == 0 {
 		discard = jetstream.DiscardOld
 	}
+	warnCompressionDeferred(ctx, js, sc, displayName)
 	cfg := jetstream.StreamConfig{
-		Name:       sc.Name,
-		Subjects:   sc.Subjects,
-		Retention:  sc.Retention,
-		Storage:    jetstream.FileStorage,
-		Discard:    discard,
-		MaxAge:     sc.MaxAge,
-		MaxMsgs:    sc.MaxMsgs,
-		MaxBytes:   sc.MaxBytes,
-		Duplicates: sc.Duplicates,
+		Name:        sc.Name,
+		Subjects:    sc.Subjects,
+		Retention:   sc.Retention,
+		Storage:     jetstream.FileStorage,
+		Discard:     discard,
+		MaxAge:      sc.MaxAge,
+		MaxMsgs:     sc.MaxMsgs,
+		MaxBytes:    sc.MaxBytes,
+		Duplicates:  sc.Duplicates,
+		Compression: sc.Compression,
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
 		return fmt.Errorf("ensure %s stream: %w", displayName, err)
@@ -118,38 +126,61 @@ func ensureStreamFromConfig(ctx context.Context, js jetstream.JetStream, sc stre
 	return nil
 }
 
+// warnCompressionDeferred logs a one-boot warning when an existing stream's
+// live compression differs from the configured codec: nats-server accepts
+// the config update but the active file store keeps its old codec until the
+// next server restart, after which the stored config self-heals. Missing
+// streams or lookup errors stay silent; this is observability, not migration.
+func warnCompressionDeferred(ctx context.Context, js jetstream.JetStream, sc streamConfig, displayName string) {
+	if sc.Compression == jetstream.NoCompression {
+		return
+	}
+	existing, err := js.Stream(ctx, sc.Name)
+	if err != nil {
+		return
+	}
+	info := existing.CachedInfo()
+	if info == nil || info.Config.Compression == sc.Compression {
+		return
+	}
+	log.Printf("[messaging] %s stream: compression %s applies to new blocks after the next server restart", displayName, sc.Compression)
+}
+
 // EnsureScrapeRequestStream creates or updates the scrape request stream.
 func EnsureScrapeRequestStream(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
-		Name:       ScrapeRequestsStreamName,
-		Subjects:   []string{SubjectScrapeRequest, SubjectScrapeRequestWildcard},
-		Retention:  jetstream.WorkQueuePolicy,
-		MaxAge:     24 * time.Hour,
-		MaxMsgs:    100_000,
-		Duplicates: ScrapeRequestDedupWindow,
+		Name:        ScrapeRequestsStreamName,
+		Subjects:    []string{SubjectScrapeRequest, SubjectScrapeRequestWildcard},
+		Retention:   jetstream.WorkQueuePolicy,
+		MaxAge:      24 * time.Hour,
+		MaxMsgs:     100_000,
+		Duplicates:  ScrapeRequestDedupWindow,
+		Compression: jetstream.S2Compression,
 	}, "scrape")
 }
 
 // EnsureScrapeDLQStream creates or updates the dead-letter stream for scrape jobs.
 func EnsureScrapeDLQStream(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
-		Name:      ScrapeDLQStreamName,
-		Subjects:  []string{SubjectScrapeDLQ},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    7 * 24 * time.Hour,
-		MaxMsgs:   100_000,
+		Name:        ScrapeDLQStreamName,
+		Subjects:    []string{SubjectScrapeDLQ},
+		Retention:   jetstream.LimitsPolicy,
+		MaxAge:      7 * 24 * time.Hour,
+		MaxMsgs:     100_000,
+		Compression: jetstream.S2Compression,
 	}, "scrape dlq")
 }
 
 // EnsureEventsStream creates or updates the replayable EVENTS stream.
 func EnsureEventsStream(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
-		Name:       EventsStreamName,
-		Subjects:   []string{SubjectArtistUpdated},
-		Retention:  jetstream.LimitsPolicy,
-		MaxAge:     7 * 24 * time.Hour,
-		MaxMsgs:    1_000_000,
-		Duplicates: 10 * time.Minute,
+		Name:        EventsStreamName,
+		Subjects:    []string{SubjectArtistUpdated},
+		Retention:   jetstream.LimitsPolicy,
+		MaxAge:      7 * 24 * time.Hour,
+		MaxMsgs:     1_000_000,
+		Duplicates:  10 * time.Minute,
+		Compression: jetstream.S2Compression,
 	}, "events")
 }
 
@@ -158,13 +189,14 @@ func EnsureEventsStream(ctx context.Context, js jetstream.JetStream) error {
 // oldest-dropped overflow, file storage).
 func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
-		Name:       DomainEventsStreamName,
-		Subjects:   []string{SubjectDomainEventsWildcard},
-		Retention:  jetstream.LimitsPolicy,
-		MaxAge:     DomainEventsRetention,
-		MaxMsgs:    1_000_000,
-		MaxBytes:   DomainEventsMaxBytes,
-		Duplicates: 10 * time.Minute,
+		Name:        DomainEventsStreamName,
+		Subjects:    []string{SubjectDomainEventsWildcard},
+		Retention:   jetstream.LimitsPolicy,
+		MaxAge:      DomainEventsRetention,
+		MaxMsgs:     1_000_000,
+		MaxBytes:    DomainEventsMaxBytes,
+		Duplicates:  10 * time.Minute,
+		Compression: jetstream.S2Compression,
 	}, "domain events")
 }
 
@@ -175,14 +207,15 @@ func EnsureDomainEventsStream(ctx context.Context, js jetstream.JetStream) error
 // existing messages. Called at every startup by ensureJetStreamStreams.
 func EnsureDomainEventsStreamAsTruth(ctx context.Context, js jetstream.JetStream) error {
 	return ensureStreamFromConfig(ctx, js, streamConfig{
-		Name:       DomainEventsStreamName,
-		Subjects:   []string{SubjectDomainEventsWildcard},
-		Retention:  jetstream.LimitsPolicy,
-		MaxAge:     DomainEventsTruthRetention,
-		MaxMsgs:    10_000_000,
-		MaxBytes:   DomainEventsTruthMaxBytes,
-		Duplicates: 10 * time.Minute,
-		Discard:    jetstream.DiscardNew,
+		Name:        DomainEventsStreamName,
+		Subjects:    []string{SubjectDomainEventsWildcard},
+		Retention:   jetstream.LimitsPolicy,
+		MaxAge:      DomainEventsTruthRetention,
+		MaxMsgs:     10_000_000,
+		MaxBytes:    DomainEventsTruthMaxBytes,
+		Duplicates:  10 * time.Minute,
+		Discard:     jetstream.DiscardNew,
+		Compression: jetstream.S2Compression,
 	}, "domain events (truth)")
 }
 

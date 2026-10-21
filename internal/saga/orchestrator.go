@@ -64,7 +64,8 @@ func NewOrchestrator(db *toolbeltdb.Database, store eventsourcing.Store) *Orches
 
 // DeriveState maps a job aggregate to its saga state. A nil job (row exists
 // but no stream yet — crash between row create and event append) reads as
-// requested, never terminal.
+// requested, never terminal; refreshInstance overrides nil to dead/failed for
+// the orphan cases it can prove from the row (see there).
 func DeriveState(job *scrapejob.Job) string {
 	if job == nil {
 		return StateRequested
@@ -213,7 +214,13 @@ func (o *Orchestrator) refreshOpenInstances(ctx context.Context) (int, error) {
 }
 
 // refreshInstance derives one saga's state from its job stream and upserts it.
-// Missing streams read as requested (row-ahead-of-stream crash window).
+// Missing streams normally read as requested (row-ahead-of-stream crash
+// window), with two resolutions from the row side: no stream and no
+// scrape_jobs row means the request can never progress (rows are purged only
+// after reaching a terminal status, so a missing row can never regain one) —
+// expire to dead instead of refreshing the zombie forever; no stream and a
+// failed row reads failed, the row's verdict for a request whose stream never
+// opened (orphan sweep, retry-publish failure).
 func (o *Orchestrator) refreshInstance(ctx context.Context, requestID, artistID string) error {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -239,6 +246,28 @@ func (o *Orchestrator) refreshInstance(ctx context.Context, requestID, artistID 
 		}
 	}
 	state := DeriveState(job)
+	if len(events) == 0 {
+		rowStatus, rowErr, found, err := o.jobRowState(ctx, requestID)
+		if err != nil {
+			return err
+		}
+		switch {
+		case !found:
+			state = StateDead
+			lastEvent = ""
+			failure = "orphaned: no event stream and no scrape_jobs row"
+		case rowStatus == scrapejob.StatusSucceeded:
+			state = StateDone
+			lastEvent = ""
+		case rowStatus == scrapejob.StatusFailed:
+			state = StateFailed
+			lastEvent = ""
+			failure = strings.TrimSpace(rowErr)
+			if failure == "" {
+				failure = "failed without an event stream"
+			}
+		}
+	}
 	now := time.Now().UTC().Format(timestampFormat)
 	return o.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep(`INSERT INTO saga_instances (request_id, artist_id, state, attempts, last_event, error, updated_at)
@@ -261,6 +290,32 @@ func (o *Orchestrator) refreshInstance(ctx context.Context, requestID, artistID 
 		_, err := stmt.Step()
 		return err
 	})
+}
+
+// jobRowState reads the live scrape_jobs row for a request. found=false means
+// no row exists in any status (purged after retention, or rolled back before a
+// stream ever opened).
+func (o *Orchestrator) jobRowState(ctx context.Context, requestID string) (status, lastErr string, found bool, err error) {
+	err = o.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("SELECT status, error FROM scrape_jobs WHERE request_id = ? LIMIT 1;")
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, requestID)
+		hasRow, err := stmt.Step()
+		if err != nil {
+			return err
+		}
+		if !hasRow {
+			return nil
+		}
+		found = true
+		status = stmt.ColumnText(0)
+		lastErr = stmt.ColumnText(1)
+		return nil
+	})
+	if err != nil {
+		return "", "", false, fmt.Errorf("reading job row %s: %w", requestID, err)
+	}
+	return status, lastErr, found, nil
 }
 
 // pruneTerminal deletes terminal instances past retention. Best-effort: a

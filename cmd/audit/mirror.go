@@ -98,7 +98,7 @@ func pbFieldValue(rec *core.Record, field string) any {
 			return int64(1)
 		}
 		return int64(0)
-	case "monthly_listeners", "collection_songs", "total_songs":
+	case "monthly_listeners", "collection_songs", "total_songs", "release_year":
 		return rec.GetInt64(field)
 	default:
 		return rec.GetString(field)
@@ -119,8 +119,8 @@ func fetchSQLiteAlbums(ctx context.Context, database *toolbeltdb.Database) ([]mi
 
 func fetchSQLiteSongs(ctx context.Context, database *toolbeltdb.Database) ([]mirrorRow, error) {
 	return fetchSQLiteRows(ctx, database,
-		"SELECT id, title, artist_name, is_recent FROM songs;",
-		[]string{"title", "artist_name", "is_recent"})
+		"SELECT id, title, artist_name, is_recent, album, release_date, release_year, release_type, spotify_id, tidal_id, duplicate_of FROM songs;",
+		[]string{"title", "artist_name", "is_recent", "album", "release_date", "release_year", "release_type", "spotify_id", "tidal_id", "duplicate_of"})
 }
 
 func fetchSQLiteRows(ctx context.Context, database *toolbeltdb.Database, query string, fields []string) ([]mirrorRow, error) {
@@ -185,7 +185,7 @@ func auditPBMirror(ctx context.Context, app *pocketbase.PocketBase, database *to
 	}
 	out["albums"] = compareMirrors("album", albumFields, pbAlbums, liteAlbums, maxSamples)
 
-	songFields := []string{"title", "artist_name", "is_recent"}
+	songFields := []string{"title", "artist_name", "is_recent", "album", "release_date", "release_year", "release_type", "spotify_id", "tidal_id", "duplicate_of"}
 	pbSongs, err := fetchPBRecords(ctx, app, "songs", songFields)
 	if err != nil {
 		return nil, fmt.Errorf("fetching PocketBase songs: %w", err)

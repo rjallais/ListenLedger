@@ -90,6 +90,65 @@ func Log(ctx context.Context, db *toolbeltdb.Database, cmd Command) error {
 	})
 }
 
+// LogBatch appends multiple commands idempotently in a single SQLite transaction.
+func LogBatch(ctx context.Context, db *toolbeltdb.Database, cmds []Command) error {
+	if len(cmds) == 0 || db == nil {
+		return nil
+	}
+	type validCmd struct {
+		requestID, cmdType, artistID, payload, queuedAt string
+	}
+	valid := make([]validCmd, 0, len(cmds))
+	now := time.Now().UTC()
+	for _, cmd := range cmds {
+		if strings.TrimSpace(cmd.RequestID) == "" || strings.TrimSpace(cmd.ArtistID) == "" {
+			continue
+		}
+		switch cmd.Type {
+		case TypeRefresh, TypeBatch, TypeBackfilled:
+		default:
+			continue
+		}
+		body, err := json.Marshal(payload{SpotifyID: cmd.SpotifyID, ArtistName: cmd.ArtistName})
+		if err != nil {
+			continue
+		}
+		queuedAt := cmd.QueuedAt
+		if queuedAt.IsZero() {
+			queuedAt = now
+		}
+		valid = append(valid, validCmd{
+			requestID: cmd.RequestID,
+			cmdType:   cmd.Type,
+			artistID:  cmd.ArtistID,
+			payload:   string(body),
+			queuedAt:  queuedAt.UTC().Format(timestampFormat),
+		})
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+	// WriteTX, not WriteWithoutTx: the batch must be atomic — a mid-loop
+	// failure must not leave earlier commands logged without the rest.
+	return db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep(`INSERT OR IGNORE INTO commands (request_id, command_type, artist_id, payload, queued_at)
+			VALUES (?, ?, ?, ?, ?);`)
+		defer func() { _ = stmt.Reset() }()
+		for _, v := range valid {
+			_ = stmt.Reset()
+			stmt.BindText(1, v.requestID)
+			stmt.BindText(2, v.cmdType)
+			stmt.BindText(3, v.artistID)
+			stmt.BindText(4, v.payload)
+			stmt.BindText(5, v.queuedAt)
+			if _, err := stmt.Step(); err != nil {
+				return fmt.Errorf("logging batch command %s: %w", v.requestID, err)
+			}
+		}
+		return nil
+	})
+}
+
 // Filter scopes List and Redrive.
 type Filter struct {
 	ArtistID string
@@ -188,9 +247,9 @@ type PublishFunc func(ctx context.Context, req messaging.ScrapeRequested) error
 
 // RedriveStats summarizes a redrive pass.
 type RedriveStats struct {
-	Total     int `json:"total"`
-	Published int `json:"published"`
-	Failed    int `json:"failed"`
+	Total     int  `json:"total"`
+	Published int  `json:"published"`
+	Failed    int  `json:"failed"`
 	DryRun    bool `json:"dry_run"`
 }
 

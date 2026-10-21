@@ -42,7 +42,7 @@ func AlbumsPage(fullCount, processedCount, waitingCount int) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Albums Collection</h1><button type=\"button\" class=\"btn btn-primary gap-2\" data-on:click=\"$_add_album_open = true\" aria-haspopup=\"dialog\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div data-signals=\"{_add_album_open: false, _add_album_loading: false}\"><div class=\"flex justify-between items-center mb-6\"><h1 class=\"text-3xl font-bold\">Albums Collection</h1><button type=\"button\" class=\"btn btn-primary gap-2\" data-on:click=\"$_add_album_open = true\" aria-haspopup=\"dialog\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -71,6 +71,10 @@ func AlbumsPage(fullCount, processedCount, waitingCount int) templ.Component {
 				return templ_7745c5c3_Err
 			}
 			templ_7745c5c3_Err = AddAlbumModal().Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

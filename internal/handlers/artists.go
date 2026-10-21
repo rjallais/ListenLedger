@@ -266,31 +266,25 @@ func (h *Handler) HandleArtists(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	params := parseArtistListParams(r)
 
-	artists, totalCount, err := h.fetchArtistGenrePage(ctx, params.genre, params.page, params.limit)
+	summary, err := h.countArtistsSummary(ctx)
 	if err != nil {
+		log.Printf("[artists] countArtistsSummary failed: %v", err)
+		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
+		return
+	}
+
+	totalCount := summary.RockMetalCount
+	if params.genre == "everything_else" {
+		totalCount = summary.EverythingElseCount
+	}
+
+	artists, err := h.fetchArtistSlice(ctx, params.genre, params.page, params.limit, totalCount)
+	if err != nil {
+		log.Printf("[artists] fetchArtistSlice failed: %v", err)
 		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
 		return
 	}
 	totalPages := (totalCount + params.limit - 1) / params.limit
-
-	// Get counts for each genre (excluding waiting).
-	rockMetalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, "rock_metal")
-	if err != nil {
-		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
-		return
-	}
-	everythingElseCount, err := h.countArtistsByGenreExcludingWaiting(ctx, "everything_else")
-	if err != nil {
-		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
-		return
-	}
-
-	// Get waiting artists count (for queue section).
-	waitingCount, err := h.countWaitingArtists(ctx)
-	if err != nil {
-		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
-		return
-	}
 
 	pagination := templates.Pagination{
 		CurrentPage: params.page,
@@ -300,7 +294,7 @@ func (h *Handler) HandleArtists(w http.ResponseWriter, r *http.Request) {
 		Genre:       params.genre,
 	}
 
-	_ = RenderTempl(w, r, templates.ArtistsPage(artists, rockMetalCount, everythingElseCount, params.genre, waitingCount, pagination))
+	_ = RenderTempl(w, r, templates.ArtistsPage(artists, summary.RockMetalCount, summary.EverythingElseCount, params.genre, summary.WaitingCount, pagination))
 }
 
 func (h *Handler) handleArtists(e *core.RequestEvent) error {
@@ -311,9 +305,17 @@ func (h *Handler) handleArtists(e *core.RequestEvent) error {
 func (h *Handler) fetchArtistGenrePage(ctx context.Context, genre string, page, limit int) ([]templates.Artist, int, error) {
 	totalCount, err := h.countArtistsByGenreExcludingWaiting(ctx, genre)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("count artists in genre %q: %w", genre, err)
 	}
 
+	artists, err := h.fetchArtistSlice(ctx, genre, page, limit, totalCount)
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch artist page %d for genre %q: %w", page, genre, err)
+	}
+	return artists, totalCount, nil
+}
+
+func (h *Handler) fetchArtistSlice(ctx context.Context, genre string, page, limit, totalCount int) ([]templates.Artist, error) {
 	offset := (page - 1) * limit
 	if h.db != nil {
 		var artists []templates.Artist
@@ -353,13 +355,13 @@ func (h *Handler) fetchArtistGenrePage(ctx context.Context, genre string, page, 
 			return nil
 		})
 		if err != nil {
-			return nil, 0, err
+			return nil, fmt.Errorf("read artist rows for genre %q (sqlite): %w", genre, err)
 		}
-		return artists, totalCount, nil
+		return artists, nil
 	}
 
 	records := make([]*core.Record, 0)
-	err = h.app.RecordQuery("artists").
+	err := h.app.RecordQuery("artists").
 		WithContext(ctx).
 		AndWhere(dbx.NewExp(nonWaitingArtistFilter, nonWaitingArtistParams(genre))).
 		OrderBy("monthly_listeners DESC", "id ASC").
@@ -367,10 +369,10 @@ func (h *Handler) fetchArtistGenrePage(ctx context.Context, genre string, page, 
 		Offset(int64(offset)).
 		All(&records)
 	if err != nil {
-		return nil, 0, err
+		return nil, fmt.Errorf("query artist records for genre %q: %w", genre, err)
 	}
 
-	return artistsFromRankedRecords(records, totalCount, offset), totalCount, nil
+	return artistsFromRankedRecords(records, totalCount, offset), nil
 }
 
 // HandleArtistsTBodyAPI returns the current page slice of a genre table body
@@ -384,6 +386,7 @@ func (h *Handler) HandleArtistsTBodyAPI(w http.ResponseWriter, r *http.Request) 
 
 	artists, _, err := h.fetchArtistGenrePage(ctx, params.genre, params.page, params.limit)
 	if err != nil {
+		log.Printf("[artists] fetchArtistGenrePage failed: %v", err)
 		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
 		return
 	}

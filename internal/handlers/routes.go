@@ -44,7 +44,25 @@ func (h *Handler) Routes() chi.Router {
 	r.Use(SlogMiddleware(baseLogger))
 	r.Use(ThemeMiddleware)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Compress(5, "text/html", "text/css", "application/javascript", "application/json"))
+	// Brotli-first response compression (gzip/zstd fallbacks) for HTML/JSON/CSS/JS,
+	// via CAFxX/httpcompression — the same engine Datastar's SSE compression uses.
+	// Byte-range requests bypass it: the adapter deletes the Range header (ranges
+	// only apply to compressed bytes), which would otherwise turn a ranged
+	// /static/* request into a full-file 200 instead of a 206. The dev-only
+	// /reload SSE stream bypasses it too: it writes only on change, and the
+	// compressor withholds headers until the first body byte, so an idle
+	// stream would never send them. The long-lived /api/events SSE stream has
+	// the same header-flush requirement.
+	r.Use(func(next http.Handler) http.Handler {
+		compress := compressMiddleware(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.Header.Get("Range") != "" || req.URL.Path == "/reload" || req.URL.Path == "/api/events" {
+				next.ServeHTTP(w, req)
+				return
+			}
+			compress.ServeHTTP(w, req)
+		})
+	})
 
 	// Static files & robots.txt
 	r.Get("/static/*", h.HandleStatic)
