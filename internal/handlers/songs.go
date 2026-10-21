@@ -496,7 +496,7 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.songRepo != nil {
-		agg, loadErr := h.loadOrCreateSong(ctx, songID, songRow)
+		agg, createdEvents, loadErr := h.loadOrCreateSong(ctx, songID, songRow)
 		if loadErr != nil {
 			log.Printf("[songs] loadOrCreateSong error for %s: %v", songID, loadErr)
 		} else if setErr := agg.SetRecent(isRecent, int64(batchSeq), int64(batchPos)); setErr != nil {
@@ -504,7 +504,10 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 		} else if events, saveErr := h.songRepo.Save(ctx, agg); saveErr != nil {
 			log.Printf("[songs] songRepo.Save error for %s: %v", songID, saveErr)
 		} else if h.catalogProjection != nil && len(events) > 0 {
-			if projErr := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); projErr != nil {
+			// Re-project the creation events with this write: when the inline
+			// SongCreated projection failed, the position never advanced, and
+			// projecting only the recent event would skip the row insert.
+			if projErr := h.catalogProjection.Project(ctx, song.StreamTypeSong, append(createdEvents, events...)); projErr != nil {
 				log.Printf("[songs] catalogProjection.Project error for %s: %v", songID, projErr)
 			}
 		}
@@ -541,28 +544,36 @@ type legacySongRow struct {
 }
 
 // loadOrCreateSong replays the song stream, synthesizing a SongCreated
-// event for legacy rows. Recent-flag updates are applied by the caller via SetRecent.
-func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *legacySongRow) (*song.Song, error) {
+// event for legacy rows. Recent-flag updates are applied by the caller via
+// SetRecent; the returned creation events let the caller project them in the
+// same transaction as its own events when the inline projection fails.
+func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *legacySongRow) (*song.Song, []eventsourcing.Event, error) {
 	agg, loadErr := h.songRepo.Load(ctx, songID)
 	if !errors.Is(loadErr, eventsourcing.ErrStreamNotFound) || legacy == nil {
-		return agg, loadErr
+		return agg, nil, loadErr
 	}
 
 	createAgg, createErr := song.NewSong(songID, legacy.title, legacy.artistName, legacy.album,
 		legacy.releaseDate, legacy.releaseType, legacy.spotifyID, legacy.releaseYear, 0, 0, false)
 	if createErr != nil {
-		return nil, createErr
+		return nil, nil, createErr
 	}
 	events, err := h.songRepo.Save(ctx, createAgg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if h.catalogProjection != nil && len(events) > 0 {
 		if err := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); err != nil {
-			return nil, err
+			// The creation fact is committed; returning here would make the
+			// caller abandon the pending recent update, leaving the stream
+			// without the fact while the rows already carry it. The caller
+			// re-projects these events with its own so the stream and rows
+			// converge (the healer covers a repeated failure).
+			log.Printf("[songs] catalogProjection.Project SongCreated error for %s: %v", songID, err)
 		}
 	}
-	return h.songRepo.Load(ctx, songID)
+	loaded, err := h.songRepo.Load(ctx, songID)
+	return loaded, events, err
 }
 
 func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {

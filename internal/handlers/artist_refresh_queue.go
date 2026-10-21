@@ -272,7 +272,12 @@ func (h *Handler) cleanupQueueArtistRefresh(record *core.Record, requestID, prev
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCleanup()
 	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus, requestID); rollbackErr != nil {
-		log.Printf("[queueArtistRefresh] %s failed to restore artist %s status: %v", reason, record.Id, rollbackErr)
+		// The compensating fact is not durable, so the committed pending status
+		// stays authoritative. Keep the queued job row as the trace for the
+		// queue/retry path instead of leaving a pending artist with no job.
+		log.Printf("[queueArtistRefresh] %s failed to restore artist %s status: %v (keeping scrape job %s)", reason, record.Id, rollbackErr, requestID)
+		correlation.Clear(record.Id)
+		return
 	}
 	correlation.Clear(record.Id)
 	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {

@@ -758,6 +758,7 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		streams = append(streams, batchAuditStream{id: id, events: events})
 		starts[id] = events[0].CreatedAt
 	}
+	latestID, latestStart, secondStart := latestBatchStarts(starts)
 	for _, stream := range streams {
 		id, events := stream.id, stream.events
 		agg, err := batch.Replay(id, events)
@@ -772,7 +773,7 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		}
 		if !row.found {
 			lastEvent := events[len(events)-1]
-			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, starts) {
+			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, latestID, latestStart, secondStart) {
 				*purgedInfos++
 				continue
 			}
@@ -821,19 +822,31 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 	return auditUnloggedRows(ctx, database, "batches", "id", ids, maxSamples, rep, "batch")
 }
 
+// latestBatchStarts returns the batch with the latest start and the second
+// latest start time. Two entries suffice for batchCouldHaveBeenPruned: the
+// latest start excluding a single batch is either the global latest or, when
+// the batch itself is the latest, the second latest.
+func latestBatchStarts(starts map[string]time.Time) (latestID string, latestAt, secondAt time.Time) {
+	for id, at := range starts {
+		switch {
+		case latestID == "" || at.After(latestAt):
+			latestID, latestAt, secondAt = id, at, latestAt
+		case at.After(secondAt):
+			secondAt = at
+		}
+	}
+	return latestID, latestAt, secondAt
+}
+
 // batchCouldHaveBeenPruned reports whether a later batch start could have run
 // the pruning that removed the missing row. Without a later start, an old done
 // stream still needs its row; exempting it would hide projection loss. The
 // missing row's updated_at is gone, so the final event time is the latest
 // surviving timestamp. A later start must clear it by the full retention.
-func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, starts map[string]time.Time) bool {
-	for otherID, startedAt := range starts {
-		if otherID == id {
-			continue
-		}
-		if startedAt.Sub(lastEventAt) > batchprogress.PruneRetention {
-			return true
-		}
+func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, latestID string, latestAt, secondAt time.Time) bool {
+	candidate := latestAt
+	if id == latestID {
+		candidate = secondAt
 	}
-	return false
+	return candidate.Sub(lastEventAt) > batchprogress.PruneRetention
 }
