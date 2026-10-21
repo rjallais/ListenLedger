@@ -3,8 +3,12 @@ package handlers
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/pocketbase/pocketbase/core"
+	"zombiezen.com/go/sqlite"
 )
 
 // TestBatchProgress_SQLiteProjection verifies the restart-safe path: batches
@@ -170,5 +174,88 @@ func TestBatchProgress_LargeBatchAndExpiredCallerContext(t *testing.T) {
 	}
 	if got.Total != 100 {
 		t.Fatalf("got total = %d, want 100", got.Total)
+	}
+}
+
+// TestBatchRefreshArtistSelectSQLOrderMatchesPriority locks the SQLite batch
+// selection order to priority.Determine via prioritizeArtistJobs. Drift here
+// would change the LIMIT subset and mislabel the batch priority stats.
+func TestBatchRefreshArtistSelectSQLOrderMatchesPriority(t *testing.T) {
+	h, tempDir := setupTestSQLiteDB(t)
+	defer func() { _ = os.RemoveAll(tempDir) }()
+	defer func() { _ = h.db.Close() }()
+	ctx := context.Background()
+
+	seedArtist := func(id, listStatus, genre, fetchStatus string, listeners int64) *core.Record {
+		t.Helper()
+		err := h.db.WriteWithoutTx(ctx, func(tx *sqlite.Conn) error {
+			stmt := tx.Prep("INSERT INTO artists (id, name, spotify_id, monthly_listeners, genre_group, list_status, fetch_status, collection_songs, total_songs, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, '');")
+			defer func() { _ = stmt.Reset() }()
+			stmt.BindText(1, id)
+			stmt.BindText(2, "Artist "+id)
+			stmt.BindText(3, "sp_"+id)
+			stmt.BindInt64(4, listeners)
+			stmt.BindText(5, genre)
+			stmt.BindText(6, listStatus)
+			stmt.BindText(7, fetchStatus)
+			_, err := stmt.Step()
+			return err
+		})
+		if err != nil {
+			t.Fatalf("seed artist %s: %v", id, err)
+		}
+
+		record := core.NewRecord(core.NewBaseCollection("artists"))
+		record.Id = id
+		record.Set("list_status", listStatus)
+		record.Set("genre_group", genre)
+		record.Set("fetch_status", fetchStatus)
+		record.Set("monthly_listeners", listeners)
+		return record
+	}
+
+	records := []*core.Record{
+		seedArtist("ar_wait_rock", "waiting", "rock_metal", "idle", 20),
+		seedArtist("ar_wait_other", "waiting", "everything_else", "idle", 15),
+		seedArtist("ar_recent_rock_high", "recently_added", "rock_metal", "idle", 90),
+		seedArtist("ar_recent_rock_low", "recently_added", "rock_metal", "idle", 10),
+		seedArtist("ar_recent_other", "recently_added", "everything_else", "idle", 80),
+		seedArtist("ar_not_rock", "not_added", "rock_metal", "idle", 70),
+		seedArtist("ar_not_other", "not_added", "everything_else", "idle", 60),
+		seedArtist("ar_incl_rock", "included", "rock_metal", "idle", 50),
+		seedArtist("ar_incl_other", "included", "everything_else", "idle", 40),
+	}
+	// Pending artists are excluded by the WHERE clause; with the highest
+	// listener count this row would lead the order if the filter regressed.
+	seedArtist("ar_pending", "included", "rock_metal", "pending", 100)
+
+	var got []string
+	err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep(batchRefreshArtistSelectSQL)
+		defer func() { _ = stmt.Reset() }()
+		stmt.BindText(1, time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano))
+		stmt.BindInt64(2, 100)
+		for {
+			hasRow, err := stmt.Step()
+			if err != nil {
+				return err
+			}
+			if !hasRow {
+				break
+			}
+			got = append(got, stmt.ColumnText(0))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("select batch artists: %v", err)
+	}
+
+	want := make([]string, 0, len(records))
+	for _, job := range prioritizeArtistJobs(records) {
+		want = append(want, job.Record.Id)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SQLite order = %v, want %v", got, want)
 	}
 }
