@@ -415,6 +415,8 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 			releaseYear: int64(record.GetInt("release_year")),
 			releaseType: record.GetString("release_type"),
 			spotifyID:   record.GetString("spotify_id"),
+			tidalID:     record.GetString("tidal_id"),
+			duplicateOf: record.GetString("duplicate_of"),
 		}
 		batchSeq = record.GetInt("recent_batch_seq")
 		batchPos = record.GetInt("recent_batch_pos")
@@ -423,7 +425,7 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 		var existingSeq, existingPos int
 		var found bool
 		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("SELECT is_recent, recent_batch_seq, recent_batch_pos, title, artist_name, album, release_date, release_year, release_type, spotify_id FROM songs WHERE id = ?;")
+			stmt := tx.Prep("SELECT is_recent, recent_batch_seq, recent_batch_pos, title, artist_name, album, release_date, release_year, release_type, spotify_id, tidal_id, duplicate_of FROM songs WHERE id = ?;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, songID)
 			hasRow, err := stmt.Step()
@@ -443,6 +445,8 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 					releaseYear: stmt.ColumnInt64(7),
 					releaseType: stmt.ColumnText(8),
 					spotifyID:   stmt.ColumnText(9),
+					tidalID:     stmt.ColumnText(10),
+					duplicateOf: stmt.ColumnText(11),
 				}
 			}
 			return nil
@@ -541,6 +545,8 @@ type legacySongRow struct {
 	releaseYear int64
 	releaseType string
 	spotifyID   string
+	tidalID     string
+	duplicateOf string
 }
 
 // loadOrCreateSong replays the song stream, synthesizing a SongCreated
@@ -557,6 +563,16 @@ func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *l
 		legacy.releaseDate, legacy.releaseType, legacy.spotifyID, legacy.releaseYear, 0, 0, false)
 	if createErr != nil {
 		return nil, nil, createErr
+	}
+	if legacy.tidalID != "" {
+		if _, err := createAgg.LinkTidalID(legacy.tidalID, "legacy_seed", 1.0); err != nil {
+			return nil, nil, fmt.Errorf("linking legacy song %s to TIDAL ID: %w", songID, err)
+		}
+	}
+	if legacy.duplicateOf != "" {
+		if _, err := createAgg.MarkDuplicate(legacy.duplicateOf, "legacy_seed"); err != nil {
+			return nil, nil, fmt.Errorf("marking legacy song %s as duplicate: %w", songID, err)
+		}
 	}
 	events, err := h.songRepo.Save(ctx, createAgg)
 	if err != nil {

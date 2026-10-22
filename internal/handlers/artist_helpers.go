@@ -681,6 +681,10 @@ func (h *Handler) persistArtistFetchStatus(ctx context.Context, artistID, status
 		}
 		agg, err := h.artistRepo.Load(ctx, artistID)
 		if err != nil {
+			if errors.Is(err, eventsourcing.ErrStreamNotFound) {
+				// No stream: no committed fact exists to compensate.
+				return nil
+			}
 			lastErr = err
 			continue
 		}
