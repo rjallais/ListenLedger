@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	"zombiezen.com/go/sqlite"
 
 	"ListenLedger/internal/domain/scrapejob"
@@ -102,6 +103,47 @@ func TestOrphanedQueuedSweepRepairsVerdict(t *testing.T) {
 	}
 }
 
+// TestOrphanedQueuedSweepSkipsRetryQueuedAfterVerdict covers the retry case:
+// the exact verdict pair is still in the stream, but the row was requeued after
+// the verdict, so it is a pending retry rather than an unfinished repair.
+func TestOrphanedQueuedSweepSkipsRetryQueuedAfterVerdict(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-orphanedQueuedGrace).Format(jobTimestampFormat)
+	verdictAt := now.Add(-30 * time.Minute)
+	queuedAt := now.Add(-20 * time.Minute).Format(jobTimestampFormat)
+
+	seedSweepArtist(t, ctx, w, "ar_retry", "pending")
+	seedSweepQueuedRow(t, ctx, w, "req_retry", "ar_retry", queuedAt)
+
+	agg, err := scrapejob.NewScrapeJob("req_retry", "ar_retry", "")
+	if err != nil {
+		t.Fatalf("NewScrapeJob: %v", err)
+	}
+	if _, _, err := agg.RecordFailed(orphanedQueuedReason); err != nil {
+		t.Fatalf("RecordFailed: %v", err)
+	}
+	events := agg.UncommittedEvents()
+	for i := range events {
+		events[i].CreatedAt = verdictAt
+	}
+	if err := w.jobStore.Append(ctx, "req_retry", 0, events...); err != nil {
+		t.Fatalf("append verdict: %v", err)
+	}
+
+	w.markOrphanedQueuedJobs(ctx, cutoff)
+
+	if status, errText := sweepJobRow(t, ctx, w, "req_retry"); status != "queued" || errText != "" {
+		t.Fatalf("retry row = %q/%q, want queued/empty", status, errText)
+	}
+	if got := sweepArtistFetchStatus(t, ctx, w, "ar_retry"); got != "pending" {
+		t.Fatalf("retry artist fetch_status = %q, want pending", got)
+	}
+	if types := jobStreamTypes(t, ctx, w, "req_retry"); len(types) != 2 {
+		t.Fatalf("retry stream = %v, want existing verdict pair unchanged", types)
+	}
+}
+
 // TestOrphanedQueuedSweepKeepsArtistForNewerJob covers the artist guard: a
 // swept orphan must not fail the artist while a newer queued/processing job
 // still owns the live scrape.
@@ -164,6 +206,63 @@ func TestOrphanedQueuedSweepPaginatesPastDispatchedRows(t *testing.T) {
 	}
 	if got := sweepArtistFetchStatus(t, ctx, w, "ar_page_orphan"); got != "failed" {
 		t.Fatalf("orphan artist fetch_status = %q, want failed", got)
+	}
+}
+
+// TestRequestStreamVerdict covers the preflight guard: the sweep's verdict is
+// still reported after a retry starts, so callers can compare delivery time.
+func TestRequestStreamVerdict(t *testing.T) {
+	w, ctx := setupTestJobWorker(t)
+
+	w.recordJobEventWarn(ctx, "req_orphan_guard", "ar_orphan_guard", "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed(orphanedQueuedReason)
+		return err
+	})
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || orphanedAt.IsZero() {
+		t.Fatalf("orphan verdict = succeeded=%v orphanedAt=%v, want false/non-zero", succeeded, orphanedAt)
+	}
+
+	// A retry can append more events to the same stream. The verdict must
+	// remain visible so a late original delivery is still recognized.
+	w.recordJobEventWarn(ctx, "req_orphan_guard", "ar_orphan_guard", "started", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordStarted()
+		return err
+	})
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_orphan_guard"); succeeded || orphanedAt.IsZero() {
+		t.Fatalf("reopened orphan stream = succeeded=%v orphanedAt=%v, want false/non-zero", succeeded, orphanedAt)
+	}
+
+	w.recordJobEventWarn(ctx, "req_ordinary_failure", "ar_ordinary_failure", "failed", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordFailed("fetch_failed")
+		return err
+	})
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_ordinary_failure"); succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("ordinary failure = succeeded=%v orphanedAt=%v, want false/zero", succeeded, orphanedAt)
+	}
+
+	w.recordJobEventWarn(ctx, "req_succeeded_guard", "ar_succeeded_guard", "succeeded", func(j *scrapejob.Job) error {
+		_, _, err := j.RecordSucceeded("test", 0)
+		return err
+	})
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_succeeded_guard"); !succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("succeeded = succeeded=%v orphanedAt=%v, want true/zero", succeeded, orphanedAt)
+	}
+
+	if succeeded, orphanedAt := w.requestStreamVerdict(ctx, "req_missing"); succeeded || !orphanedAt.IsZero() {
+		t.Fatalf("missing stream = succeeded=%v orphanedAt=%v, want false/zero", succeeded, orphanedAt)
+	}
+}
+
+func TestDeliveredAfterOrphanVerdict(t *testing.T) {
+	verdictAt := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	if deliveredAfterOrphanVerdict(nil, verdictAt) {
+		t.Fatal("nil metadata must not bypass the orphan guard")
+	}
+	if deliveredAfterOrphanVerdict(&jetstream.MsgMetadata{Timestamp: verdictAt.Add(-time.Second)}, verdictAt) {
+		t.Fatal("message stored before the verdict must be skipped")
+	}
+	if !deliveredAfterOrphanVerdict(&jetstream.MsgMetadata{Timestamp: verdictAt.Add(time.Second)}, verdictAt) {
+		t.Fatal("retry stored after the verdict must be processed")
 	}
 }
 

@@ -212,10 +212,22 @@ func (w *Worker) setScrapeJobFinishedWithContext(ctx context.Context, requestID,
 	return nil
 }
 
+// isRequestAlreadySucceeded reports whether the request stream or row records
+// a terminal success.
 func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string) bool {
+	succeeded, _ := w.requestStreamVerdict(ctx, requestID)
+	return succeeded
+}
+
+// requestStreamVerdict derives the preflight skip disposition from one job
+// stream load. The returned orphanedAt is non-zero when the stream contains
+// the sweep's orphaned_no_dispatch verdict; callers compare it with the
+// delivery timestamp so a retry published after the verdict is processed while
+// the original late delivery is skipped.
+func (w *Worker) requestStreamVerdict(ctx context.Context, requestID string) (succeeded bool, orphanedAt time.Time) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return false
+		return false, time.Time{}
 	}
 
 	now := time.Now()
@@ -223,7 +235,7 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 	w.pruneSucceededLocked(now)
 	if _, ok := w.succeededRequests[requestID]; ok {
 		w.succeededMu.Unlock()
-		return true
+		return true, time.Time{}
 	}
 	w.succeededMu.Unlock()
 
@@ -232,42 +244,41 @@ func (w *Worker) isRequestAlreadySucceeded(ctx context.Context, requestID string
 	// Terminal streams are definitive — return without querying PocketBase on
 	// every queued job. Non-terminal streams (queued or processing) fall
 	// through to the row lookup: recordJobEventWarn can drop the
-	// ScrapeSucceeded fact while the PocketBase row already flipped.
+	// ScrapeSucceeded fact while the PocketBase row already flipped. Keep the
+	// orphan verdict time across that fallback for the delivery-time guard.
 	if w.jobStore != nil {
 		if evts, err := w.jobStore.Load(ctx, requestID); err == nil && len(evts) > 0 {
+			if isOrphanedQueuedVerdict(evts) {
+				return false, evts[1].CreatedAt
+			}
+			orphanedAt, _ = orphanedQueuedVerdictAt(evts)
 			if agg, err := scrapejob.Replay(requestID, evts); err == nil {
 				if agg.Status() == scrapejob.StatusSucceeded {
-					w.succeededMu.Lock()
-					w.pruneSucceededLocked(now)
-					w.succeededRequests[requestID] = now
-					w.succeededMu.Unlock()
-					return true
+					w.markRequestSucceeded(requestID)
+					return true, orphanedAt
 				}
 				if agg.IsTerminal() {
-					return false
+					return false, orphanedAt
 				}
 			}
 		}
 	}
 
 	if w.app == nil {
-		return false
+		return false, orphanedAt
 	}
 
 	job, err := w.scrapeJobByRequestID(requestID)
 	if err != nil {
 		log.Printf("[worker] Warning: dedupe check failed for request_id=%s: %v", requestID, err)
-		return false
+		return false, orphanedAt
 	}
 	if job == nil || job.GetString("status") != "succeeded" {
-		return false
+		return false, orphanedAt
 	}
 
-	w.succeededMu.Lock()
-	w.pruneSucceededLocked(now)
-	w.succeededRequests[requestID] = now
-	w.succeededMu.Unlock()
-	return true
+	w.markRequestSucceeded(requestID)
+	return true, orphanedAt
 }
 
 func (w *Worker) markRequestSucceeded(requestID string) {
@@ -291,6 +302,53 @@ func (w *Worker) pruneSucceededLocked(now time.Time) {
 	}
 }
 
+type failedJob struct{ requestID, artistID string }
+
+// reconcileFailedJobsSQLite flips the selected jobs from failed to succeeded
+// and appends their ScrapeSucceeded facts. The guarded UPDATE runs first, so a
+// concurrent retry that moved a row to queued or processing after the SELECT
+// is left alone and never gets a success fact on its live stream.
+func (w *Worker) reconcileFailedJobsSQLite(ctx context.Context, artistID string, jobs []failedJob, note string) {
+	if w.db == nil || len(jobs) == 0 {
+		return
+	}
+	now := time.Now().UTC().Format(jobTimestampFormat)
+	changed := make([]failedJob, 0, len(jobs))
+	if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ? AND status = 'failed';")
+		defer func() { _ = stmt.Reset() }()
+		for _, job := range jobs {
+			if ctx.Err() != nil {
+				break
+			}
+			_ = stmt.Reset()
+			stmt.BindText(1, now)
+			stmt.BindText(2, note)
+			stmt.BindText(3, job.requestID)
+			if _, err := stmt.Step(); err != nil {
+				return err
+			}
+			if tx.Changes() > 0 {
+				changed = append(changed, job)
+			}
+		}
+		return nil
+	}); err != nil {
+		log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
+		return
+	}
+
+	// The row flips are committed; their facts must follow even if the caller
+	// was cancelled, or the stream and row diverge permanently.
+	appendCtx := context.WithoutCancel(ctx)
+	for _, job := range changed {
+		w.recordJobEventWarn(appendCtx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
+			_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
+			return err
+		})
+	}
+}
+
 func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeededRequestID string) {
 	if artistID == "" {
 		return
@@ -306,7 +364,6 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 		// is capped at 500 and its errors are handled, while a predicate-wide
 		// UPDATE would flip rows this run never audits (including rows a
 		// concurrent retry moved out of failed after the SELECT ran).
-		type failedJob struct{ requestID, artistID string }
 		var failed []failedJob
 		if err := w.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
 			stmt := tx.Prep("SELECT request_id, artist_id FROM scrape_jobs WHERE artist_id = ? AND status = 'failed' AND request_id != ? LIMIT 500;")
@@ -329,35 +386,7 @@ func (w *Worker) clearFailedJobsForArtist(ctx context.Context, artistID, succeed
 			return
 		}
 		if len(failed) > 0 {
-			for _, job := range failed {
-				if ctx.Err() != nil {
-					break
-				}
-				w.recordJobEventWarn(ctx, job.requestID, job.artistID, "recovered", func(j *scrapejob.Job) error {
-					_, _, err := j.RecordSucceeded("reconcile", 0, eventsourcing.Correlation{RequestID: job.requestID})
-					return err
-				})
-			}
-			now := time.Now().UTC().Format(jobTimestampFormat)
-			if err := w.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-				stmt := tx.Prep("UPDATE scrape_jobs SET status = 'succeeded', finished_at = ?, error = ? WHERE request_id = ? AND status = 'failed';")
-				defer func() { _ = stmt.Reset() }()
-				for _, job := range failed {
-					if ctx.Err() != nil {
-						break
-					}
-					_ = stmt.Reset()
-					stmt.BindText(1, now)
-					stmt.BindText(2, note)
-					stmt.BindText(3, job.requestID)
-					if _, err := stmt.Step(); err != nil {
-						return err
-					}
-				}
-				return nil
-			}); err != nil {
-				log.Printf("[worker] Warning: failed to clear failed jobs for artist %s in SQLite: %v", artistID, err)
-			}
+			w.reconcileFailedJobsSQLite(ctx, artistID, failed, note)
 		}
 	}
 
@@ -851,6 +880,13 @@ func (w *Worker) markOrphanedQueuedJobs(ctx context.Context, cutoff string) {
 		if len(events) > 0 && !isOrphanedQueuedVerdict(events) {
 			continue
 		}
+		if len(events) == 2 {
+			// A row queued after the verdict is a retry waiting for dispatch,
+			// not an unfinished repair from the sweep's original pass.
+			if queuedAt, err := time.Parse(jobTimestampFormat, job.queuedAt); err == nil && queuedAt.After(events[1].CreatedAt) {
+				continue
+			}
+		}
 		if len(events) == 0 {
 			if err := w.recordJobEvent(ctx, job.requestID, job.artistID, func(j *scrapejob.Job) error {
 				_, _, err := j.RecordFailed(orphanedQueuedReason, eventsourcing.Correlation{RequestID: job.requestID})
@@ -908,6 +944,29 @@ func isOrphanedQueuedVerdict(events []eventsourcing.Event) bool {
 		return false
 	}
 	return pl.Error == orphanedQueuedReason
+}
+
+// orphanedQueuedVerdictAt returns when the sweep recorded its
+// orphaned_no_dispatch verdict, if the stream contains one. The verdict stays
+// relevant after a retry reopens the stream: a delivery stored before it is
+// the original late message, while a delivery stored after it is the retry.
+func orphanedQueuedVerdictAt(events []eventsourcing.Event) (time.Time, bool) {
+	if len(events) == 0 || events[0].EventType != scrapejob.EventTypeScrapeRequested {
+		return time.Time{}, false
+	}
+	for _, evt := range events {
+		if evt.EventType != scrapejob.EventTypeScrapeFailed {
+			continue
+		}
+		var pl scrapejob.FailedPayload
+		if err := eventsourcing.DecodeEventPayload(evt, &pl); err != nil {
+			continue
+		}
+		if pl.Error == orphanedQueuedReason {
+			return evt.CreatedAt, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // markOrphanedQueuedRowFailedSQLite flips one queued row to

@@ -51,11 +51,12 @@ func (h *Handler) Routes() chi.Router {
 	// /static/* request into a full-file 200 instead of a 206. The dev-only
 	// /reload SSE stream bypasses it too: it writes only on change, and the
 	// compressor withholds headers until the first body byte, so an idle
-	// stream would never send them.
+	// stream would never send them. The long-lived /api/events SSE stream has
+	// the same header-flush requirement.
 	r.Use(func(next http.Handler) http.Handler {
 		compress := compressMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			if req.Header.Get("Range") != "" || req.URL.Path == "/reload" {
+			if req.Header.Get("Range") != "" || req.URL.Path == "/reload" || req.URL.Path == "/api/events" {
 				next.ServeHTTP(w, req)
 				return
 			}

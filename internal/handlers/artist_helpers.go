@@ -570,6 +570,28 @@ func prioritizeArtistJobs(records []*core.Record) []priority.Job {
 	return jobs
 }
 
+// batchRefreshArtistSelectSQL selects the next batch candidates in priority
+// tier order. The CASE tiers mirror priority.Determine for every selectable
+// row; pending artists are excluded by the WHERE clause, so no pending CASE
+// arm is needed.
+const batchRefreshArtistSelectSQL = `SELECT id FROM artists
+	WHERE spotify_id != '' AND spotify_id IS NOT NULL
+	  AND (fetch_status IS NULL OR fetch_status != 'pending')
+	  AND (last_updated IS NULL OR last_updated = '' OR replace(last_updated, ' ', 'T') < ?)
+	ORDER BY
+	  CASE
+	    WHEN list_status = 'waiting' THEN 0
+	    WHEN list_status = 'recently_added' AND genre_group = 'rock_metal' THEN 1
+	    WHEN list_status = 'recently_added' THEN 2
+	    WHEN list_status = 'not_added' AND genre_group = 'rock_metal' THEN 3
+	    WHEN list_status = 'not_added' THEN 4
+	    WHEN list_status = 'included' AND genre_group = 'rock_metal' THEN 5
+	    WHEN list_status = 'included' THEN 6
+	    ELSE 7
+	  END ASC,
+	  monthly_listeners DESC
+	LIMIT ?`
+
 func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int) ([]priority.Job, error) {
 	if count <= 0 {
 		count = 50
@@ -583,24 +605,7 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 		}
 		var orderedIDs []string
 		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-			query := `SELECT id FROM artists
-				WHERE spotify_id != '' AND spotify_id IS NOT NULL
-				  AND (fetch_status IS NULL OR fetch_status != 'pending')
-				  AND (last_updated IS NULL OR last_updated = '' OR replace(last_updated, ' ', 'T') < ?)
-				ORDER BY
-				  CASE
-				    WHEN fetch_status = 'pending' OR list_status = 'waiting' THEN 0
-				    WHEN list_status = 'recently_added' AND genre_group = 'rock_metal' THEN 1
-				    WHEN list_status = 'recently_added' THEN 2
-				    WHEN list_status = 'not_added' AND genre_group = 'rock_metal' THEN 3
-				    WHEN list_status = 'not_added' THEN 4
-				    WHEN list_status = 'included' AND genre_group = 'rock_metal' THEN 5
-				    WHEN list_status = 'included' THEN 6
-				    ELSE 7
-				  END ASC,
-				  monthly_listeners DESC
-				LIMIT ?`
-			stmt := tx.Prep(query)
+			stmt := tx.Prep(batchRefreshArtistSelectSQL)
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, sqliteCutoff)
 			stmt.BindInt64(2, int64(count))

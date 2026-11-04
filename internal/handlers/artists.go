@@ -268,6 +268,7 @@ func (h *Handler) HandleArtists(w http.ResponseWriter, r *http.Request) {
 
 	summary, err := h.countArtistsSummary(ctx)
 	if err != nil {
+		log.Printf("[artists] countArtistsSummary failed: %v", err)
 		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
 		return
 	}
@@ -279,6 +280,7 @@ func (h *Handler) HandleArtists(w http.ResponseWriter, r *http.Request) {
 
 	artists, err := h.fetchArtistSlice(ctx, params.genre, params.page, params.limit, totalCount)
 	if err != nil {
+		log.Printf("[artists] fetchArtistSlice failed: %v", err)
 		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
 		return
 	}
@@ -384,6 +386,7 @@ func (h *Handler) HandleArtistsTBodyAPI(w http.ResponseWriter, r *http.Request) 
 
 	artists, _, err := h.fetchArtistGenrePage(ctx, params.genre, params.page, params.limit)
 	if err != nil {
+		log.Printf("[artists] fetchArtistGenrePage failed: %v", err)
 		http.Error(w, "Failed to load artists", http.StatusInternalServerError)
 		return
 	}
