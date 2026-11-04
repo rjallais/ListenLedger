@@ -25,6 +25,8 @@ pb_data/
 static/styles.css
 node_modules/
 .air.toml
+.gocache/
+.gopath/
 /ListenLedger
 /update_listeners
 /seed
