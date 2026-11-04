@@ -221,6 +221,7 @@ func runPlan(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening SQLite database at %s: %w", *dataDir, err)
 	}
+	defer func() { _ = database.Close() }()
 
 	catalog, err := loadCatalogSongs(ctx, database)
 	if err != nil {
@@ -369,6 +370,7 @@ func runApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening SQLite database: %w", err)
 	}
+	defer func() { _ = database.Close() }()
 
 	store, cleanup, err := storeutil.OpenEventStore(ctx, *dataDir, database)
 	if err != nil {

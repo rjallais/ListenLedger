@@ -13,6 +13,7 @@ import (
 )
 
 func TestWorker_EventSourcingAndProjection(t *testing.T) {
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "sqlite")
 	ctx := t.Context()
 	tmpDir := t.TempDir()
 

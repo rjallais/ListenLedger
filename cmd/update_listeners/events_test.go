@@ -12,6 +12,7 @@ import (
 // scrapes append Created + two scraped events, and the SQLite row converges
 // to the latest count with listener history.
 func TestEventLogRecordListeners(t *testing.T) {
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "sqlite")
 	ctx := t.Context()
 	dataDir := t.TempDir()
 
@@ -71,6 +72,7 @@ func TestEventLogRecordListeners(t *testing.T) {
 // TestEventLogRecordFetchFailed proves failures track fetch_status in the
 // stream (nil log is a no-op for PocketBase-only mode).
 func TestEventLogRecordFetchFailed(t *testing.T) {
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "sqlite")
 	ctx := t.Context()
 	dataDir := t.TempDir()
 
