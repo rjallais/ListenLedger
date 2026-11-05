@@ -7,10 +7,11 @@
 //
 // Usage:
 //
-//	go run ./cmd/audit [--data-dir pb_data] [--streams artist,album,song,scrapejob] [--max-mismatches 20] [--pb-mirror]
+//	go run ./cmd/audit [--data-dir pb_data] [--streams artist,album,song,scrapejob] [--max-mismatches 20] [--allow-unlogged] [--pb-mirror]
 //
-// Exit code is 1 when value mismatches, missing projection rows, unlogged
-// rows, or stored events this binary cannot decode are found; purged
+// Exit code is 1 when value mismatches, missing projection rows, or stored
+// events this binary cannot decode are found. Unlogged rows also fail unless
+// --allow-unlogged records them as an accepted legacy baseline. Purged
 // scrape-job rows (retention) and outbox/checkpoint lag are informational
 // only.
 //
@@ -110,6 +111,21 @@ func (r *report) hasMismatch() bool {
 	return r.UndecodableEvents > 0
 }
 
+// hasDivergence applies the selected exit gate. allowUnlogged accepts rows
+// that predate the event log (legacy catalog data) as a recorded baseline;
+// value mismatches, missing rows, and undecodable events still fail the run.
+func (r *report) hasDivergence(allowUnlogged bool) bool {
+	if !allowUnlogged {
+		return r.hasMismatch()
+	}
+	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs, r.Batches} {
+		if s.Mismatched > 0 || s.MissingRows > 0 {
+			return true
+		}
+	}
+	return r.UndecodableEvents > 0
+}
+
 func (r *streamReport) addSample(cap int, sample string) {
 	if len(r.Samples) < cap {
 		r.Samples = append(r.Samples, sample)
@@ -121,11 +137,13 @@ func main() {
 		dataDir       string
 		streams       string
 		maxMismatches int
+		allowUnlogged bool
 		pbMirror      bool
 	)
 	flag.StringVar(&dataDir, "data-dir", appdir.ResolveDataDir(), "Directory holding sqlite/ledger.sqlite")
 	flag.StringVar(&streams, "streams", "artist,album,song,scrapejob,batch", "Comma-separated stream types to audit")
 	flag.IntVar(&maxMismatches, "max-mismatches", 20, "Maximum mismatch samples kept per stream type")
+	flag.BoolVar(&allowUnlogged, "allow-unlogged", false, "Treat rows with no event stream as an accepted legacy baseline; mismatches, missing rows, and undecodable events still fail")
 	flag.BoolVar(&pbMirror, "pb-mirror", false, "Also compare PocketBase collections against SQLite projections (requires stopped app or backup copy)")
 	flag.Parse()
 
@@ -155,7 +173,7 @@ func main() {
 		"undecodable_events", rep.UndecodableEvents,
 		"warnings", rep.Warnings,
 	)
-	diverged := rep.hasMismatch()
+	diverged := rep.hasDivergence(allowUnlogged)
 	if diverged {
 		logger.Error("audit found divergence: streams and read models disagree (run quiescent to rule out in-flight writes)")
 	}

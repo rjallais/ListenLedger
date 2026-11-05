@@ -621,3 +621,33 @@ func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
 		}
 	})
 }
+
+// TestReportHasDivergenceAllowUnlogged pins the deploy gate: legacy rows with
+// no event stream can be accepted as a baseline, but value drift, missing
+// rows, and undecodable events still fail.
+func TestReportHasDivergenceAllowUnlogged(t *testing.T) {
+	rep := &report{Artists: streamReport{UnloggedRows: 3}}
+	if !rep.hasDivergence(false) {
+		t.Fatal("strict gate must fail on unlogged rows")
+	}
+	if rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must accept legacy rows")
+	}
+
+	rep.Artists.Mismatched = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on value mismatches")
+	}
+
+	rep.Artists.Mismatched = 0
+	rep.Artists.MissingRows = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on missing rows")
+	}
+
+	rep.Artists.MissingRows = 0
+	rep.UndecodableEvents = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on undecodable events")
+	}
+}
