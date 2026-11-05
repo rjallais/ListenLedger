@@ -272,11 +272,16 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 		return nil
 	})
 
+	caughtUp := false
 	markCaughtUp := sync.OnceFunc(func() {
 		if wcfg.catchUp != nil {
 			close(wcfg.catchUp)
 		}
 	})
+	signalCaughtUp := func() {
+		caughtUp = true
+		markCaughtUp()
+	}
 
 	stream, err := s.js.Stream(ctx, messaging.DomainEventsStreamName)
 	if err != nil {
@@ -315,8 +320,11 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 			_ = stream.DeleteConsumer(dctx, cons.CachedInfo().Name)
 		}()
 
-		if cons.CachedInfo().NumPending == 0 {
-			markCaughtUp()
+		// Ask the server instead of trusting the cached consumer info: a stale
+		// zero here would declare a backlogged watcher caught up before it has
+		// delivered anything.
+		if watchConsumerIdle(ctx, cons) {
+			signalCaughtUp()
 		}
 
 		for {
@@ -325,8 +333,13 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 			}
 			batch, err := cons.Fetch(50, jetstream.FetchMaxWait(250*time.Millisecond))
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, jetstream.ErrNoMessages) {
-					markCaughtUp()
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				if errors.Is(err, jetstream.ErrNoMessages) {
+					if !caughtUp && watchConsumerIdle(ctx, cons) {
+						signalCaughtUp()
+					}
 					continue
 				}
 				if errors.Is(err, jetstream.ErrConsumerNotFound) || errors.Is(err, jetstream.ErrConsumerDeleted) {
@@ -363,7 +376,7 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 				}
 				if !wcfg.matches(evt) {
 					if numPending == 0 {
-						markCaughtUp()
+						signalCaughtUp()
 					}
 					continue
 				}
@@ -373,22 +386,37 @@ func (s *JetStreamStore) Watch(ctx context.Context, afterPosition int64, opts ..
 					return
 				}
 				if numPending == 0 {
-					markCaughtUp()
+					signalCaughtUp()
 				}
 			}
-			if !gotAny {
-				markCaughtUp()
+			// Delivery-phase errors surface on the batch, not from Fetch. An
+			// empty batch alone is not proof of catch-up (the consumer can be
+			// paused or the batch can fail mid-delivery), so only signal when
+			// the consumer reports no pending messages.
+			batchErr := batch.Error()
+			if !gotAny && batchErr == nil && !caughtUp && watchConsumerIdle(ctx, cons) {
+				signalCaughtUp()
 			}
-			// Delivery-phase errors surface on the batch, not from Fetch.
-			if err := batch.Error(); err != nil && !errors.Is(err, context.Canceled) {
-				if errors.Is(err, jetstream.ErrConsumerNotFound) || errors.Is(err, jetstream.ErrConsumerDeleted) {
-					slog.Warn("[jetstream watch] consumer gone, closing watcher", "error", err)
+			if batchErr != nil && !errors.Is(batchErr, context.Canceled) {
+				if errors.Is(batchErr, jetstream.ErrConsumerNotFound) || errors.Is(batchErr, jetstream.ErrConsumerDeleted) {
+					slog.Warn("[jetstream watch] consumer gone, closing watcher", "error", batchErr)
 					return
 				}
-				slog.Warn("[jetstream watch] batch delivery failed", "error", err)
+				slog.Warn("[jetstream watch] batch delivery failed", "error", batchErr)
 			}
 		}
 	}()
 
 	return w, nil
+}
+
+// watchConsumerIdle reports whether the consumer has no undelivered messages.
+// An empty Fetch alone is not enough: a paused consumer or a delivery error can
+// return no messages while work remains.
+func watchConsumerIdle(ctx context.Context, cons jetstream.Consumer) bool {
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return false
+	}
+	return info.NumPending == 0
 }
