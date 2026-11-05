@@ -12,7 +12,7 @@ sast:
   stage: test
 go-test:
   stage: test
-  image: golang:1.27.2
+  image: golang:1.27.3
   interruptible: true
   variables:
     GOCACHE: $CI_PROJECT_DIR/.cache/go-build
