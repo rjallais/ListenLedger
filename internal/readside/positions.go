@@ -8,6 +8,7 @@ package readside
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	toolbeltdb "github.com/delaneyj/toolbelt/db"
@@ -47,27 +48,26 @@ func AdvancePosition(tx *sqlite.Conn, streamID, streamType string, version int64
 // events, in the caller's transaction. Projections call it once per batch so
 // the recorded position always commits with the rows it describes.
 //
-// Contiguity: a stream advances only when its lowest version in the batch is
-// at most stored position + 1, so the position never jumps across an
-// unprojected event. A gap would let a later write claim the skipped fact
-// was folded and hide it from the healer, leaving cmd/replay as the only
-// repair. With a gap the position stays put and the next heal refolds the
-// whole stream, which is always contiguous.
+// Contiguity: a stream advances only when the batch covers every version from
+// the stored position + 1 through the batch's highest version, so the position
+// never jumps across an unprojected event. A leading or internal gap would let
+// a later write claim the skipped fact was folded and hide it from the healer,
+// leaving cmd/replay as the only repair. With a gap the position stays put and
+// the next heal refolds the whole stream, which is always contiguous.
 func AdvancePositions(tx *sqlite.Conn, events []eventsourcing.Event) error {
 	type span struct {
-		lo, hi int64
-		typ    string
+		versions map[int64]struct{}
+		typ      string
+		hi       int64
 	}
 	spans := make(map[string]*span, 1)
 	for _, evt := range events {
 		s, ok := spans[evt.StreamID]
 		if !ok {
-			spans[evt.StreamID] = &span{lo: evt.Version, hi: evt.Version, typ: evt.StreamType}
-			continue
+			s = &span{versions: make(map[int64]struct{}, 1)}
+			spans[evt.StreamID] = s
 		}
-		if evt.Version < s.lo {
-			s.lo = evt.Version
-		}
+		s.versions[evt.Version] = struct{}{}
 		if evt.Version > s.hi {
 			s.hi, s.typ = evt.Version, evt.StreamType
 		}
@@ -77,7 +77,29 @@ func AdvancePositions(tx *sqlite.Conn, events []eventsourcing.Event) error {
 		if err != nil {
 			return err
 		}
-		if s.lo > pos+1 {
+		if s.hi <= pos {
+			continue
+		}
+		// A batch from a full re-fold includes already-applied versions; only
+		// the run above the stored position must be contiguous.
+		versions := make([]int64, 0, len(s.versions))
+		for version := range s.versions {
+			if version > pos {
+				versions = append(versions, version)
+			}
+		}
+		sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+		if len(versions) == 0 || versions[0] != pos+1 {
+			continue
+		}
+		contiguous := true
+		for i := 1; i < len(versions); i++ {
+			if versions[i] != versions[i-1]+1 {
+				contiguous = false
+				break
+			}
+		}
+		if !contiguous {
 			continue
 		}
 		if err := AdvancePosition(tx, streamID, s.typ, s.hi); err != nil {

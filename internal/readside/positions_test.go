@@ -72,6 +72,51 @@ func TestAdvancePositionsSkipsGaps(t *testing.T) {
 	}
 }
 
+// TestAdvancePositionsSkipsInternalGap pins the other half of the contiguity
+// contract: a batch that starts at position+1 but skips a version in the middle
+// must not advance, or the healer would treat the skipped fact as projected.
+func TestAdvancePositionsSkipsInternalGap(t *testing.T) {
+	ctx := context.Background()
+	database, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	advance := func(versions ...int64) {
+		t.Helper()
+		events := make([]eventsourcing.Event, 0, len(versions))
+		for _, version := range versions {
+			events = append(events, eventsourcing.Event{
+				ID: "evt", StreamID: "ar_internal_gap", StreamType: "artist", Version: version,
+			})
+		}
+		if err := database.WriteTX(ctx, func(tx *sqlite.Conn) error {
+			return AdvancePositions(tx, events)
+		}); err != nil {
+			t.Fatalf("AdvancePositions(%v): %v", versions, err)
+		}
+	}
+
+	advance(1, 2)
+	if got, _ := Position(ctx, database, "ar_internal_gap"); got != 2 {
+		t.Fatalf("initial position = %d, want 2", got)
+	}
+
+	// v4 is missing: advancing to 5 would hide the skipped fact.
+	advance(3, 5)
+	if got, _ := Position(ctx, database, "ar_internal_gap"); got != 2 {
+		t.Fatalf("position after internal gap = %d, want 2 (gap must stay visible)", got)
+	}
+
+	// The healer refolds the whole stream, so the next contiguous batch covers
+	// the gap.
+	advance(3, 4, 5)
+	if got, _ := Position(ctx, database, "ar_internal_gap"); got != 5 {
+		t.Fatalf("position after contiguous refold = %d, want 5", got)
+	}
+}
+
 func TestAdvancePositionMonotonic(t *testing.T) {
 	ctx := context.Background()
 	database, err := db.SetupDB(ctx, slog.Default(), t.TempDir(), false)
