@@ -197,6 +197,12 @@ func Run(ctx context.Context) error {
 					Name:          messaging.ReadModelHealerConsumerName,
 					Filters:       []string{messaging.SubjectDomainEventsWildcard},
 					MaxAckPending: 256,
+					// Bound redeliveries so a deterministic projection failure
+					// (bad constraint, retired event type) cannot spin forever.
+					// A later event on the same stream starts a fresh delivery
+					// and re-attempts the heal; audit/replay remain the manual
+					// backstop.
+					MaxDeliver: 10,
 				}, heal.NewHealer(slog.Default(), sqliteDB, eventStore,
 					projections.NewArtistProjection(slog.Default(), sqliteDB, nil),
 					projections.NewCatalogProjection(slog.Default(), sqliteDB),

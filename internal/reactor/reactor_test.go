@@ -233,6 +233,60 @@ func TestReactorNakRedelivers(t *testing.T) {
 	}, "naked message should be redelivered at least twice")
 }
 
+// TestReactorMaxDeliverBoundsRetries asserts a finite MaxDeliver stops
+// redelivery of a handler that keeps failing, so a deterministic error cannot
+// spin forever.
+func TestReactorMaxDeliverBoundsRetries(t *testing.T) {
+	_, url := startTestNATS(t)
+	js := ensureTestDomainEvents(t, url)
+
+	var (
+		mu    sync.Mutex
+		count int
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	r, err := New(slog.Default(), js, Config{
+		Name:       "test-reactor-max-deliver",
+		Filters:    []string{messaging.SubjectDomainEventsWildcard},
+		MaxDeliver: 2,
+		NakDelay:   50 * time.Millisecond,
+	}, func(_ context.Context, _ eventsourcing.Event) error {
+		mu.Lock()
+		count++
+		mu.Unlock()
+		return errors.New("deterministic failure")
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	go func() { _ = r.Run(ctx) }()
+
+	evt, err := eventsourcing.NewEvent("ar_t5", "artist", 1, "ArtistCreated",
+		map[string]string{"name": "Tool"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	publishEvent(t, js, evt)
+
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return count >= 2
+	}, "handler should be delivered up to MaxDeliver")
+
+	// After the second NAK the server marks the message "max deliveries
+	// exceeded"; no further handler calls should arrive.
+	time.Sleep(400 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 2 {
+		t.Fatalf("handler invoked %d times with MaxDeliver=2, want exactly 2", count)
+	}
+}
+
 func TestReactorStampsGlobalPositionAndMultiStepBackOff(t *testing.T) {
 	_, url := startTestNATS(t)
 	js := ensureTestDomainEvents(t, url)
@@ -285,4 +339,3 @@ func TestReactorStampsGlobalPositionAndMultiStepBackOff(t *testing.T) {
 		}
 	}
 }
-
