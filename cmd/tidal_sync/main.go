@@ -187,6 +187,9 @@ func runPlan(ctx context.Context, args []string) error {
 	authHTTP := &http.Client{Timeout: 30 * time.Second}
 	token, err := tidal.RefreshAccessToken(ctx, authHTTP, authCfg, refreshToken)
 	if token == nil {
+		if err == nil {
+			err = errors.New("no token returned")
+		}
 		return fmt.Errorf("refreshing TIDAL access token: %w", err)
 	}
 	if err != nil {
