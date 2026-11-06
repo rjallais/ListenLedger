@@ -15,6 +15,7 @@ import (
 
 func setupTestJobWorker(t *testing.T) (*Worker, context.Context) {
 	t.Helper()
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "sqlite")
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 

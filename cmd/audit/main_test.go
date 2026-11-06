@@ -286,8 +286,8 @@ func TestAuditFindsDivergence(t *testing.T) {
 	if rep.Batches.Mismatched != 3 || rep.Batches.MissingRows != 1 || rep.Batches.UnloggedRows != 1 {
 		t.Fatalf("batches = %+v, want 3 mismatches + 1 missing + 1 unlogged", rep.Batches)
 	}
-	if rep.PurgedInfos != 1 {
-		t.Fatalf("purged infos = %d, want 1", rep.PurgedInfos)
+	if rep.PurgedInfos != 2 {
+		t.Fatalf("purged infos = %d, want 2", rep.PurgedInfos)
 	}
 	if !rep.hasMismatch() {
 		t.Fatal("hasMismatch should be true")
@@ -374,6 +374,181 @@ func TestAuditReportsStreamSizes(t *testing.T) {
 	}
 }
 
+func TestAuditEventTypesCensus(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+
+	agg, err := artist.NewArtist("ar_census", "Census", "sp_census", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	unknown, err := eventsourcing.NewEvent("ar_census", artist.StreamTypeArtist, 2, "UnknownEventType", map[string]string{"x": "1"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 1, unknown); err != nil {
+		t.Fatalf("Append unknown: %v", err)
+	}
+
+	broken, err := eventsourcing.NewEvent("ar_census", artist.StreamTypeArtist, 3, artist.EventTypeArtistCreated, map[string]any{"id": 42}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census", 2, broken); err != nil {
+		t.Fatalf("Append broken: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	census := make(map[string]eventTypeCensus, len(rep.EventTypes))
+	for _, entry := range rep.EventTypes {
+		census[entry.EventType] = entry
+	}
+	if got := census[artist.EventTypeArtistCreated]; !got.Registered || got.Count != 2 || got.DecodeFails != 1 {
+		t.Errorf("ArtistCreated census = %+v, want registered, count 2, 1 decode failure", got)
+	}
+	if got := census["UnknownEventType"]; got.Registered || got.Count != 1 {
+		t.Errorf("UnknownEventType census = %+v, want unregistered with count 1", got)
+	}
+	if want := int64(2); rep.UndecodableEvents != want {
+		t.Errorf("UndecodableEvents = %d, want %d", rep.UndecodableEvents, want)
+	}
+	if !rep.hasMismatch() {
+		t.Error("undecodable events should count as divergence")
+	}
+}
+
+// TestAuditCensusSamplesDespiteZeroMaxMismatches pins the gate floor:
+// --max-mismatches 0 only silences mismatch samples, so the census must
+// still sample payloads and report undecodable events.
+func TestAuditCensusSamplesDespiteZeroMaxMismatches(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+
+	broken, err := eventsourcing.NewEvent("ar_quiet", artist.StreamTypeArtist, 1, artist.EventTypeArtistCreated, map[string]any{"id": 42}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	if err := store.Append(ctx, "ar_quiet", 0, broken); err != nil {
+		t.Fatalf("Append broken: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 0)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, entry := range rep.EventTypes {
+		if entry.EventType != artist.EventTypeArtistCreated {
+			continue
+		}
+		if entry.DecodeFails != 1 {
+			t.Errorf("ArtistCreated DecodeFails = %d, want 1 (census sampling must survive --max-mismatches 0)", entry.DecodeFails)
+		}
+	}
+	if rep.UndecodableEvents != 1 {
+		t.Errorf("UndecodableEvents = %d, want 1", rep.UndecodableEvents)
+	}
+	if !rep.hasMismatch() {
+		t.Error("undecodable events should count as divergence")
+	}
+}
+
+// TestAuditCensusWarnsInJetstreamMode checks that the jetstream-mode census
+// flags its blind spot: SQLite freezes at the flip, so JetStream-only appends
+// go unchecked and the report must say so instead of reporting clean.
+func TestAuditCensusWarnsInJetstreamMode(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "jetstream")
+
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	agg, err := artist.NewArtist("ar_census_js", "Census", "sp_census_js", "rock_metal", "included")
+	if err != nil {
+		t.Fatalf("NewArtist: %v", err)
+	}
+	if err := store.Append(ctx, "ar_census_js", 0, agg.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+
+	rep, err := audit(ctx, dataDir, map[string]struct{}{}, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "JetStream-only appends are not checked") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("want JetStream census blind-spot warning, got %v", rep.Warnings)
+	}
+}
+
+func TestAuditRecentDoneBatchMissingRow(t *testing.T) {
+	ctx := t.Context()
+	dataDir := t.TempDir()
+	database, err := db.SetupDB(ctx, slog.Default(), dataDir, false)
+	if err != nil {
+		t.Fatalf("SetupDB: %v", err)
+	}
+	store := eventsourcing.NewSQLiteStore(database)
+	b, err := batch.NewBatch("bt_recent_done", []string{"ar_1"}, nil)
+	if err != nil {
+		t.Fatalf("NewBatch: %v", err)
+	}
+	if _, _, err := b.RecordCompletion("ar_1"); err != nil {
+		t.Fatalf("RecordCompletion: %v", err)
+	}
+	if !b.Done() {
+		t.Fatalf("fixture batch should be done")
+	}
+	// Recent events (< 2h) without a row should be flagged as missing row, not purged.
+	if err := store.Append(ctx, "bt_recent_done", 0, b.UncommittedEvents()...); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_ = database.Close()
+	selected := map[string]struct{}{batch.StreamTypeBatch: {}}
+	rep, err := audit(ctx, dataDir, selected, 20)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if rep.Batches.MissingRows != 1 {
+		t.Fatalf("recent done batch without row must count as missing: %+v", rep.Batches)
+	}
+	if !rep.hasMismatch() {
+		t.Fatalf("recent done batch missing row should trigger hasMismatch")
+	}
+}
+
 func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
 	ctx := t.Context()
 	dataDir := t.TempDir()
@@ -415,7 +590,7 @@ func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
 
 	t.Run("no later start reports missing", func(t *testing.T) {
 		rep := &streamReport{}
-		if err := auditBatches(ctx, database, store, []string{"bt_old_norow"}, 10, rep); err != nil {
+		if err := auditBatches(ctx, database, store, []string{"bt_old_norow"}, 10, rep, new(int)); err != nil {
 			t.Fatalf("auditBatches: %v", err)
 		}
 		if rep.MissingRows != 1 {
@@ -431,7 +606,8 @@ func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
 			t.Fatalf("Start later batch: %v", err)
 		}
 		rep := &streamReport{}
-		if err := auditBatches(ctx, database, store, []string{"bt_old_norow", "bt_later"}, 10, rep); err != nil {
+		purged := 0
+		if err := auditBatches(ctx, database, store, []string{"bt_old_norow", "bt_later"}, 10, rep, &purged); err != nil {
 			t.Fatalf("auditBatches: %v", err)
 		}
 		if rep.MissingRows != 0 {
@@ -440,5 +616,38 @@ func TestAuditBatchesMissingRowNeedsLaterPruneStart(t *testing.T) {
 		if rep.Mismatched != 0 {
 			t.Fatalf("Mismatched = %d, want 0", rep.Mismatched)
 		}
+		if purged != 1 {
+			t.Fatalf("purged = %d, want 1 exempted stream", purged)
+		}
 	})
+}
+
+// TestReportHasDivergenceAllowUnlogged pins the deploy gate: legacy rows with
+// no event stream can be accepted as a baseline, but value drift, missing
+// rows, and undecodable events still fail.
+func TestReportHasDivergenceAllowUnlogged(t *testing.T) {
+	rep := &report{Artists: streamReport{UnloggedRows: 3}}
+	if !rep.hasDivergence(false) {
+		t.Fatal("strict gate must fail on unlogged rows")
+	}
+	if rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must accept legacy rows")
+	}
+
+	rep.Artists.Mismatched = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on value mismatches")
+	}
+
+	rep.Artists.Mismatched = 0
+	rep.Artists.MissingRows = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on missing rows")
+	}
+
+	rep.Artists.MissingRows = 0
+	rep.UndecodableEvents = 1
+	if !rep.hasDivergence(true) {
+		t.Fatal("allow-unlogged gate must still fail on undecodable events")
+	}
 }

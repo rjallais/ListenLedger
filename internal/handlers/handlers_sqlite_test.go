@@ -20,6 +20,7 @@ import (
 
 func setupTestSQLiteDB(t *testing.T) (*Handler, string) {
 	t.Helper()
+	t.Setenv("LISTENLEDGER_EVENT_STORE", "sqlite")
 	tempDir, err := os.MkdirTemp("", "handler_sqlite_test_*")
 	if err != nil {
 		t.Fatalf("failed creating temp dir: %v", err)

@@ -12,6 +12,7 @@ import (
 
 	"ListenLedger/internal/domain/artist"
 	"ListenLedger/internal/eventsourcing"
+	"ListenLedger/internal/readside"
 )
 
 // ListenerSnapshot represents a point-in-time monthly listener record for trend analysis.
@@ -46,6 +47,8 @@ func NewArtistProjection(log *slog.Logger, db *toolbeltdb.Database, nc *nats.Con
 // ResetForReplay clears event-derived artist history and stale artist rows.
 // Artist rows referenced by scrape jobs remain so replay does not cascade-delete
 // operational queue state; matching event streams will update those rows below.
+// Positions are cleared with the rows they describe: a live position tells
+// Project the row is already current, which would skip the replayed events.
 func (p *ArtistProjection) ResetForReplay(ctx context.Context) error {
 	err := p.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		clearHistory := tx.Prep("DELETE FROM artist_listener_history;")
@@ -63,6 +66,14 @@ func (p *ArtistProjection) ResetForReplay(ctx context.Context) error {
 		if _, err := deleteStaleArtists.Step(); err != nil {
 			return fmt.Errorf("clearing stale artist read models: %w", err)
 		}
+
+		clearPositions := tx.Prep("DELETE FROM read_model_positions WHERE stream_type = ?;")
+		clearPositions.BindText(1, artist.StreamTypeArtist)
+		if _, err := clearPositions.Step(); err != nil {
+			_ = clearPositions.Reset()
+			return fmt.Errorf("clearing artist read positions: %w", err)
+		}
+		_ = clearPositions.Reset()
 
 		return nil
 	})
@@ -86,12 +97,33 @@ func (p *ArtistProjection) Project(ctx context.Context, agg *artist.Artist, even
 	}
 
 	err := p.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
+		// Re-check the projected position inside the transaction: SQLite
+		// serializes write transactions, so this is race-free against a
+		// concurrent projection (the healer loads its stream outside this
+		// transaction). Events at or below the position were already
+		// committed — re-applying them would regress rows while the
+		// monotonic position stays ahead, hiding the drift forever.
+		positions := make(map[string]int64)
 		for _, evt := range events {
+			pos, ok := positions[evt.StreamID]
+			if !ok {
+				var err error
+				pos, err = readside.PositionTx(tx, evt.StreamID)
+				if err != nil {
+					return err
+				}
+				positions[evt.StreamID] = pos
+			}
+			if evt.Version <= pos {
+				continue
+			}
 			if err := p.projectEvent(tx, agg, evt); err != nil {
 				return err
 			}
 		}
-		return nil
+		// The projected position commits with the rows it describes: the healer
+		// reactor reads it to tell "already applied" from drift.
+		return readside.AdvancePositions(tx, events)
 	})
 	if err != nil {
 		return fmt.Errorf("projecting artist events: %w", err)
@@ -216,6 +248,9 @@ func (p *ArtistProjection) projectEvent(tx *sqlite.Conn, _ *artist.Artist, evt e
 		if _, err := stmt.Step(); err != nil {
 			return fmt.Errorf("updating artist song counts: %w", err)
 		}
+
+	default:
+		return fmt.Errorf("projecting artist events: unknown event type %q", evt.EventType)
 	}
 
 	return nil

@@ -11,6 +11,13 @@ import (
 // the second attempt.
 const appendRetryAttempts = 5
 
+// SequencedAppender is an optional Store capability that accepts a known
+// stream sequence anchor (from SequencedAggregate.LastSeq) to avoid an extra
+// pre-flight read round-trip before publishing.
+type SequencedAppender interface {
+	AppendSequenced(ctx context.Context, streamID string, expectedVersion int64, expectedLastSeq uint64, events ...Event) error
+}
+
 // AppendWithRetry appends events, resuming only the unwritten tail when a
 // mid-batch failure leaves a prefix persisted. It bridges the atomicity gap
 // between SQLiteStore (one transaction: all-or-nothing) and JetStreamStore
@@ -25,13 +32,26 @@ const appendRetryAttempts = 5
 // (validation, type mismatch, I/O) return immediately — retrying those is
 // pointless. Bounded attempts guarantee termination.
 func AppendWithRetry(ctx context.Context, store Store, streamID string, expectedVersion int64, events ...Event) error {
+	return appendWithRetrySequenced(ctx, store, streamID, expectedVersion, 0, events...)
+}
+
+func appendWithRetrySequenced(ctx context.Context, store Store, streamID string, expectedVersion int64, expectedLastSeq uint64, events ...Event) error {
 	if len(events) == 0 {
 		return nil
 	}
-	base, remaining := expectedVersion, events
+	base, baseSeq, remaining := expectedVersion, expectedLastSeq, events
 	var lastErr error
 	for attempt := 0; attempt < appendRetryAttempts; attempt++ {
-		err := store.Append(ctx, streamID, base, remaining...)
+		var err error
+		if baseSeq > 0 {
+			if seqStore, ok := store.(SequencedAppender); ok {
+				err = seqStore.AppendSequenced(ctx, streamID, base, baseSeq, remaining...)
+			} else {
+				err = store.Append(ctx, streamID, base, remaining...)
+			}
+		} else {
+			err = store.Append(ctx, streamID, base, remaining...)
+		}
 		if err == nil {
 			return nil
 		}
@@ -55,9 +75,15 @@ func AppendWithRetry(ctx context.Context, store Store, streamID string, expected
 		}
 		present := make(map[string]struct{}, len(loaded))
 		var maxVersion int64
+		var maxSeq uint64
 		for _, evt := range loaded {
 			present[evt.ID] = struct{}{}
-			maxVersion = max(maxVersion, evt.Version)
+			if evt.Version >= maxVersion {
+				maxVersion = evt.Version
+				if evt.GlobalPosition > 0 {
+					maxSeq = uint64(evt.GlobalPosition)
+				}
+			}
 		}
 		// Count our persisted prefix by ID, not version: versions alone
 		// cannot tell our prefix from a foreign writer's events.
@@ -75,13 +101,14 @@ func AppendWithRetry(ctx context.Context, store Store, streamID string, expected
 			if maxVersion != base {
 				return fmt.Errorf("%w: stream %s advanced to v%d: %w", ErrConcurrencyConflict, streamID, maxVersion, lastErr)
 			}
+			baseSeq = maxSeq
 			continue // transient miss with nothing persisted: retry as-is
 		}
 		// Our prefix persisted; the tail must land exactly on the tip.
 		if remaining[head].Version != maxVersion+1 {
 			return fmt.Errorf("%w: stream %s at v%d, tail needs v%d: %w", ErrConcurrencyConflict, streamID, maxVersion, remaining[head].Version, lastErr)
 		}
-		base, remaining = maxVersion, remaining[head:]
+		base, baseSeq, remaining = maxVersion, maxSeq, remaining[head:]
 	}
 	return lastErr
 }

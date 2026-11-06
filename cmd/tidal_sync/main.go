@@ -30,6 +30,7 @@ import (
 	"ListenLedger/internal/domain/correctionproposal"
 	"ListenLedger/internal/domain/song"
 	syncdomain "ListenLedger/internal/domain/tidalsync"
+	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/projections"
 	"ListenLedger/internal/songbackfill"
 	"ListenLedger/internal/storeutil"
@@ -183,25 +184,29 @@ func runPlan(ctx context.Context, args []string) error {
 			return tidal.SaveSecret(c, "TIDAL_REFRESH_TOKEN", token)
 		},
 	}
-	authClient := &http.Client{Timeout: 30 * time.Second}
-	token, err := tidal.RefreshAccessToken(ctx, authClient, authCfg, refreshToken)
-	if err != nil {
-		if token == nil {
-			return fmt.Errorf("refreshing TIDAL access token: %w", err)
+	authHTTP := &http.Client{Timeout: 30 * time.Second}
+	token, err := tidal.RefreshAccessToken(ctx, authHTTP, authCfg, refreshToken)
+	if token == nil {
+		if err == nil {
+			err = errors.New("no token returned")
 		}
-		fmt.Fprintf(os.Stderr, "Warning: %v (rotated token kept in memory for this run)\n", err)
+		return fmt.Errorf("refreshing TIDAL access token: %w", err)
 	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: TIDAL refresh token rotated but not persisted (%v); the stored secret is now stale. Run 'tidal_sync login' before the next sync.\n", err)
+	}
+	currentRefresh := token.RefreshToken
 
 	client := tidal.NewClient(token.AccessToken)
 	client.CountryCode = *country
 	client.TokenRefresher = func(c context.Context) (string, error) {
-		t, err := tidal.RefreshAccessToken(c, authClient, authCfg, token.RefreshToken)
+		t, err := tidal.RefreshAccessToken(c, authHTTP, authCfg, currentRefresh)
 		if t == nil {
 			return "", err
 		}
-		token.RefreshToken = t.RefreshToken
+		currentRefresh = t.RefreshToken
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: TIDAL refresh token rotated but not persisted (%v); the stored secret is now stale. Run 'tidal_sync login' before the next sync.\n", err)
 		}
 		return t.AccessToken, nil
 	}
@@ -219,6 +224,7 @@ func runPlan(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening SQLite database at %s: %w", *dataDir, err)
 	}
+	defer func() { _ = database.Close() }()
 
 	catalog, err := loadCatalogSongs(ctx, database)
 	if err != nil {
@@ -367,6 +373,7 @@ func runApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening SQLite database: %w", err)
 	}
+	defer func() { _ = database.Close() }()
 
 	store, cleanup, err := storeutil.OpenEventStore(ctx, *dataDir, database)
 	if err != nil {
@@ -402,8 +409,10 @@ func runApply(ctx context.Context, args []string) error {
 			continue
 		}
 
-		bulkEligible := p.Kind != "addition" && !p.RequiresReview
-		shouldApply := p.Approved || (bulkEligible && *approveAllAbove > 0 && p.Confidence >= *approveAllAbove)
+		prevTidal, _ := p.Before["tidal_id"].(string)
+		isRelink := p.Kind == "link" && prevTidal != ""
+		thresholdEligible := p.Kind != "addition" && p.Kind != "duplicate" && !isRelink && !p.RequiresReview
+		shouldApply := p.Approved || (thresholdEligible && *approveAllAbove > 0 && p.Confidence >= *approveAllAbove)
 		if !shouldApply {
 			continue
 		}
@@ -426,42 +435,67 @@ func runApply(ctx context.Context, args []string) error {
 		} else {
 			loaded, err := songRepo.Load(ctx, p.TargetID)
 			if err != nil {
-				p.Note = err.Error()
-				continue
+				if !errors.Is(err, eventsourcing.ErrStreamNotFound) {
+					p.Note = err.Error()
+					continue
+				}
+				seeded, seedErr := storeutil.SeedSongFromRow(ctx, database, p.TargetID)
+				if seedErr != nil {
+					p.Note = seedErr.Error()
+					continue
+				}
+				loaded = seeded
 			}
 			songAgg = loaded
 		}
 
 		// Apply specific change
-		var cmdErr error
+		var (
+			cmdErr   error
+			recorded bool
+		)
 		switch p.Kind {
 		case "addition":
+			// SongCreated is already pending on the aggregate.
+			recorded = true
 			tidalID, _ := p.After["tidal_id"].(string)
 			if tidalID != "" {
-				_, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
+				recorded, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
 			}
 		case "link":
 			tidalID, _ := p.After["tidal_id"].(string)
-			_, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
+			if songAgg.TidalID != prevTidal && songAgg.TidalID != tidalID {
+				p.Note = fmt.Sprintf("stale proposal: song now linked to %s", songAgg.TidalID)
+				continue
+			}
+			recorded, cmdErr = songAgg.LinkTidalID(tidalID, "tidal_sync", p.Confidence)
 		case "fill":
 			album := afterString(p.After, "album", songAgg.Album)
 			relDate := afterString(p.After, "release_date", songAgg.ReleaseDate)
 			relType := afterString(p.After, "release_type", songAgg.ReleaseType)
-			_, cmdErr = songAgg.EnrichMetadata(album, relDate, relType, "tidal")
+			recorded, cmdErr = songAgg.EnrichMetadata(album, relDate, relType, "tidal")
 		case "album_name", "release_type":
 			album := afterString(p.After, "album", songAgg.Album)
 			relDate := afterString(p.After, "release_date", songAgg.ReleaseDate)
 			relType := afterString(p.After, "release_type", songAgg.ReleaseType)
-			_, cmdErr = songAgg.CorrectMetadata(album, relDate, relType, "tidal")
+			recorded, cmdErr = songAgg.CorrectMetadata(album, relDate, relType, "tidal")
 		case "credit":
 			artist, _ := p.After["artist_name"].(string)
-			_, cmdErr = songAgg.CorrectArtistCredits(artist, "tidal")
+			recorded, cmdErr = songAgg.CorrectArtistCredits(artist, "tidal")
 		case "duplicate":
 			canonicalID, _ := p.After["duplicate_of"].(string)
-			_, cmdErr = songAgg.MarkDuplicate(canonicalID, "tidal")
+			recorded, cmdErr = songAgg.MarkDuplicate(canonicalID, "tidal")
 		}
 		if cmdErr != nil {
 			p.Note = cmdErr.Error()
+			continue
+		}
+		if !recorded {
+			// The stream or seeded row already reflects the proposal; saving
+			// would record a no-op fact and mark it applied. A seed-only save
+			// (pending SongCreated on a legacy row) does not need a proposal
+			// fact either — the row converges on its next real write.
+			p.Note = "no change: stream already reflects the proposal"
 			continue
 		}
 
@@ -483,7 +517,7 @@ func runApply(ctx context.Context, args []string) error {
 		}
 
 		if pbApp != nil {
-			if err := storeutil.MirrorSongToPB(pbApp, songAgg); err != nil {
+			if err := storeutil.MirrorSongToPB(ctx, pbApp, songAgg); err != nil {
 				logger.Warn("mirroring song to PocketBase failed", "song_id", songAgg.AggregateID(), "error", err)
 			}
 		}
@@ -598,7 +632,6 @@ func writeSyncReports(reportDir string, rep syncReport) (jsonPath, csvPath strin
 	}
 
 	w := csv.NewWriter(csvFile)
-	defer w.Flush()
 
 	header := []string{"Kind", "TargetID", "Title", "Artist", "Confidence", "AutoApprove", "Evidence", "TidalTrackID", "Before", "After"}
 	if err := w.Write(header); err != nil {
@@ -623,6 +656,14 @@ func writeSyncReports(reportDir string, rep syncReport) (jsonPath, csvPath strin
 		if err := w.Write(row); err != nil {
 			return "", "", err
 		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return "", "", fmt.Errorf("flushing report CSV: %w", err)
+	}
+	if err := csvFile.Close(); err != nil {
+		return "", "", fmt.Errorf("closing report CSV: %w", err)
 	}
 
 	return jsonPath, csvPath, nil

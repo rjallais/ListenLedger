@@ -28,7 +28,7 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 
 	// Seed a song directly (legacy row, no stream yet).
 	if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("INSERT INTO songs (id, title, artist_name, album, release_date, release_year, is_recent) VALUES ('sg_seed', 'Battery', 'Metallica', 'Master of Puppets', '1986-03-03', 1986, 0);")
+		stmt := tx.Prep("INSERT INTO songs (id, title, artist_name, album, release_date, release_year, is_recent, tidal_id, duplicate_of) VALUES ('sg_seed', 'Battery', 'Metallica', 'Master of Puppets', '1986-03-03', 1986, 0, 'td_battery', 'sg_canonical');")
 		_, err := stmt.Step()
 		return err
 	}); err != nil {
@@ -81,6 +81,8 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 
 	// 4. Wipe the read models and rebuild them from the event log only.
+	// Positions go with the rows: a live position tells Project the row is
+	// already current and the replay would be skipped.
 	if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("DELETE FROM albums WHERE id = ?;")
 		stmt.BindText(1, albumID)
@@ -90,6 +92,13 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 		stmt = tx.Prep("DELETE FROM songs WHERE id = 'sg_seed';")
 		if _, err := stmt.Step(); err != nil {
 			return err
+		}
+		for _, streamID := range []string{albumID, "sg_seed"} {
+			stmt = tx.Prep("DELETE FROM read_model_positions WHERE stream_id = ?;")
+			stmt.BindText(1, streamID)
+			if _, err := stmt.Step(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
@@ -130,12 +139,15 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 
 	var isRecent int64
+	var tidalID, duplicateOf string
 	if err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-		stmt := tx.Prep("SELECT is_recent FROM songs WHERE id = 'sg_seed';")
+		stmt := tx.Prep("SELECT is_recent, tidal_id, duplicate_of FROM songs WHERE id = 'sg_seed';")
 		defer func() { _ = stmt.Reset() }()
 		hasRow, _ := stmt.Step()
 		if hasRow {
 			isRecent = stmt.ColumnInt64(0)
+			tidalID = stmt.ColumnText(1)
+			duplicateOf = stmt.ColumnText(2)
 		}
 		return nil
 	}); err != nil {
@@ -143,6 +155,12 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 	if isRecent != 1 {
 		t.Fatalf("rebuilt song is_recent=%d, want 1", isRecent)
+	}
+	if tidalID != "td_battery" {
+		t.Fatalf("rebuilt song tidal_id=%q, want td_battery", tidalID)
+	}
+	if duplicateOf != "sg_canonical" {
+		t.Fatalf("rebuilt song duplicate_of=%q, want sg_canonical", duplicateOf)
 	}
 
 	// 6. History correction: rewrite the album's create event in place and replay.
@@ -166,6 +184,11 @@ func TestHandlers_CatalogEventSourcingAndReplay(t *testing.T) {
 	}
 	if err := h.db.WriteTX(ctx, func(tx *sqlite.Conn) error {
 		stmt := tx.Prep("DELETE FROM albums WHERE id = ?;")
+		stmt.BindText(1, albumID)
+		if _, err := stmt.Step(); err != nil {
+			return err
+		}
+		stmt = tx.Prep("DELETE FROM read_model_positions WHERE stream_id = ?;")
 		stmt.BindText(1, albumID)
 		_, err := stmt.Step()
 		return err

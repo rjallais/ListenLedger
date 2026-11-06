@@ -221,6 +221,90 @@ func TestJetStreamStore_MultiEventBatchWithInterleaving(t *testing.T) {
 	}
 }
 
+func TestJetStreamStore_AppendBatchMultiStreamRoundTrip(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Seed a third aggregate so scope sequences interleave: each stream's
+	// first event anchors its own scope and the tail rides the batch's
+	// atomic commit.
+	if err := store.Append(ctx, "ar_bat_seed", 0, mustTestEvent(t, "ar_bat_seed", 1)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	a1 := mustTestEvent(t, "ar_bat_a", 1)
+	a2 := mustTestEvent(t, "ar_bat_a", 2)
+	b1 := mustTestEvent(t, "ar_bat_b", 1)
+	b2 := mustTestEvent(t, "ar_bat_b", 2)
+	err := store.AppendBatch(ctx, []StreamAppend{
+		{StreamID: "ar_bat_a", ExpectedVersion: 0, Events: []Event{a1, a2}},
+		{StreamID: "ar_bat_b", ExpectedVersion: 0, Events: []Event{b1, b2}},
+	})
+	if err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	for _, streamID := range []string{"ar_bat_a", "ar_bat_b"} {
+		loaded, err := store.Load(ctx, streamID)
+		if err != nil || len(loaded) != 2 {
+			t.Fatalf("Load %s = %d events, %v; want 2", streamID, len(loaded), err)
+		}
+		if loaded[0].Version != 1 || loaded[1].Version != 2 {
+			t.Fatalf("Load %s order = v%d,v%d; want v1,v2", streamID, loaded[0].Version, loaded[1].Version)
+		}
+	}
+}
+
+func TestJetStreamStore_AppendBatchAtomicRollbackOnServerRejection(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// Both streams pass client-side pre-flight; the server rejects the
+	// commit because two events share one MsgID. The whole batch must roll
+	// back server-side: the innocent stream stays empty too.
+	a1 := mustTestEvent(t, "ar_bat_c", 1)
+	b1 := mustTestEvent(t, "ar_bat_d", 1)
+	b1.ID = a1.ID
+	err := store.AppendBatch(ctx, []StreamAppend{
+		{StreamID: "ar_bat_c", ExpectedVersion: 0, Events: []Event{a1}},
+		{StreamID: "ar_bat_d", ExpectedVersion: 0, Events: []Event{b1}},
+	})
+	if err == nil {
+		t.Fatal("AppendBatch with duplicate MsgID = nil; want rejection")
+	}
+	if errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("duplicate MsgID misclassified as conflict: %v", err)
+	}
+	for _, streamID := range []string{"ar_bat_c", "ar_bat_d"} {
+		loaded, err := store.Load(ctx, streamID)
+		if err != nil || len(loaded) != 0 {
+			t.Fatalf("Load %s after rejected batch = %d events, %v; want 0, nil (atomic rollback)",
+				streamID, len(loaded), err)
+		}
+	}
+}
+
+func TestJetStreamStore_AppendBatchConflictLeavesInnocentStreamUntouched(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	// One stream in the batch is already at v1: the server rejects the
+	// anchor and the innocent stream stays empty.
+	if err := store.Append(ctx, "ar_bat_e", 0, mustTestEvent(t, "ar_bat_e", 1)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	fresh := mustTestEvent(t, "ar_bat_f", 1)
+	// Version 1 at ExpectedVersion 0 passes client validation; the server
+	// rejects the anchor (subject already holds v1) and rolls back the batch.
+	stale := mustTestEvent(t, "ar_bat_e", 1)
+	err := store.AppendBatch(ctx, []StreamAppend{
+		{StreamID: "ar_bat_f", ExpectedVersion: 0, Events: []Event{fresh}},
+		{StreamID: "ar_bat_e", ExpectedVersion: 0, Events: []Event{stale}},
+	})
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("AppendBatch with stale stream = %v; want ErrConcurrencyConflict", err)
+	}
+	loaded, err := store.Load(ctx, "ar_bat_f")
+	if err != nil || len(loaded) != 0 {
+		t.Fatalf("Load innocent stream = %d, %v; want 0, nil", len(loaded), err)
+	}
+}
+
 func TestJetStreamStore_SameIDAcrossTypesRejected(t *testing.T) {
 	store, ctx := setupTestJSStore(t)
 
@@ -594,6 +678,44 @@ func TestAppendWithRetry_DeadContextReturnsEarly(t *testing.T) {
 	}
 }
 
+// TestJetStreamStore_WatchStampsGlobalPosition pins the watcher contract:
+// JetStream-mode events carry the DOMAIN_EVENTS stream sequence in
+// GlobalPosition (from message metadata — the envelope does not hold it), so
+// consumers can resume with Watch(ctx, lastPos).
+func TestJetStreamStore_WatchStampsGlobalPosition(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_watch_1", 0, mustTestEvent(t, "ar_watch_1", 1)); err != nil {
+		t.Fatalf("Append v1: %v", err)
+	}
+	if err := store.Append(ctx, "ar_watch_1", 1, mustTestEvent(t, "ar_watch_1", 2)); err != nil {
+		t.Fatalf("Append v2: %v", err)
+	}
+
+	w, err := store.Watch(ctx, 0)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	var got []Event
+	deadline := time.After(5 * time.Second)
+	for len(got) < 2 {
+		select {
+		case evt, ok := <-w.Events():
+			if !ok {
+				t.Fatalf("watch channel closed early; got %d events, want 2", len(got))
+			}
+			got = append(got, evt)
+		case <-deadline:
+			t.Fatalf("timed out with %d events, want 2", len(got))
+		}
+	}
+	if got[0].GlobalPosition != 1 || got[1].GlobalPosition != 2 {
+		t.Fatalf("GlobalPosition = [%d %d], want [1 2]", got[0].GlobalPosition, got[1].GlobalPosition)
+	}
+}
+
 // countingConflictStore loses every CAS race and counts Load calls.
 type countingConflictStore struct {
 	Store
@@ -607,4 +729,210 @@ func (s *countingConflictStore) Append(ctx context.Context, streamID string, exp
 func (s *countingConflictStore) Load(ctx context.Context, streamID string) ([]Event, error) {
 	s.loads++
 	return s.Store.Load(ctx, streamID)
+}
+
+// TestJetStreamWatch_ClosesWhenConsumerDeleted pins the terminal contract:
+// when the server deletes the watcher's consumer (what InactiveThreshold does
+// after a reader blocked on the events channel), the watcher must close its
+// channel so callers can resume with Watch(ctx, lastPos) instead of retrying
+// fetches on a consumer that no longer exists.
+func TestJetStreamWatch_ClosesWhenConsumerDeleted(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	if err := store.Append(ctx, "ar_watch", 0, mustTestEvent(t, "ar_watch", 1)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	w, err := store.Watch(ctx, 0)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	// The watcher is live once it delivers the appended event, which also
+	// guarantees its consumer exists.
+	select {
+	case _, ok := <-w.Events():
+		if !ok {
+			t.Fatal("watcher channel closed before delivering the appended event")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("watcher did not deliver the appended event")
+	}
+
+	stream, err := store.js.Stream(ctx, messaging.DomainEventsStreamName)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	lister := stream.ConsumerNames(ctx)
+	for name := range lister.Name() {
+		if strings.HasPrefix(name, "watch_") {
+			if err := stream.DeleteConsumer(ctx, name); err != nil {
+				t.Fatalf("DeleteConsumer %s: %v", name, err)
+			}
+		}
+	}
+	if err := lister.Err(); err != nil {
+		t.Fatalf("ConsumerNames: %v", err)
+	}
+
+	// The channel must close (consumer-gone is terminal), not stay open with
+	// an infinite fetch-retry loop.
+	select {
+	case _, ok := <-w.Events():
+		if ok {
+			t.Fatal("watcher delivered an event after consumer deletion")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("watcher channel never closed after consumer deletion")
+	}
+}
+
+// TestJetStreamWatch_ConcurrentWatchersGetDistinctConsumers pins the
+// consumer-name uniqueness contract: two watchers started in the same clock
+// tick must each replay the full history from their own consumer, not share
+// one cursor.
+func TestJetStreamWatch_ConcurrentWatchersGetDistinctConsumers(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+	if err := store.Append(ctx, "ar_watch2", 0, mustTestEvent(t, "ar_watch2", 1), mustTestEvent(t, "ar_watch2", 2)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	a, err := store.Watch(ctx, 0)
+	if err != nil {
+		t.Fatalf("Watch a: %v", err)
+	}
+	defer func() { _ = a.Stop() }()
+	b, err := store.Watch(ctx, 0)
+	if err != nil {
+		t.Fatalf("Watch b: %v", err)
+	}
+	defer func() { _ = b.Stop() }()
+
+	drain := func(w Watcher) int {
+		n := 0
+		deadline := time.After(10 * time.Second)
+		for n < 2 {
+			select {
+			case _, ok := <-w.Events():
+				if !ok {
+					return n
+				}
+				n++
+			case <-deadline:
+				return n
+			}
+		}
+		return n
+	}
+	if n := drain(a); n != 2 {
+		t.Errorf("watcher a received %d events, want 2", n)
+	}
+	if n := drain(b); n != 2 {
+		t.Errorf("watcher b received %d events, want 2 (a shared consumer would starve one watcher)", n)
+	}
+}
+
+func TestJetStreamStore_LoadPopulatesGlobalPositionAndHeaders(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	v1 := mustTestEvent(t, "ar_gp_1", 1)
+	if err := store.Append(ctx, "ar_gp_1", 0, v1); err != nil {
+		t.Fatalf("Append v1: %v", err)
+	}
+	// Single-event fast path in loadSince must stamp GlobalPosition.
+	single, err := store.Load(ctx, "ar_gp_1")
+	if err != nil || len(single) != 1 {
+		t.Fatalf("Load single = %d, %v; want 1", len(single), err)
+	}
+	if single[0].GlobalPosition != 1 {
+		t.Fatalf("single[0].GlobalPosition = %d, want 1", single[0].GlobalPosition)
+	}
+
+	v2 := mustTestEvent(t, "ar_gp_1", 2)
+	if err := store.AppendSequenced(ctx, "ar_gp_1", 1, uint64(single[0].GlobalPosition), v2); err != nil {
+		t.Fatalf("AppendSequenced v2: %v", err)
+	}
+	multi, err := store.Load(ctx, "ar_gp_1")
+	if err != nil || len(multi) != 2 {
+		t.Fatalf("Load multi = %d, %v; want 2", len(multi), err)
+	}
+	if multi[0].GlobalPosition != 1 || multi[1].GlobalPosition != 2 {
+		t.Fatalf("multi GlobalPosition = [%d %d], want [1 2]", multi[0].GlobalPosition, multi[1].GlobalPosition)
+	}
+}
+
+func TestJetStreamStore_WatchWithFiltersAndCatchUpSignal(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_wf_1", 0, mustTestEvent(t, "ar_wf_1", 1)); err != nil {
+		t.Fatalf("Append ar_wf_1: %v", err)
+	}
+	albumEvt, err := NewEvent("al_wf_1", "album", 1, "AlbumCreated", map[string]any{"title": "Lateralus"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent album: %v", err)
+	}
+	if err := store.Append(ctx, "al_wf_1", 0, albumEvt); err != nil {
+		t.Fatalf("Append al_wf_1: %v", err)
+	}
+
+	caughtUp := make(chan struct{})
+	w, err := store.Watch(ctx, 0, WithWatchFilters("album.al_wf_1"), WithCatchUpSignal(caughtUp))
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	select {
+	case evt := <-w.Events():
+		if evt.StreamID != "al_wf_1" || evt.StreamType != "album" {
+			t.Fatalf("got unexpected event %+v, want al_wf_1/album", evt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for filtered album event")
+	}
+
+	select {
+	case <-caughtUp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("catch-up signal was never closed")
+	}
+}
+
+func TestJetStreamStore_WatchWithMultipleOverlappingFilters(t *testing.T) {
+	store, ctx := setupTestJSStore(t)
+
+	if err := store.Append(ctx, "ar_wf_2", 0, mustTestEvent(t, "ar_wf_2", 1)); err != nil {
+		t.Fatalf("Append ar_wf_2: %v", err)
+	}
+	albumEvt, err := NewEvent("al_wf_2", "album", 1, "AlbumCreated", map[string]any{"title": "Fear Inoculum"}, nil)
+	if err != nil {
+		t.Fatalf("NewEvent album: %v", err)
+	}
+	if err := store.Append(ctx, "al_wf_2", 0, albumEvt); err != nil {
+		t.Fatalf("Append al_wf_2: %v", err)
+	}
+
+	// Overlapping filters: "artist" covers all artists, "artist.ar_wf_2" is a subset.
+	// nats-server would reject this if placed in FilterSubjects.
+	caughtUp := make(chan struct{})
+	w, err := store.Watch(ctx, 0, WithWatchFilters("artist", "artist.ar_wf_2"), WithCatchUpSignal(caughtUp))
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Stop() }()
+
+	select {
+	case evt := <-w.Events():
+		if evt.StreamID != "ar_wf_2" || evt.StreamType != "artist" {
+			t.Fatalf("got unexpected event %+v, want ar_wf_2/artist", evt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for artist event")
+	}
+
+	select {
+	case <-caughtUp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("catch-up signal was never closed")
+	}
 }

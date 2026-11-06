@@ -71,11 +71,11 @@ func (s *JetStreamStore) SaveSnapshot(ctx context.Context, snap Snapshot) error 
 	if err != nil {
 		return fmt.Errorf("jetstream store: tip for snapshot of %s: %w", snap.StreamID, err)
 	}
-	tip, err := UnmarshalEvent(last.Data)
+	_, _, _, _, tipVersion, err := rawMsgEnvelope(last)
 	if err != nil {
 		return fmt.Errorf("jetstream store: decode tip for snapshot of %s: %w", snap.StreamID, err)
 	}
-	if tip.Version != snap.Version {
+	if tipVersion != snap.Version {
 		return nil // tip moved on (or snapshot is ahead): skip, retry next interval
 	}
 	createdAt := snap.CreatedAt
@@ -117,16 +117,17 @@ func (s *JetStreamStore) LoadSnapshot(ctx context.Context, streamID string) (Sna
 		}
 		return Snapshot{}, fmt.Errorf("jetstream store: verify snapshot anchor for %s: %w", streamID, err)
 	}
-	anchor, err := UnmarshalEvent(msg.Data)
-	if err != nil || anchor.StreamID != streamID || anchor.Version != rec.Version {
+	_, anchorStreamID, _, _, anchorVersion, err := rawMsgEnvelope(msg)
+	if err != nil || anchorStreamID != streamID || anchorVersion != rec.Version {
 		return Snapshot{}, fmt.Errorf("stream %s: anchor seq %d does not match v%d: %w", streamID, rec.Seq, rec.Version, ErrSnapshotNotFound)
 	}
 	return Snapshot{
-		StreamID:   streamID,
-		StreamType: rec.StreamType,
-		Version:    rec.Version,
-		Payload:    rec.Payload,
-		CreatedAt:  rec.CreatedAt,
+		StreamID:       streamID,
+		StreamType:     rec.StreamType,
+		Version:        rec.Version,
+		GlobalPosition: int64(rec.Seq),
+		Payload:        rec.Payload,
+		CreatedAt:      rec.CreatedAt,
 	}, nil
 }
 

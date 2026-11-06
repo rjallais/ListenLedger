@@ -415,6 +415,8 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 			releaseYear: int64(record.GetInt("release_year")),
 			releaseType: record.GetString("release_type"),
 			spotifyID:   record.GetString("spotify_id"),
+			tidalID:     record.GetString("tidal_id"),
+			duplicateOf: record.GetString("duplicate_of"),
 		}
 		batchSeq = record.GetInt("recent_batch_seq")
 		batchPos = record.GetInt("recent_batch_pos")
@@ -423,7 +425,7 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 		var existingSeq, existingPos int
 		var found bool
 		err := h.db.ReadTX(ctx, func(tx *sqlite.Conn) error {
-			stmt := tx.Prep("SELECT is_recent, recent_batch_seq, recent_batch_pos, title, artist_name, album, release_date, release_year, release_type, spotify_id FROM songs WHERE id = ?;")
+			stmt := tx.Prep("SELECT is_recent, recent_batch_seq, recent_batch_pos, title, artist_name, album, release_date, release_year, release_type, spotify_id, tidal_id, duplicate_of FROM songs WHERE id = ?;")
 			defer func() { _ = stmt.Reset() }()
 			stmt.BindText(1, songID)
 			hasRow, err := stmt.Step()
@@ -443,6 +445,8 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 					releaseYear: stmt.ColumnInt64(7),
 					releaseType: stmt.ColumnText(8),
 					spotifyID:   stmt.ColumnText(9),
+					tidalID:     stmt.ColumnText(10),
+					duplicateOf: stmt.ColumnText(11),
 				}
 			}
 			return nil
@@ -496,7 +500,7 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 	}
 
 	if h.songRepo != nil {
-		agg, loadErr := h.loadOrCreateSong(ctx, songID, songRow)
+		agg, createdEvents, loadErr := h.loadOrCreateSong(ctx, songID, songRow)
 		if loadErr != nil {
 			log.Printf("[songs] loadOrCreateSong error for %s: %v", songID, loadErr)
 		} else if setErr := agg.SetRecent(isRecent, int64(batchSeq), int64(batchPos)); setErr != nil {
@@ -504,7 +508,10 @@ func (h *Handler) HandleUpdateSongRecent(w http.ResponseWriter, r *http.Request)
 		} else if events, saveErr := h.songRepo.Save(ctx, agg); saveErr != nil {
 			log.Printf("[songs] songRepo.Save error for %s: %v", songID, saveErr)
 		} else if h.catalogProjection != nil && len(events) > 0 {
-			if projErr := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); projErr != nil {
+			// Re-project the creation events with this write: when the inline
+			// SongCreated projection failed, the position never advanced, and
+			// projecting only the recent event would skip the row insert.
+			if projErr := h.catalogProjection.Project(ctx, song.StreamTypeSong, append(createdEvents, events...)); projErr != nil {
 				log.Printf("[songs] catalogProjection.Project error for %s: %v", songID, projErr)
 			}
 		}
@@ -538,25 +545,51 @@ type legacySongRow struct {
 	releaseYear int64
 	releaseType string
 	spotifyID   string
+	tidalID     string
+	duplicateOf string
 }
 
 // loadOrCreateSong replays the song stream, synthesizing a SongCreated
-// event for legacy rows. Recent-flag updates are applied by the caller via SetRecent.
-func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *legacySongRow) (*song.Song, error) {
+// event for legacy rows. Recent-flag updates are applied by the caller via
+// SetRecent; the returned creation events let the caller project them in the
+// same transaction as its own events when the inline projection fails.
+func (h *Handler) loadOrCreateSong(ctx context.Context, songID string, legacy *legacySongRow) (*song.Song, []eventsourcing.Event, error) {
 	agg, loadErr := h.songRepo.Load(ctx, songID)
 	if !errors.Is(loadErr, eventsourcing.ErrStreamNotFound) || legacy == nil {
-		return agg, loadErr
+		return agg, nil, loadErr
 	}
 
 	createAgg, createErr := song.NewSong(songID, legacy.title, legacy.artistName, legacy.album,
 		legacy.releaseDate, legacy.releaseType, legacy.spotifyID, legacy.releaseYear, 0, 0, false)
 	if createErr != nil {
-		return nil, createErr
+		return nil, nil, createErr
 	}
-	if _, err := h.songRepo.Save(ctx, createAgg); err != nil {
-		return nil, err
+	if legacy.tidalID != "" {
+		if _, err := createAgg.LinkTidalID(legacy.tidalID, "legacy_seed", 1.0); err != nil {
+			return nil, nil, fmt.Errorf("linking legacy song %s to TIDAL ID: %w", songID, err)
+		}
 	}
-	return h.songRepo.Load(ctx, songID)
+	if legacy.duplicateOf != "" {
+		if _, err := createAgg.MarkDuplicate(legacy.duplicateOf, "legacy_seed"); err != nil {
+			return nil, nil, fmt.Errorf("marking legacy song %s as duplicate: %w", songID, err)
+		}
+	}
+	events, err := h.songRepo.Save(ctx, createAgg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if h.catalogProjection != nil && len(events) > 0 {
+		if err := h.catalogProjection.Project(ctx, song.StreamTypeSong, events); err != nil {
+			// The creation fact is committed; returning here would make the
+			// caller abandon the pending recent update, leaving the stream
+			// without the fact while the rows already carry it. The caller
+			// re-projects these events with its own so the stream and rows
+			// converge (the healer covers a repeated failure).
+			log.Printf("[songs] catalogProjection.Project SongCreated error for %s: %v", songID, err)
+		}
+	}
+	loaded, err := h.songRepo.Load(ctx, songID)
+	return loaded, events, err
 }
 
 func (h *Handler) applyRecentUpdate(ctx context.Context, record *core.Record, isRecent bool) error {

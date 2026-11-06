@@ -324,6 +324,19 @@ func SubjectDomainEventFilter(streamID string) string {
 	return SubjectDomainEventsPrefix + ".*." + sanitizeSubjectToken(streamID) + ".>"
 }
 
+// SubjectDomainEventPattern builds a 3-token JetStream filter subject
+// (domain.events.<type>.<id>.<event>) where "*" or empty tokens become
+// single-token wildcards "*" and concrete tokens are injectively escaped.
+func SubjectDomainEventPattern(streamType, streamID, eventType string) string {
+	encode := func(tok string) string {
+		if tok == "" || tok == "*" || tok == ">" {
+			return "*"
+		}
+		return sanitizeSubjectToken(tok)
+	}
+	return SubjectDomainEventsPrefix + "." + encode(streamType) + "." + encode(streamID) + "." + encode(eventType)
+}
+
 // RanksGenreFromSubject decodes the genre group from a ranks.updated subject,
 // returning "" for the unqualified subject or unrelated subjects.
 func RanksGenreFromSubject(subject string) string {

@@ -10,6 +10,25 @@ stages:
 - secret-detection
 sast:
   stage: test
+go-test:
+  stage: test
+  image: golang:1.27.3
+  interruptible: true
+  variables:
+    GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+    GOMODCACHE: $CI_PROJECT_DIR/.cache/gomod
+  cache:
+    key:
+      files:
+        - go.sum
+    paths:
+      - .cache/go-build
+      - .cache/gomod
+  script:
+    - go version
+    - go build ./...
+    - go vet ./...
+    - go test ./...
 include:
 - template: Security/SAST.gitlab-ci.yml
 - template: Security/Secret-Detection.gitlab-ci.yml

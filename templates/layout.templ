@@ -72,7 +72,10 @@ templ Layout(title string, activeNav string) {
 				// SSE and hot-reload lanes listen for `datastar-booted` instead
 				// of `load` directly, so a prerendered page — where `load` may
 				// fire before Datastar boots — still opens them.
+				let booted = false;
 				function openLiveLanes() {
+					if (booted) return;
+					booted = true;
 					window.dispatchEvent(new CustomEvent('datastar-booted'));
 				}
 				function bootDatastar() {
@@ -95,6 +98,8 @@ templ Layout(title string, activeNav string) {
 							window.addEventListener('load', start, { once: true });
 						}
 						start();
+					}).catch(() => {
+						openLiveLanes();
 					});
 				}
 				if (document.prerendering) {

@@ -2,6 +2,7 @@ package eventsourcing
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -124,15 +125,69 @@ func UpcastPayload(eventType string, fromVersion int, payload []byte) ([]byte, e
 
 // DecodeEventPayload is the version-aware decode path for aggregate and
 // projection code: it resolves the writer version from metadata, upcasts to
-// current, then decodes (RON or legacy JSON). New code must use this instead
-// of DecodePayload on event payloads.
+// current, then decodes (RON or legacy JSON). When evt.Data already holds the
+// current-schema value struct (e.g. during in-memory RecordThat -> apply or
+// synchronous Project), it copies directly without re-parsing RON/JSON.
 func DecodeEventPayload(evt Event, target any) error {
+	if evt.Data != nil && target != nil {
+		targetVer := CurrentSchemaVersionFor(evt.EventType)
+		if (targetVer <= SchemaVersionV1 || SchemaVersionOf(evt) >= targetVer) && tryCopyEventData(evt.Data, target) {
+			return nil
+		}
+	}
 	version := SchemaVersionOf(evt)
 	payload, err := UpcastPayload(evt.EventType, version, evt.Payload)
 	if err != nil {
 		return err
 	}
 	return DecodePayload(payload, target)
+}
+
+// tryCopyEventData copies src into dst (*T) when src is T or *T and T is a
+// pure value struct (no slices, maps, or pointers that could alias caller state).
+func tryCopyEventData(src, dst any) bool {
+	dstVal := reflect.ValueOf(dst)
+	if dstVal.Kind() != reflect.Pointer || dstVal.IsNil() {
+		return false
+	}
+	dstElem := dstVal.Elem()
+	if !dstElem.CanSet() {
+		return false
+	}
+	srcVal := reflect.ValueOf(src)
+	if srcVal.Kind() == reflect.Pointer {
+		if srcVal.IsNil() {
+			return false
+		}
+		srcVal = srcVal.Elem()
+	}
+	if srcVal.Type() != dstElem.Type() || !isPureValueType(srcVal.Type()) {
+		return false
+	}
+	dstElem.Set(srcVal)
+	return true
+}
+
+func isPureValueType(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		return true
+	case reflect.Array:
+		return isPureValueType(t.Elem())
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if !isPureValueType(t.Field(i).Type) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // stampSchemaVersion ensures map metadata carries the writer schema version

@@ -19,6 +19,7 @@ import (
 	"ListenLedger/internal/eventsourcing"
 	"ListenLedger/internal/messaging"
 	"ListenLedger/internal/priority"
+	"ListenLedger/internal/readside"
 )
 
 type batchCandidate struct {
@@ -271,7 +272,12 @@ func (h *Handler) cleanupQueueArtistRefresh(record *core.Record, requestID, prev
 	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelCleanup()
 	if rollbackErr := h.unmarkArtistRefreshQueued(cleanupCtx, record, previousFetchStatus, requestID); rollbackErr != nil {
-		log.Printf("[queueArtistRefresh] %s failed to restore artist %s status: %v", reason, record.Id, rollbackErr)
+		// The compensating fact is not durable, so the committed pending status
+		// stays authoritative. Keep the queued job row as the trace for the
+		// queue/retry path instead of leaving a pending artist with no job.
+		log.Printf("[queueArtistRefresh] %s failed to restore artist %s status: %v (keeping scrape job %s)", reason, record.Id, rollbackErr, requestID)
+		correlation.Clear(record.Id)
+		return
 	}
 	correlation.Clear(record.Id)
 	if delErr := h.deleteScrapeJobRecordByRequestID(cleanupCtx, requestID, record.Id); delErr != nil {
@@ -419,7 +425,11 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 	// when the store supports BatchAppender. Projection to SQLite is skipped
 	// here because the mirror step below writes all candidates into the SQLite
 	// artists table in a single atomic transaction.
-	h.emitBatchArtistFetchStatusEvents(ctx, candidates, "pending", "batch queue")
+	pendingEvents := h.emitBatchArtistFetchStatusEvents(ctx, candidates, "pending", "batch queue")
+	eventsByArtist := make(map[string][]eventsourcing.Event, len(pendingEvents))
+	for _, evt := range pendingEvents {
+		eventsByArtist[evt.StreamID] = append(eventsByArtist[evt.StreamID], evt)
+	}
 
 	// SQLite mirror: the PB transaction above created the scrape_jobs rows but
 	// nothing mirrors them (unlike createScrapeJobRecord's single path), so
@@ -455,6 +465,14 @@ func (h *Handler) persistBatchRefreshCandidates(ctx context.Context, candidates 
 				statusStmt.BindText(1, candidate.job.Record.Id)
 				if _, err := statusStmt.Step(); err != nil {
 					return err
+				}
+				// Advance this artist's read-model position inside the same
+				// transaction as its mirrored rows, so the healer does not
+				// replay every batch member as a lagging stream.
+				if evts := eventsByArtist[candidate.job.Record.Id]; len(evts) > 0 {
+					if err := readside.AdvancePositions(tx, evts); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

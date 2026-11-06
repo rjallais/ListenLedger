@@ -293,6 +293,10 @@ github.com/stretchr/testify v1.8.0/go.mod h1:yNjHg4UonilssWZ8iaSj1OCr/vHnekPRkoO
 github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/synadia-io/orbit.go/jetstreamext v0.3.2 h1:SF7G3PLXoW32CaClWJRhswwrLix2NF7rDMJ0NV/BY8s=
+github.com/synadia-io/orbit.go/jetstreamext v0.3.2/go.mod h1:PeBHdNytAj9cRuifmc9Ag+Y7gSK5R1kQYkvo0HBWCNA=
+github.com/synadia-io/orbit.go/natsext v0.1.3 h1:wOPYq/ntGXP/qxV4AyTd1ZS01KEM6ArSq0oDLBQUlFE=
+github.com/synadia-io/orbit.go/natsext v0.1.3/go.mod h1:9yMOycaywm4UF8gr5Rolx/+pjL1c8VXRgKAHW8/mVa8=
 github.com/tdewolff/minify/v2 v2.24.17 h1:6AbitfVyq0M7aW6i+XL7+49DeTQZwloOMs9O574arBg=
 github.com/tdewolff/minify/v2 v2.24.17/go.mod h1:kVqn9vxXUKtlHexSNrWbYePqioOT5mc4ou/KVSMpfCM=
 github.com/tdewolff/parse/v2 v2.8.16 h1:bLk5svUOQRkW/Y2SJ+DeENSIkZBcTIkq+Atyv5D8feI=

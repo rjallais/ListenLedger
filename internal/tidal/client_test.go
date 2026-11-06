@@ -110,3 +110,21 @@ func TestFetchFavoriteTracks(t *testing.T) {
 		t.Errorf("expected AddedAt parsed, got zero time")
 	}
 }
+
+func TestClient_RetryAfterCap(t *testing.T) {
+	ctx := t.Context()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClient("test-token")
+	client.BaseURL = server.URL
+	client.HTTPClient = server.Client()
+
+	_, err := client.FetchFavoriteTracks(ctx, "user-1", 10)
+	if err == nil {
+		t.Fatal("expected error when Retry-After exceeds cap, got nil")
+	}
+}

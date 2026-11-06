@@ -666,52 +666,71 @@ func (h *Handler) batchRefreshJobs(ctx context.Context, cutoff string, count int
 	return prioritizeArtistJobs(records), nil
 }
 
-// emitArtistFetchStatus folds a fetch-status fact into the artist stream and
-// projection (best-effort, warn-only). Read-model row writes below are compat
-// mirrors; the aggregate is the source of truth for isArtistRefreshPending.
-// requestID links the fact to its saga instance in metadata.
-func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) {
-	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, true)
-}
-
-// emitArtistFetchStatusEventOnly appends the fetch-status event to the event
-// store without individually projecting to SQLite, allowing callers that perform
-// a single batch projection update across all items to avoid SQLite lock contention.
-func (h *Handler) emitArtistFetchStatusEventOnly(ctx context.Context, artistID, status, reason, requestID string) {
-	h.emitArtistFetchStatusWithOptions(ctx, artistID, status, reason, requestID, false)
-}
-
-func (h *Handler) emitArtistFetchStatusWithOptions(ctx context.Context, artistID, status, reason, requestID string, project bool) {
+// persistArtistFetchStatus folds a fetch-status fact into the artist stream and
+// projection, retrying transient failures so compensation paths can rely on the
+// fact being durable before they rewrite rows. requestID links the fact to its
+// saga instance in metadata.
+func (h *Handler) persistArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) error {
 	if h.artistRepo == nil || strings.TrimSpace(artistID) == "" {
-		return
+		return nil
 	}
-	agg, err := h.artistRepo.Load(ctx, artistID)
-	if err != nil {
-		return
-	}
-	if agg.FetchStatus == status {
-		return
-	}
-	if err := agg.SetFetchStatus(status, reason, eventsourcing.Correlation{RequestID: requestID}); err != nil {
-		return
-	}
-	events, err := h.artistRepo.Save(ctx, agg)
-	if err != nil {
-		log.Printf("[handlers] Warning: fetch-status event %s for %s not saved: %v", status, artistID, err)
-		return
-	}
-	if project && h.artistProjection != nil && len(events) > 0 {
-		if err := h.artistProjection.Project(ctx, agg, events); err != nil {
-			log.Printf("[handlers] Warning: fetch-status projection %s for %s failed: %v", status, artistID, err)
+	const attempts = 3
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("fetch-status %s for %s: %w", status, artistID, ctx.Err())
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
 		}
+		agg, err := h.artistRepo.Load(ctx, artistID)
+		if err != nil {
+			if errors.Is(err, eventsourcing.ErrStreamNotFound) {
+				// No stream: no committed fact exists to compensate.
+				return nil
+			}
+			lastErr = err
+			continue
+		}
+		// A prior attempt may have committed before its error surfaced.
+		if agg.FetchStatus == status {
+			return nil
+		}
+		if err := agg.SetFetchStatus(status, reason, eventsourcing.Correlation{RequestID: requestID}); err != nil {
+			return fmt.Errorf("fetch-status %s for %s: %w", status, artistID, err)
+		}
+		events, err := h.artistRepo.Save(ctx, agg)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if h.artistProjection != nil && len(events) > 0 {
+			if err := h.artistProjection.Project(ctx, agg, events); err != nil {
+				log.Printf("[handlers] Warning: fetch-status projection %s for %s failed: %v", status, artistID, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("fetch-status %s for %s: %w", status, artistID, lastErr)
+}
+
+// emitArtistFetchStatus folds a fetch-status fact (best-effort, warn-only).
+// Read-model row writes below are compat mirrors; the aggregate is the source
+// of truth for isArtistRefreshPending.
+func (h *Handler) emitArtistFetchStatus(ctx context.Context, artistID, status, reason, requestID string) {
+	if err := h.persistArtistFetchStatus(ctx, artistID, status, reason, requestID); err != nil {
+		log.Printf("[handlers] Warning: fetch-status event %s for %s not saved: %v", status, artistID, err)
 	}
 }
 
 // emitBatchArtistFetchStatusEvents loads candidate artist aggregates concurrently
-// and commits all status-transition events in a single batch transaction.
-func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidates []batchCandidate, status, reason string) {
+// and commits all status-transition events in a single batch transaction. It
+// returns the saved events so the caller can advance read-model positions for
+// exactly the committed facts.
+func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidates []batchCandidate, status, reason string) []eventsourcing.Event {
 	if h.artistRepo == nil || len(candidates) == 0 {
-		return
+		return nil
 	}
 	loaded := make([]*artist.Artist, len(candidates))
 	var wg sync.WaitGroup
@@ -739,9 +758,11 @@ func (h *Handler) emitBatchArtistFetchStatusEvents(ctx context.Context, candidat
 	}
 	wg.Wait()
 
-	if err := h.artistRepo.SaveBatch(ctx, loaded); err != nil {
+	saved, err := h.artistRepo.SaveBatch(ctx, loaded)
+	if err != nil {
 		log.Printf("[handlers] Warning: batch fetch-status events (%s) save error: %v", status, err)
 	}
+	return saved
 }
 
 func (h *Handler) markArtistRefreshQueued(ctx context.Context, record *core.Record, requestID string) error {
@@ -780,7 +801,11 @@ func (h *Handler) unmarkArtistRefreshQueued(ctx context.Context, record *core.Re
 		status = "idle"
 	}
 
-	h.emitArtistFetchStatus(ctx, record.Id, status, "queue rollback", requestID)
+	if err := h.persistArtistFetchStatus(ctx, record.Id, status, "queue rollback", requestID); err != nil {
+		// Leave rows untouched: restoring them without the compensating fact
+		// would let healer replay resurrect the committed pending status.
+		return fmt.Errorf("unmarkArtistRefreshQueued: restore fetch_status event: %w", err)
+	}
 	record.Set("fetch_status", status)
 	if err := h.app.SaveWithContext(ctx, record); err != nil {
 		return fmt.Errorf("unmarkArtistRefreshQueued: save fetch_status: %w", err)

@@ -7,11 +7,13 @@
 //
 // Usage:
 //
-//	go run ./cmd/audit [--data-dir pb_data] [--streams artist,album,song,scrapejob] [--max-mismatches 20] [--pb-mirror]
+//	go run ./cmd/audit [--data-dir pb_data] [--streams artist,album,song,scrapejob] [--max-mismatches 20] [--allow-unlogged] [--pb-mirror]
 //
-// Exit code is 1 when value mismatches, missing projection rows, or unlogged
-// rows are found; purged scrape-job rows (retention) and outbox/checkpoint
-// lag are informational only.
+// Exit code is 1 when value mismatches, missing projection rows, or stored
+// events this binary cannot decode are found. Unlogged rows also fail unless
+// --allow-unlogged records them as an accepted legacy baseline. Purged
+// scrape-job rows (retention) and outbox/checkpoint lag are informational
+// only.
 //
 // --pb-mirror additionally compares PocketBase collections against their
 // SQLite projections (PB boot required; run against a backup copy with the
@@ -43,6 +45,12 @@ import (
 	"ListenLedger/internal/domain/song"
 	"ListenLedger/internal/eventsourcing"
 	_ "ListenLedger/migrations"
+
+	// Blank imports register every event payload with the payload registry,
+	// so the event-contract census knows all valid event types. Without them
+	// the census would report these types as unreadable.
+	_ "ListenLedger/internal/domain/correctionproposal"
+	_ "ListenLedger/internal/domain/tidalsync"
 )
 
 // streamReport tallies one stream type's convergence check.
@@ -64,6 +72,13 @@ type report struct {
 	PurgedInfos int              `json:"purged_infos"`
 	OutboxLag   int64            `json:"outbox_lag"`
 	Checkpoints map[string]int64 `json:"checkpoints,omitempty"`
+	// EventTypes is the event-contract census: stored events per event type,
+	// and whether this binary can decode their payloads.
+	EventTypes []eventTypeCensus `json:"event_types,omitempty"`
+	// UndecodableEvents counts stored events whose payload this binary cannot
+	// read (unregistered event type, or a payload that fails to decode).
+	// Divergence: no projection can derive rows from a fact it cannot read.
+	UndecodableEvents int64 `json:"undecodable_events"`
 	// MaxStreamVersions records the longest stream per type (stream type ->
 	// max tip version). Informational only: long artist streams lose their
 	// snapshot shortcut under JetStream reads, so flip-day operators need
@@ -74,6 +89,18 @@ type report struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+// eventTypeCensus tallies one event type in the log against the payload
+// registry.
+type eventTypeCensus struct {
+	EventType  string `json:"event_type"`
+	Count      int64  `json:"count"`
+	Registered bool   `json:"registered"`
+	// DecodeFails counts sampled events of this type whose payload the
+	// registered struct could not read.
+	DecodeFails int    `json:"decode_failures,omitempty"`
+	Sample      string `json:"sample,omitempty"`
+}
+
 // hasMismatch reports whether the audit found real divergence.
 func (r *report) hasMismatch() bool {
 	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs, r.Batches} {
@@ -81,7 +108,22 @@ func (r *report) hasMismatch() bool {
 			return true
 		}
 	}
-	return false
+	return r.UndecodableEvents > 0
+}
+
+// hasDivergence applies the selected exit gate. allowUnlogged accepts rows
+// that predate the event log (legacy catalog data) as a recorded baseline;
+// value mismatches, missing rows, and undecodable events still fail the run.
+func (r *report) hasDivergence(allowUnlogged bool) bool {
+	if !allowUnlogged {
+		return r.hasMismatch()
+	}
+	for _, s := range []streamReport{r.Artists, r.Albums, r.Songs, r.Jobs, r.Batches} {
+		if s.Mismatched > 0 || s.MissingRows > 0 {
+			return true
+		}
+	}
+	return r.UndecodableEvents > 0
 }
 
 func (r *streamReport) addSample(cap int, sample string) {
@@ -95,11 +137,13 @@ func main() {
 		dataDir       string
 		streams       string
 		maxMismatches int
+		allowUnlogged bool
 		pbMirror      bool
 	)
 	flag.StringVar(&dataDir, "data-dir", appdir.ResolveDataDir(), "Directory holding sqlite/ledger.sqlite")
 	flag.StringVar(&streams, "streams", "artist,album,song,scrapejob,batch", "Comma-separated stream types to audit")
 	flag.IntVar(&maxMismatches, "max-mismatches", 20, "Maximum mismatch samples kept per stream type")
+	flag.BoolVar(&allowUnlogged, "allow-unlogged", false, "Treat rows with no event stream as an accepted legacy baseline; mismatches, missing rows, and undecodable events still fail")
 	flag.BoolVar(&pbMirror, "pb-mirror", false, "Also compare PocketBase collections against SQLite projections (requires stopped app or backup copy)")
 	flag.Parse()
 
@@ -125,9 +169,11 @@ func main() {
 		"outbox_lag", rep.OutboxLag,
 		"checkpoints", rep.Checkpoints,
 		"max_stream_versions", rep.MaxStreamVersions,
+		"event_types", rep.EventTypes,
+		"undecodable_events", rep.UndecodableEvents,
 		"warnings", rep.Warnings,
 	)
-	diverged := rep.hasMismatch()
+	diverged := rep.hasDivergence(allowUnlogged)
 	if diverged {
 		logger.Error("audit found divergence: streams and read models disagree (run quiescent to rule out in-flight writes)")
 	}
@@ -276,9 +322,14 @@ func audit(ctx context.Context, dataDir string, selected map[string]struct{}, ma
 		}
 	}
 	if _, ok := selected[batch.StreamTypeBatch]; ok {
-		if err := auditBatches(ctx, database, store, byType[batch.StreamTypeBatch], maxSamples, &rep.Batches); err != nil {
+		if err := auditBatches(ctx, database, store, byType[batch.StreamTypeBatch], maxSamples, &rep.Batches, &rep.PurgedInfos); err != nil {
 			return nil, err
 		}
+	}
+
+	// Event-contract census: whole-log, so it runs regardless of --streams.
+	if err := auditEventTypes(ctx, store, maxSamples, rep); err != nil {
+		return nil, err
 	}
 
 	if lag, err := store.UnpublishedCount(ctx); err != nil {
@@ -310,6 +361,50 @@ type artistRow struct {
 	monthlyListeners int64
 	listStatus       string
 	fetchStatus      string
+}
+
+// censusMinSamples is the minimum number of events sampled from each end of
+// every event type, independent of --max-mismatches.
+const censusMinSamples = 20
+
+// auditEventTypes checks the event contract against the log: every stored
+// event type must have a registered payload, and sampled payloads must still
+// decode into it. Either failure means the binary cannot read a fact it
+// stored, so no projection can derive rows from it. The census reads the
+// SQLite log only; in jetstream mode that log froze at the flip, so
+// JetStream-only appends are unchecked and the report says so.
+func auditEventTypes(ctx context.Context, store *eventsourcing.SQLiteStore, maxSamples int, rep *report) error {
+	if mode, err := eventsourcing.SelectedStoreName(); err == nil && mode == eventsourcing.EventStoreJetStream {
+		rep.Warnings = append(rep.Warnings, "event-type census covers the frozen SQLite log only; JetStream-only appends are not checked")
+	}
+	// Decode sampling is a gate, not report verbosity: keep it independent
+	// of --max-mismatches so a quiet report never disables the check.
+	census, err := store.EventTypeCensus(ctx, max(maxSamples, censusMinSamples))
+	if err != nil {
+		return fmt.Errorf("event-type census: %w", err)
+	}
+
+	for _, entry := range census {
+		row := eventTypeCensus{EventType: entry.EventType, Count: entry.Count}
+		_, row.Registered = eventsourcing.PayloadTypeOf(entry.EventType)
+		if !row.Registered {
+			row.Sample = "no payload registered for this event type"
+			rep.UndecodableEvents += entry.Count
+			rep.EventTypes = append(rep.EventTypes, row)
+			continue
+		}
+		for _, evt := range entry.Samples {
+			if _, err := eventsourcing.DecodeRegisteredPayload(evt); err != nil {
+				row.DecodeFails++
+				if row.Sample == "" {
+					row.Sample = fmt.Sprintf("%s v%d: %v", evt.StreamID, evt.Version, err)
+				}
+			}
+		}
+		rep.UndecodableEvents += int64(row.DecodeFails)
+		rep.EventTypes = append(rep.EventTypes, row)
+	}
+	return nil
 }
 
 func readArtistRow(ctx context.Context, database *toolbeltdb.Database, id string) (artistRow, error) {
@@ -660,7 +755,7 @@ func readBatchMembers(ctx context.Context, database *toolbeltdb.Database, batchI
 	return members, err
 }
 
-func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport) error {
+func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eventsourcing.SQLiteStore, ids []string, maxSamples int, rep *streamReport, purgedInfos *int) error {
 	type batchAuditStream struct {
 		id     string
 		events []eventsourcing.Event
@@ -681,6 +776,7 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		streams = append(streams, batchAuditStream{id: id, events: events})
 		starts[id] = events[0].CreatedAt
 	}
+	latestID, latestStart, secondStart := latestBatchStarts(starts)
 	for _, stream := range streams {
 		id, events := stream.id, stream.events
 		agg, err := batch.Replay(id, events)
@@ -695,7 +791,8 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 		}
 		if !row.found {
 			lastEvent := events[len(events)-1]
-			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, starts) {
+			if agg.Done() && batchCouldHaveBeenPruned(id, lastEvent.CreatedAt, latestID, latestStart, secondStart) {
+				*purgedInfos++
 				continue
 			}
 			rep.MissingRows++
@@ -743,19 +840,31 @@ func auditBatches(ctx context.Context, database *toolbeltdb.Database, store *eve
 	return auditUnloggedRows(ctx, database, "batches", "id", ids, maxSamples, rep, "batch")
 }
 
+// latestBatchStarts returns the batch with the latest start and the second
+// latest start time. Two entries suffice for batchCouldHaveBeenPruned: the
+// latest start excluding a single batch is either the global latest or, when
+// the batch itself is the latest, the second latest.
+func latestBatchStarts(starts map[string]time.Time) (latestID string, latestAt, secondAt time.Time) {
+	for id, at := range starts {
+		switch {
+		case latestID == "" || at.After(latestAt):
+			latestID, latestAt, secondAt = id, at, latestAt
+		case at.After(secondAt):
+			secondAt = at
+		}
+	}
+	return latestID, latestAt, secondAt
+}
+
 // batchCouldHaveBeenPruned reports whether a later batch start could have run
 // the pruning that removed the missing row. Without a later start, an old done
 // stream still needs its row; exempting it would hide projection loss. The
 // missing row's updated_at is gone, so the final event time is the latest
 // surviving timestamp. A later start must clear it by the full retention.
-func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, starts map[string]time.Time) bool {
-	for otherID, startedAt := range starts {
-		if otherID == id {
-			continue
-		}
-		if startedAt.Sub(lastEventAt) > batchprogress.PruneRetention {
-			return true
-		}
+func batchCouldHaveBeenPruned(id string, lastEventAt time.Time, latestID string, latestAt, secondAt time.Time) bool {
+	candidate := latestAt
+	if id == latestID {
+		candidate = secondAt
 	}
-	return false
+	return candidate.Sub(lastEventAt) > batchprogress.PruneRetention
 }
